@@ -211,17 +211,19 @@ consistency and the repair path — prefer it over hand-rolled curl.
 ## Troubleshooting map
 
 `D:\Freebuff\Home` is its own git repository — branch **`main`**, matching
-the three module repos. Use `git diff` / `git status` freely. `origin` is
-`git@github.com:maxplorer-lab/Home.git`, which is still **empty: nothing has
-been pushed**, and no upstream is set yet, so the first `git push -u origin
-main` is what creates it.
+the three module repos, with `origin` =
+`git@github.com:maxplorer-lab/Home.git`. Use `git diff` / `git status`
+freely. `main` is pushed and tracks `origin/main`.
 
-History was rewritten once, before that first push, to purge a module name
+**Nothing is deployed.** Home is not on Cloudflare, and the module Workers
+are still the live ones — see `CUTOVER.md` for what has to happen first.
+
+History was rewritten once, before the first push, to purge a module name
 that was never part of this app — a stray name in one comment, left over
 from the module Laoka replaced — from every commit *and* from the old
-objects. So the commit SHAs predating this note are not the ones anyone
-will find in the repo now. Don't cite a Home SHA in a doc without checking
-it still resolves; prefer file paths and commit *subjects*.
+objects. So any SHAs cited in older notes do not resolve now. Don't cite a
+Home SHA in a doc without checking it still resolves; prefer file paths and
+commit *subjects*.
 
 The three standalone sources under `../Sompitra`, `../W.A.Y`, `../Laoka`
 have their own separate repositories and their own history.
