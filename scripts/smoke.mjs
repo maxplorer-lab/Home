@@ -123,6 +123,27 @@ for (const p of ['/way/api/devices', '/laoka/api/bootstrap']) {
   check(`${p} → 200`, r.status === 200, `status ${r.status}`)
 }
 
+// Query strings must survive the module adapters. Home strips the /laoka or
+// /way prefix before dispatch, and an adapter that rebuilds the inner URL from
+// the PATHNAME ALONE silently drops ?week=… — which is exactly what happened:
+// Laoka's boot calls /api/state?week=N, got 400 "a week id is required", threw,
+// and left the whole Laoka tab blank. Nothing without a query param noticed.
+//
+// The test needs no fixtures: an impossible week id must be answered by the
+// LOOKUP (404 "no such week"), not by the guard (400 "required"). Getting 400
+// means the parameter never arrived, whatever the data happens to be.
+for (const [p, whenMissing] of [
+  ['/laoka/api/state?week=999999', 'a week id is required'],
+]) {
+  const r = await req(p)
+  const text = await body(r)
+  check(
+    `query strings reach the module: ${p} → 404, not 400`,
+    r.status === 404 && !text.includes(whenMissing),
+    `status ${r.status} body=${text.slice(0, 80)} — the adapter dropped the query string`
+  )
+}
+
 // ─── 5. chrome consistency (the bug class this project keeps hitting) ──
 log('\n5. One chrome: real icons, no emoji, everywhere')
 // Every tab is served either by Layout (Sompitra) or ModuleShell. Both must

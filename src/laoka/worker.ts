@@ -58,7 +58,12 @@ export async function handleLaoka(request: Request, env: Env, ctx: ExecCtx): Pro
   // through Laoka itself — its entry authenticates the cookie BEFORE
   // handing the socket to the Lobby DO, so the check is preserved.
   const innerPath = innerPath0
-  const inner = new URL(innerPath, url.origin)
+  // KEEP THE QUERY STRING. innerPath is a PATHNAME, so building the inner URL
+  // from it alone silently dropped ?week=… and every other param -- Laoka's
+  // /api/state reads `week` and answered 400 "a week id is required", which
+  // aborted its dashboard boot and left the tab blank. Static assets do not
+  // care, but any route that reads searchParams is broken without this.
+  const inner = new URL(innerPath + url.search, url.origin)
 
   const laokaEnv = {
     ...env,
