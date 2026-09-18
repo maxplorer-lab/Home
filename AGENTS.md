@@ -129,6 +129,16 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     /settings, username-matched case-insensitively) — never delete
     `way-db users.ntfy_topic` without migrating first, or every phone silently
     stops receiving.
+    **Both senders must agree.** Sompitra reads home-db live, but W.A.Y's
+    FleetDO does NOT go through `src/lib/notify.ts` — it has its own ntfy
+    publisher and resolves channels in `getNotifyConfig()` (FleetDO.ts), so
+    that lookup reads home-db too (keyed for EVERY active home user). way-db's
+    `ntfy_topic` is the pre-merge fallback and applies ONLY when home-db has
+    never heard of that username — an explicit "channel off" (NULL) must stay
+    off, never silently fall back to the stale topic. Because the DO caches
+    this, every channel/server write in /settings calls
+    `reloadWayNotifications(env)`; without it a rotation looks like it failed
+    for W.A.Y events only.
 16. The household ntfy **server** lives in home-db (`home_settings`), with a
     fallback read of Sompitra's legacy `app_settings.ntfy_server`. Only an
     admin can change it, and it is written to both places on purpose.
@@ -173,6 +183,8 @@ repositories and their own history.
 | Only some tabs render the same icons | `HomeTabBar` / `TabIcon` in `app-chrome.tsx`; assets under `public/` |
 | Identity/login behaves oddly after a schema change | `migrations-home/0001_identity.sql` + the local D1 in `.wrangler/state` |
 | A notification never arrives | `users.ntfy_topic` in **home-db** (not the app it came from) — an empty channel is skipped silently; also check the `home_settings.ntfy_server` value |
+| Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
+| WAY activity alerts missing from the chat | they are auto chat rows (`is_auto`/`event_type`) written by the DO, not pushes — `sender` is null in the DO and becomes "System" in D1 |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |
 
 ### What is actually served

@@ -10,6 +10,11 @@
 export interface Env {
   WAY_DB: D1Database;
   FLEET_DO: DurableObjectNamespace;
+  // The Home identity database. W.A.Y reads it for ONE thing: each person's
+  // notification channel (users.ntfy_topic) and the household ntfy server
+  // (home_settings.ntfy_server). The channel belongs to the person, not to
+  // this module — see migrations-home/0002 and src/identity.ts.
+  HOME_DB: D1Database;
   // Secret, NOT in wrangler.jsonc: set it in the Cloudflare dashboard
   // (Worker -> Settings -> Variables and Secrets), because deployment is via
   // Workers Builds rather than a local `wrangler deploy`. For `wrangler dev`,

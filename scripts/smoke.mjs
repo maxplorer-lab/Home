@@ -212,6 +212,41 @@ log('\n10. Unified settings + one notification channel per person')
   check('POST /settings/channel anonymous → /login', anonPost.status === 302 && anonLoc.includes('/login'), `${anonPost.status} → ${anonLoc || '(none)'}`)
 }
 
+// ─── 11. ONE channel, both senders ───────────────────────────────
+log('\n11. WAY and Sompitra resolve the SAME notification channel')
+{
+  // Sompitra reads home-db live; W.A.Y's FleetDO resolves the same home-db
+  // channels at cache-load time (this endpoint reports exactly what it would
+  // push to). If the DO ever loses its HOME_DB binding or its lookup breaks,
+  // WAY activity notifications would silently go to a different topic.
+  const res = await req('/way/api/debug/notify')
+  const okStatus = res.status === 200
+  check('WAY debug-notify answers (DO can read home-db)', okStatus, `status ${res.status}`)
+  if (okStatus) {
+    let d = null
+    try { d = JSON.parse(await body(res)) } catch (e) {}
+    check(
+      'WAY debug-notify reports channels + server',
+      !!d && Array.isArray(d.users) && typeof d.server === 'string' && d.server.length > 0,
+      'unexpected shape'
+    )
+
+    // The cross-check that matters: whatever /settings shows as THIS person's
+    // channel must be the exact topic WAY would push theirs to. A mismatch
+    // means the two senders have drifted onto different channels — which is
+    // the bug this whole change exists to remove.
+    const settingsHtml = await body(await req('/settings'))
+    const tag = settingsHtml.match(/<input[^>]*id="my-topic"[^>]*>/)?.[0] ?? ''
+    const mine = (tag.match(/value="([^"]*)"/)?.[1] ?? '').trim()
+    const wayUser = (d?.users ?? []).find((u) => String(u.username).toLowerCase() === USER.toLowerCase())
+    if (mine) {
+      check('WAY pushes to the SAME channel /settings shows', wayUser?.topic === mine, `settings=${mine} way=${wayUser?.topic ?? 'none'}`)
+    } else {
+      check('a person with no channel is null in WAY too', (wayUser?.topic ?? null) === null, `way=${wayUser?.topic}`)
+    }
+  }
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {

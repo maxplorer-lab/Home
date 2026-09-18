@@ -143,8 +143,14 @@ Sompitra pushed to a single household topic, W.A.Y owned a topic per person.
 The merged app has **one channel per person**, owned by `home-db`
 (`users.ntfy_topic`), and every module pushes to it:
 
-* `src/lib/notify.ts` takes the whole `Env` and fans an event out to every
-  active person's channel; there is one transport for the whole product.
+* **Two publishers, one channel set.** Sompitra pushes through
+  `src/lib/notify.ts` (which takes the whole `Env` and fans an event out to
+  every active person's channel). W.A.Y has its own ntfy publisher inside the
+  FleetDO, so its `getNotifyConfig()` reads the same home-db channels — and
+  because the DO caches them, every channel/server write in `/settings` calls
+  `reloadWayNotifications(env)`. `GET /way/api/debug/notify` reports exactly
+  which topics W.A.Y resolved, which is how a drift between the two senders
+  gets caught. Both facts are asserted by `npm run smoke`.
 * The ntfy **server** is household-level (`home_settings.ntfy_server`), with
   a fallback read of Sompitra's legacy `app_settings.ntfy_server` so a deploy
   that has not moved it keeps working.

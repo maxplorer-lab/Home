@@ -35,7 +35,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { Env, GeofenceRow } from "../types";
-import { Geofence, distanceM, bearingDegrees, angularDiff } from "../lib/geofence";
+import {
+  Geofence, distanceM, bearingDegrees, angularDiff } from "../lib/geofence";
 import {
   NotifyEventType, NOTIFY_EVENT_TYPES, EVENT_TAGS, inQuietHours, publishNtfy, TZ_OFFSET_MS,
   NTFY_URL_SETTING_KEY, DEFAULT_NTFY_URL, normalizeNtfyServer,
@@ -49,6 +50,9 @@ import {
   PingResult,
   ForcedMode,
 } from "../lib/state-machine";
+
+/** Household ntfy server, in home-db (the unified settings own it). */
+const NTFY_SERVER_HOME_KEY = "ntfy_server";
 
 interface LiveDeviceStatus extends PingResult {
   timestamp: string;
@@ -1034,6 +1038,33 @@ export class FleetDO extends DurableObject<Env> {
       .prepare("SELECT subscriber_id, source_id, event_type FROM notification_subs")
       .all<{ subscriber_id: number; source_id: number; event_type: string }>();
 
+    // The CHANNEL belongs to the person and lives in home-db
+    // (users.ntfy_topic) — see migrations-home/0002. way-db's own column is
+    // the pre-merge copy and is now only a FALLBACK, so a deployment that has
+    // not adopted the channels yet still notifies. Reading home-db here is
+    // what keeps one phone = one topic: without it, WAY activity would keep
+    // going to way-db's stale topic while Sompitra used the new one.
+    // Keyed for EVERY active home user, including those with no channel: a
+    // person who TURNED THEIR CHANNEL OFF must stay off, so the way-db
+    // fallback below is only for people home-db has never heard of (i.e. the
+    // migration has not run), never for an explicit "no channel".
+    const homeChannels = new Map<string, string | null>();
+    let homeServerUrl: string | null = null;
+    try {
+      const { results: channels } = await this.env.HOME_DB
+        .prepare("SELECT lower(username) AS u, ntfy_topic FROM users WHERE is_active = 1")
+        .all<{ u: string; ntfy_topic: string | null }>();
+      for (const row of channels ?? []) homeChannels.set(row.u, row.ntfy_topic || null);
+      const setting = await this.env.HOME_DB
+        .prepare("SELECT value FROM home_settings WHERE key = ?")
+        .bind(NTFY_SERVER_HOME_KEY)
+        .first<{ value: string }>();
+      homeServerUrl = setting?.value ? normalizeNtfyServer(setting.value) : null;
+    } catch {
+      // No home-db yet (or migration 0002 not applied): fall back to way-db.
+      homeServerUrl = null;
+    }
+
     // Admin-set server root wins over the wrangler var, which wins over the
     // built-in default. Wrapped because app_settings only exists once
     // migration 0005 has been applied -- a DO that starts before that must
@@ -1049,15 +1080,20 @@ export class FleetDO extends DurableObject<Env> {
       settingUrl = null;
     }
     const envUrl = this.env.NTFY_URL ? normalizeNtfyServer(this.env.NTFY_URL) : null;
-    const server: { url: string; source: "setting" | "env" | "default" } = settingUrl
-      ? { url: settingUrl, source: "setting" }
-      : envUrl
-        ? { url: envUrl, source: "env" }
-        : { url: DEFAULT_NTFY_URL, source: "default" };
+    const server: { url: string; source: "setting" | "env" | "default" } = homeServerUrl
+      ? { url: homeServerUrl, source: "setting" }
+      : settingUrl
+        ? { url: settingUrl, source: "setting" }
+        : envUrl
+          ? { url: envUrl, source: "env" }
+          : { url: DEFAULT_NTFY_URL, source: "default" };
 
     this.notifyCache = {
       users: users.map((u) => ({
-        id: u.id, username: u.username, topic: u.ntfy_topic,
+        id: u.id, username: u.username,
+        topic: homeChannels.has(u.username.toLowerCase())
+          ? homeChannels.get(u.username.toLowerCase()) ?? null
+          : u.ntfy_topic,
         quietStart: u.quiet_start ?? 22, quietEnd: u.quiet_end ?? 6,
       })),
       subs: subs.map((s) => ({ subscriberId: s.subscriber_id, sourceId: s.source_id, eventType: s.event_type })),

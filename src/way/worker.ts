@@ -53,6 +53,24 @@ export async function handleWayWebSocket(request: Request, env: Env): Promise<Re
 
 /** /way/* API + auth. Receives the request with the /way prefix REMOVED
  * (root rewrites path → /api/...), so internal checks are unchanged. */
+/**
+ * Drop the FleetDO's cached notification config (topics + subscriptions).
+ *
+ * The DO caches them so a ping never waits on D1, which means a channel
+ * change made in /settings is invisible to it until the cache is dropped.
+ * Call this after ANY change to a person's ntfy channel, or a rotation looks
+ * like it silently failed. Never throws — settings must not fail because the
+ * DO was busy.
+ */
+export async function reloadWayNotifications(env: Env): Promise<void> {
+  try {
+    const id = env.FLEET_DO.idFromName("fleet");
+    await env.FLEET_DO.get(id).fetch("https://fleet-do/reload-notifications", { method: "POST" });
+  } catch {
+    // best effort
+  }
+}
+
 export async function handleWay(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 

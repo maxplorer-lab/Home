@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
 import { ntfyServer, pushNtfyTo } from '../lib/notify'
+import { reloadWayNotifications } from '../way/worker'
 import {
   findHomeUserByName,
   listNtfyChannels,
@@ -287,9 +288,11 @@ settings.post('/notifications', async (c) => {
   const server = String(body.ntfy_server || '').trim()
   if (server && !/^https?:\/\//i.test(server)) return c.redirect('/settings?err=bad_server')
   await setHomeSetting(c.env.HOME_DB, 'ntfy_server', server)
-  // Keep the legacy Sompitra copy in step so a rollback still notifies.
+  // Keep the legacy Sompitra copy in step so a rollback still notifies, and
+  // drop the FleetDO's cached server URL (it resolves one at cache-load time).
   const { setSetting } = await import('../lib/notify')
   await setSetting(c.env.DB, 'ntfy_server', server)
+  await reloadWayNotifications(c.env)
   return c.redirect('/settings?ok=Server saved')
 })
 
@@ -314,6 +317,9 @@ settings.post('/channel', async (c) => {
   const action = String(body.action || 'rotate')
   if (action === 'off') await clearNtfyTopic(c.env.HOME_DB, home.id)
   else await setNtfyTopic(c.env.HOME_DB, home.id)
+  // The FleetDO caches channels, so tell it to re-read them or a rotation
+  // looks like it silently failed for W.A.Y activity (Sompitra reads live).
+  await reloadWayNotifications(c.env)
   return c.redirect('/settings?ok=Notification channel updated')
 })
 
@@ -325,6 +331,7 @@ settings.post('/channel/:id', async (c) => {
   const action = String(body.action || 'rotate')
   if (action === 'off') await clearNtfyTopic(c.env.HOME_DB, c.req.param('id'))
   else await setNtfyTopic(c.env.HOME_DB, c.req.param('id'))
+  await reloadWayNotifications(c.env)
   return c.redirect('/settings?ok=Channel updated')
 })
 
@@ -333,6 +340,7 @@ settings.post('/adopt-way', async (c) => {
   const user = c.get('user')
   if (user.is_admin !== 1) return c.redirect('/settings')
   const adopted = await adoptWayTopics(c.env)
+  await reloadWayNotifications(c.env)
   return c.redirect(`/settings?ok=${encodeURIComponent(adopted === 1 ? 'Adopted 1 channel from W.A.Y' : `Adopted ${adopted} channels from W.A.Y`)}`)
 })
 
