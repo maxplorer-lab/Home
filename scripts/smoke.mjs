@@ -175,6 +175,18 @@ for (const p of ['/', '/way/api/devices', '/laoka/api/bootstrap']) {
   check(`${p} repairs from home_session alone → 200`, r.status === 200, `status ${r.status}`)
 }
 
+// ─── 9. no silent map reversion ──────────────────────────────────
+log('\n9. WAY basemap stays where the user put it')
+// Source-level guard: the 30-minute auto-revert to the lite basemap was
+// removed on purpose. It cannot be exercised here (it needs a 30-minute
+// wait), so assert the served document defines no such timer and still
+// offers both manual layers.
+{
+  const way = await body(await req('/way/index.html'))
+  check('no auto-revert timer in the served WAY document', !/scheduleTileRevert|tileRevertTimer/.test(way), 'an auto-revert to lite is back')
+  check('both manual basemaps still offered', way.includes("setLayer('lite')") && way.includes("setLayer('osm')"), 'LITE / OSM buttons missing')
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {

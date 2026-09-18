@@ -556,12 +556,11 @@ function nairobiDayRange(dateStr) {
     };
 }
 
-// ---- Tile auto-revert: fall back to lite after 30 min ----
-let tileRevertTimer = null;
-function scheduleTileRevert() {
-    if (tileRevertTimer) clearTimeout(tileRevertTimer);
-    tileRevertTimer = setTimeout(function() { setLayer('lite'); }, 30 * 60 * 1000);
-}
+// The basemap choice is the user's: it stays on whichever layer they picked
+// (LITE / OSM) until they pick again. Loading the page always starts on lite
+// -- see setLayer('lite') below -- but nothing switches it back on a timer.
+// A 30-minute auto-revert to lite used to live here; it kept yanking the map
+// out from under anyone comparing it against OSM, so it was removed.
 
 let GEOFENCES = [], GEOFENCE_DISPLAY_MAP = {}, GEOFENCE_CATEGORY = {};
 let DEVICES = [], EMOJI_MAP = {}, DEVICE_COLORS = {};
@@ -795,7 +794,6 @@ function setLayer(key) {
     document.getElementById('layer-opt-lite').classList.toggle('active', key === 'lite');
     document.getElementById('layer-opt-osm').classList.toggle('active', key === 'osm');
     document.getElementById('layer-menu').classList.remove('open');
-    scheduleTileRevert();
 }
 setLayer('lite');
 function toggleLayerMenu() { document.getElementById('layer-menu').classList.toggle('open'); }
