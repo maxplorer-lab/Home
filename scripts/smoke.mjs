@@ -250,7 +250,7 @@ log('\n11. WAY and Sompitra resolve the SAME notification channel')
 // ─── 12. the chat is the app's ONE activity feed ─────────────────
 log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra money)')
 {
-  // WAY's geofence events and Sompitra's budget/kine events must render in the
+  // WAY's geofence events and Sompitra's money events must render in the
   // SAME scrollback as centred system rows. Two independent halves have to
   // agree for that: the DO decides which event types are allowed in, and the
   // chat page decides how each type looks. A drift between them is invisible
@@ -264,16 +264,42 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
   if (dbg.status === 200) {
     let d = null
     try { d = JSON.parse(await body(dbg)) } catch (e) {}
+    const accepted = Array.isArray(d?.systemChatEvents) ? d.systemChatEvents : []
     check(
-      'FleetDO is running the /system-chat build',
-      typeof d?.build === 'string' && /system-chat/.test(d.build),
-      `build=${d?.build ?? 'unreadable'} — the DO is serving older code`
+      'FleetDO accepts money events from Sompitra',
+      accepted.includes('expense') && accepted.includes('income'),
+      `build=${d?.build ?? 'unreadable'} accepts=[${accepted.join(', ')}] — the DO is serving older code`
     )
   }
 
   const chat = await body(await req('/chat/index.html'))
-  check('chat styles budget events', /AUTO_STYLE[\s\S]{0,400}budget\s*:/.test(chat) && chat.includes('.system-msg.money .text'), 'budget event type has no styling')
-  check('chat styles kine events', /AUTO_STYLE[\s\S]{0,400}kine\s*:/.test(chat) && chat.includes('.system-msg.kine .text'), 'kine event type has no styling')
+  check('chat styles expense events', /AUTO_STYLE[\s\S]{0,600}expense\s*:/.test(chat) && chat.includes('.system-msg.expense .text'), 'expense event type has no styling')
+  check('chat styles income events', /AUTO_STYLE[\s\S]{0,600}income\s*:/.test(chat) && chat.includes('.system-msg.income .text'), 'income event type has no styling')
+  check('chat styles kine events', /AUTO_STYLE[\s\S]{0,600}kine\s*:/.test(chat) && chat.includes('.system-msg.kine .text'), 'kine event type has no styling')
+  // Money IN must not look like money OUT. Two separate classes alone is not
+  // proof -- the whole point is that they render differently, so require the
+  // income rules to differ from the expense rules.
+  // Pull the declaration block for one system-row style, by plain string
+  // search -- a CSS selector full of dots is not worth regex-escaping.
+  const ruleFor = (cls) => {
+    const marker = `.system-msg.${cls} .text {`
+    const i = chat.indexOf(marker)
+    if (i === -1) return ''
+    return chat.slice(i + marker.length, chat.indexOf('}', i)).trim()
+  }
+  check(
+    'income is visually distinct from expense',
+    ruleFor('income').length > 0 && ruleFor('expense').length > 0 && ruleFor('income') !== ruleFor('expense'),
+    'income and expense share the same styling'
+  )
+  check(
+    'money in is green and money out is not',
+    /#4ade80|\.4ade80/.test(ruleFor('income')) && !/#4ade80|\.4ade80/.test(ruleFor('expense')),
+    `expense=${ruleFor('expense').trim().slice(0, 40)} income=${ruleFor('income').trim().slice(0, 40)}`
+  )
+  // Rows already in scrollback under the old single "budget" type must keep
+  // rendering as a money row instead of degrading to the neutral fallback.
+  check('legacy budget rows still render as money', /budget\s*:\s*\{\s*cls:\s*'expense'/.test(chat), 'the legacy budget alias is gone')
   check(
     'an unknown event type still renders as a system row',
     chat.includes('AUTO_FALLBACK') && /AUTO_STYLE\[msg\.event_type\]\s*\|\|\s*CONFIG\.AUTO_FALLBACK/.test(chat),
@@ -281,7 +307,7 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
   )
   // The renderer must branch on is_auto ALONE. It used to test for exactly
   // arrived/left, so any other auto message rendered as a chat bubble from
-  // "System" -- which is how a budget event would have appeared.
+  // "System" -- which is how a money event would have appeared.
   check(
     'every is_auto message renders as a system row',
     /if\s*\(\s*msg\.is_auto\s*\)/.test(chat) && !/msg\.is_auto\s*&&\s*\(/.test(chat),
@@ -335,25 +361,65 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
       check('a Sompitra expense reaches the chat', !!mine, 'no chat row for the probe expense')
       if (mine) {
         check('the chat row is a system message, not a person\'s', mine.is_auto === 1 || mine.is_auto === true, `is_auto=${mine.is_auto}`)
-        check('and it is typed as a budget event', mine.event_type === 'budget', `event_type=${mine.event_type}`)
+        check('and an expense is typed as one', mine.event_type === 'expense', `event_type=${mine.event_type}`)
         // D1's messages.sender is NOT NULL, so the DO writes "System" for an
         // auto row (a null would abort the whole flush). Attribution must never
         // be a real person's name.
         check('and attributed to nobody', mine.sender === 'System' || !mine.sender, `sender=${mine.sender}`)
       }
 
-      // Self-cleaning: find this row's own delete form on /budget and remove it,
-      // so re-running the suite does not leave phantom spending behind.
-      const page = await body(await req('/budget'))
-      const at = page.indexOf(probe)
-      const id = at === -1 ? null : page.slice(at).match(/action="\/budget\/delete\/([^"]+)"/)?.[1]
-      if (id) {
-        await req(`/budget/delete/${encodeURIComponent(id)}`, { method: 'POST' })
-        const after = await body(await req('/budget'))
-        check('probe expense cleaned up', !after.includes(probe), 'the probe transaction is still in the budget')
+      // Money IN must be a DIFFERENT event type from money OUT -- otherwise a
+      // salary landing reads exactly like an expense in the feed. This is the
+      // half of the request that a styling assertion cannot prove.
+      // The income form is its own route (GET /budget/add-income), not part of
+      // the main budget list.
+      const incomeForm = await body(await req('/budget/add-income'))
+      const acct = incomeForm.match(/name="income_account_id"[\s\S]{0,600}?<option value="([^"]+)"/)?.[1]
+      if (!acct) {
+        check('could not find an income account to test with', false, 'no income_account_id option on /budget')
       } else {
-        log(`  \x1b[33m!\x1b[0m could not locate the probe expense on /budget — it may still be listed under "${probe}"`)
+        const incomeProbe = `smoke income ${Date.now()}`
+        const addedIncome = await req('/budget/add-income', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form({ date: new Date().toISOString().slice(0, 10), income_account_id: acct, amount: '4321', description: incomeProbe }),
+        })
+        if (addedIncome.status !== 302) {
+          check('could not add income to test the split', false, `status ${addedIncome.status}`)
+        } else {
+          await req('/way/api/flush', { method: 'POST' })
+          const hist2 = await req('/way/api/chat/history')
+          let msgs2 = []
+          try { msgs2 = JSON.parse(await body(hist2))?.messages ?? [] } catch (e) {}
+          const mineIncome = msgs2.find((m) => String(m.message || '').includes(incomeProbe))
+          check('income also reaches the chat', !!mineIncome, 'no chat row for the probe income')
+          check(
+            'income is typed differently from expense',
+            mineIncome?.event_type === 'income',
+            `event_type=${mineIncome?.event_type} (must not be the expense type)`
+          )
+          check('and reads as money IN', /Income/.test(mineIncome?.message || ''), `message=${mineIncome?.message}`)
+        }
       }
+
+      // Self-cleaning: find each probe's own delete form on /budget and remove
+      // it, so re-running the suite does not leave phantom money behind.
+      const page = await body(await req('/budget'))
+      let cleaned = 0
+      for (const text of [probe, `smoke income`]) {
+        const at = page.indexOf(text)
+        const id = at === -1 ? null : page.slice(at).match(/action="\/budget\/delete\/([^"]+)"/)?.[1]
+        if (id) {
+          await req(`/budget/delete/${encodeURIComponent(id)}`, { method: 'POST' })
+          cleaned++
+        }
+      }
+      const after = await body(await req('/budget'))
+      check(
+        'probe transactions cleaned up',
+        cleaned > 0 && !after.includes(probe) && !/smoke income/.test(after),
+        cleaned === 0 ? 'could not locate any probe row on /budget' : 'a probe transaction is still listed'
+      )
     }
   }
 }

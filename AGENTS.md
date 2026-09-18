@@ -150,15 +150,26 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     phones), follow **`CUTOVER.md`**.
 18. **The chat carries EVERY module's activity, so the chat's data path is a
     shared dependency.** WAY's geofence transitions write system rows itself
-    (`handleChatMessage` with `is_auto`), and Sompitra's budget/kine events
-    arrive through the DO's `/system-chat`, posted by
-    `src/way/system-chat.ts` (`postSystemChat`) from `src/lib/notify.ts`. The
-    DO allowlists the event types (`EXTERNAL_SYSTEM_EVENTS`, budget/kine) and
-    always writes `sender: null`, so a system line can never impersonate a
-    person; the intake is reachable ONLY through the DO binding, never as a
-    public route. The chat page renders **any** `is_auto` row as a centred
-    system pill, styled per event type with `AUTO_FALLBACK` for types it does
-    not know yet — it must never fall through to a bubble.
+    (`handleChatMessage` with `is_auto`), and Sompitra's money events arrive
+    through the DO's `/system-chat`, posted by `src/way/system-chat.ts`
+    (`postSystemChat`) from `src/lib/notify.ts`. The DO allowlists the event
+    types (`EXTERNAL_SYSTEM_EVENTS` = expense / income / kine, reported live as
+    `systemChatEvents` on `GET /way/api/debug/notify`) and always writes
+    `sender: null`, so a system line can never impersonate a person; the intake
+    is reachable ONLY through the DO binding, never as a public route. The chat
+    page renders **any** `is_auto` row as a centred system pill, styled per
+    event type with `AUTO_FALLBACK` for types it does not know yet — it must
+    never fall through to a bubble.
+    **Income and expense are SEPARATE event types on purpose.** Money in must
+    not look like money out in a scrolling feed, so the split runs through
+    `NotifLine.kind` → the DO's allowlist → the row's `event_type` → the page's
+    `AUTO_STYLE`, using the red/green language Sompitra's own budget list and
+    dashboard already use (`text-red-500` for `-`, `text-green-600` for `+`).
+    Before the split there was one `budget` type for both; the page keeps a
+    legacy `budget` alias mapping to the expense style so rows already in
+    scrollback still render, but nothing posts it any more. `npm run smoke`
+    asserts the two styles DIFFER (not merely that both exist) and drives a
+    real income through the app to prove its row is typed `income`.
     Three invariants worth keeping:
     * `postSystemChat` lives in its own module (`src/way/system-chat.ts`) on
       purpose: importing it from `way/worker.ts` would drag WAY's whole runtime
@@ -221,6 +232,7 @@ repositories and their own history.
 | WAY activity alerts missing from the chat | they are auto chat rows (`is_auto`/`event_type`) written by the DO, not pushes — `sender` is null in the DO and becomes "System" in D1 |
 | Sompitra events never appear in the chat | the DO's `/system-chat` allowlist (`EXTERNAL_SYSTEM_EVENTS`) and `postSystemChat` call in `src/lib/notify.ts`; the handler is best-effort by design, so failures only show in the console |
 | A system event shows as a bubble from "System" instead of a pill | the chat renderer must branch on `is_auto` alone; a new `event_type` also needs a style in `AUTO_STYLE` (unknown types fall back via `AUTO_FALLBACK`) |
+| Income and expenses look identical in the chat | they are typed separately (`expense` / `income`); check `NotifLine.kind` in `src/lib/notify.ts`, the DO's allowlist, and `AUTO_STYLE` in `public/chat/index.html` — all three must know both |
 | `/way/api/chat/history` is always empty, map history has no tracks | the DO **flush** is failing — almost always the missing `devices` FK parent (rule 19). `POST /way/api/flush` returns the real error |
 | Chat history looks frozen at some past day | `/api/chat/history` reads only what the flush has already written to `way-db`; the last 24h live in the DO and arrive over `/ws` |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |

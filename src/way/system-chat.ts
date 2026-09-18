@@ -14,8 +14,12 @@ import type { Env } from "./types";
 
 /** Event types the DO accepts from callers outside WAY (see FleetDO's
  *  EXTERNAL_SYSTEM_EVENTS, which is the authority — this is the compile-time
- *  half of the same contract). */
-export type ExternalSystemEvent = "budget" | "kine";
+ *  half of the same contract).
+ *
+ *  Money IN and money OUT are separate types on purpose: they carry different
+ *  colours and icons in the chat, because a salary landing must not read like
+ *  an expense in a scrolling feed. */
+export type ExternalSystemEvent = "expense" | "income" | "kine";
 
 /**
  * Post a system chat message on behalf of a sibling module.

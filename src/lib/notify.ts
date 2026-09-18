@@ -25,8 +25,10 @@ export interface NotifLine {
   line2: string
   /** Which system-chat event type this describes. Kept here, next to the
    *  wording, so the dashboard feed, the ntfy push and the chat line can never
-   *  disagree about what kind of thing just happened. */
-  kind: 'budget' | 'kine'
+   *  disagree about what kind of thing just happened. Income and expense are
+   *  deliberately SEPARATE types, not one "a transaction happened": money in
+   *  and money out must never look alike in the chat. */
+  kind: 'expense' | 'income' | 'kine'
 }
 
 /**
@@ -78,7 +80,7 @@ export function classifyTransaction(t: Transaction): NotifLine {
     return {
       href: '/budget',
       accent: 'red',
-      kind: 'budget',
+      kind: 'expense',
       line1: `${who} - Expense - ${t.category_name || t.group_name || '—'}`,
       line2: desc ? `${amount} - ${desc}` : amount,
     }
@@ -87,7 +89,7 @@ export function classifyTransaction(t: Transaction): NotifLine {
   return {
     href: '/budget',
     accent: 'green',
-    kind: 'budget',
+    kind: 'income',
     line1: `${who} - Income - ${t.income_account_name || '—'}`,
     line2: desc ? `${amount} - ${desc}` : amount,
   }

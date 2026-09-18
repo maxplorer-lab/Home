@@ -70,11 +70,20 @@ which render as blurry colour glyphs and cannot inherit the active tint.
   only place the household already looks, every module reports into it as a
   system message rather than each growing its own notification list. WAY's
   geofence transitions (`arrived` / `left`) are written by the DO itself, and
-  Sompitra's money events (`budget` / `kine`) arrive through the DO's
-  `/system-chat` intake, posted by `src/way/system-chat.ts`. So the scrollback
-  reads as one story — "📍 MaxX arrived at Home" next to "💸 MaxX - Expense ·
-  Ar 45 000" — instead of the finance events being invisible to the person who
-  is not looking at the Budget tab.
+  Sompitra's money events (`expense` / `income` / `kine`) arrive through the
+  DO's `/system-chat` intake, posted by `src/way/system-chat.ts`. So the
+  scrollback reads as one story — "📍 MaxX arrived at Home" next to "💸 MaxX -
+  Expense · Ar 45 000" — instead of the finance events being invisible to the
+  person who is not looking at the Budget tab.
+
+  **Money in and money out are separate event types, not one "a transaction
+  happened".** The chat colour-codes them the way Sompitra's own UI already
+  does (`red` \- for spending, `green` \+ for income), so a salary landing is
+  not mistaken for an expense while scrolling. The split runs all the way
+  through: `NotifLine.kind`, the DO's allowlist, the event type written to the
+  chat row, and the page's `AUTO_STYLE`. The single `budget` type that existed
+  before the split is still *rendered* (as an expense) so rows already written
+  keep their meaning, but nothing posts it any more.
 
   The rules that keep this honest:
   * System rows are always `is_auto` with `sender: null` ("System" once
@@ -82,9 +91,10 @@ which render as blurry colour glyphs and cannot inherit the active tint.
     impersonate a person, and a person can never post one: the intake is
     reachable only through the DO binding, not as a public route.
   * The DO allowlists the event types it accepts from other modules
-    (`EXTERNAL_SYSTEM_EVENTS`), and the chat page styles each type
-    (`AUTO_STYLE`) with a neutral fallback, so a type added on one side only
-    degrades to a plain bell pill rather than a bubble from nobody.
+    (`EXTERNAL_SYSTEM_EVENTS`, reported live by `GET /way/api/debug/notify` as
+    `systemChatEvents`), and the chat page styles each type (`AUTO_STYLE`) with
+    a neutral fallback, so a type added on one side only degrades to a plain
+    bell pill rather than a bubble from nobody.
   * Mirroring into the chat is **independent of ntfy**: no push server and no
     per-person channel are needed for the household to see activity in the
     app. ntfy is for reaching someone who is not looking; the chat is the

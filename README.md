@@ -25,14 +25,18 @@ modules keep their original UI.
 That one chat is also **where the app reports activity**, so the household
 does not have to watch each module to know what happened. WAY's arrivals and
 departures were always system rows in it; now Sompitra's money events appear
-there too, as their own colours — 💸 amber for a budget entry, 🩺 violet for
-a Kiné event, alongside 📍 green arrivals and 🚪 grey departures:
+there too, each in its own colour — 💸 **red** for an expense, 💰 **green**
+for income, 🩺 violet for a Kiné event, alongside 📍 green arrivals and 🚪
+grey departures. Money in and money out are deliberately different event
+types, so a salary landing never reads like a spending row:
 
 ```
        10:57 AM
-  💸 MaxX - Expense - Gas · Ar 45 000 - Fuel
+  💸 MaxX - Expense - Gas · Ar 45 000 - Fuel        (red)
        10:58 AM
-  🩺 New client - Rakoto - Added
+  💰 MaxX - Income - Salary · Ar 1 500 000          (green)
+       10:59 AM
+  🩺 New client - Rakoto - Added                    (violet)
 ```
 
 These are system messages, never attributed to a person, and they arrive with

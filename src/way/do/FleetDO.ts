@@ -127,7 +127,11 @@ const REACTION_EMOJIS = ["👍", "🤣", "💖"];
 // "arrived"/"left" are NOT accepted here -- WAY generates those itself from
 // geofence transitions (see handleGeofenceEvents) and their wording carries a
 // device id. This endpoint is for the OTHER modules.
-const EXTERNAL_SYSTEM_EVENTS = ["budget", "kine"];
+//
+// Income and expense are separate types so the chat can colour them apart.
+// ("budget" was the first, single money type and is still rendered by the chat
+// page's style map, but it is no longer accepted here -- nothing posts it.)
+const EXTERNAL_SYSTEM_EVENTS = ["expense", "income", "kine"];
 
 interface NotifyUser {
   id: number;
@@ -300,8 +304,9 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(null, { status: 204 });
     }
 
-    // System chat message posted by a SIBLING MODULE (Sompitra's budget/kine
-    // events), so the household's one chat carries every activity, not just
+    // System chat message posted by a SIBLING MODULE (Sompitra's
+    // expense/income/kine events), so the household's one chat carries every
+    // activity, not just
     // WAY's geofence arrivals. Always attributed to "nobody" (sender null) and
     // flagged is_auto, so it renders as a centred system row exactly like
     // WAY's own "📍 arrived at Home" lines.
@@ -370,7 +375,13 @@ export class FleetDO extends DurableObject<Env> {
             // "did my DO change actually take effect?" is a real question --
             // especially at cutover. GET /way/api/debug/notify answers it.
             // v3 = accepts /system-chat (Sompitra's activity in the chat).
-            build: "notify-v3-system-chat",
+            // v4 = splits that into expense/income so they read differently.
+            build: "notify-v4-expense-income",
+            // The event types this DO will accept from sibling modules, straight
+            // from the allowlist. Reported here so a test (or a human) can ask
+            // "does the RUNNING instance know about income yet?" without
+            // relying on a version string staying greppable forever.
+            systemChatEvents: EXTERNAL_SYSTEM_EVENTS,
             // Effective publish target, plus WHICH layer supplied it, so
             // "I changed the setting but pushes still fail" is answerable
             // without a live tail.
