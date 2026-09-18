@@ -445,6 +445,116 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
   }
 }
 
+// ─── 13. Laoka's shopping list reaches Sompitra whole ────────────
+log('\n13. Laoka shopping list → one itemized Sompitra expense (no CSV hop)')
+{
+  // The old hand-off was a downloaded file: Laoka exported a CSV, the person
+  // opened Sompitra's itemized modal and re-picked it. These two endpoints
+  // replace it, and they are load-bearing in a way compile checks cannot see:
+  // one press has to become EXACTLY ONE expense, forever, however many times
+  // it is pressed. So the assertions below are about identity and count, not
+  // about whether the route merely answers.
+
+  // (a) Guards. No fixtures needed, and nothing is written.
+  const noWeek = await req('/budget/laoka-import')
+  check('the hand-off status route demands a week id', noWeek.status === 400, `status ${noWeek.status}`)
+
+  const ghost = await req('/budget/import-laoka', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: 999999 }),
+  })
+  const ghostBody = await body(ghost)
+  // 404 (no such week) rather than 400 (no week given) is the difference
+  // between Sompitra actually READING laoka-db and merely echoing a guard.
+  check(
+    'an unknown week is a LOOKUP miss, so laoka-db is really read',
+    ghost.status === 404 && /no such week/i.test(ghostBody),
+    `${ghost.status} ${ghostBody.slice(0, 90)}`
+  )
+
+  const anonImport = await fetch(`${BASE}/budget/import-laoka`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: 1 }),
+  })
+  const anonTo = anonImport.headers.get('location') || ''
+  check('the hand-off is session-gated', anonImport.status === 302 && anonTo.includes('/login'), `${anonImport.status} → ${anonTo || '(none)'}`)
+
+  // (b) The button is wired to the endpoint, not to a download. A served copy
+  // of app.js that still only knew about /api/weeks/:id/export would look
+  // perfectly healthy here and silently send nobody anywhere.
+  const laokaJs = await body(await req('/laoka/app.js'))
+  check('Laoka is wired to Sompitra\'s import, not just the CSV',
+    laokaJs.includes("'/budget/import-laoka'") && laokaJs.includes("/budget/laoka-import?week="),
+    'no reference to the Sompitra hand-off endpoint')
+
+  // (c) The real round trip, against a week Laoka itself reports.
+  let boot = null
+  try { boot = JSON.parse(await body(await req('/laoka/api/bootstrap'))) } catch (e) {}
+  const liveWeek = (boot?.weeks || []).find((w) => w.status !== 'archived')
+  if (!liveWeek) {
+    bad('a live Laoka week exists to hand over', 'no non-archived week in /laoka/api/bootstrap')
+  } else {
+    let st = null
+    try { st = JSON.parse(await body(await req(`/laoka/api/state?week=${liveWeek.id}`))) } catch (e) {}
+    const priced = (st?.shopping || []).filter((l) => l.price > 0)
+    const expected = priced.reduce((s, l) => s + Math.trunc(l.price), 0)
+
+    const status = await req(`/budget/laoka-import?week=${liveWeek.id}`)
+    let note = null
+    try { note = JSON.parse(await body(status)) } catch (e) {}
+    check('the status route reports whether this week was sent',
+      status.status === 200 && note?.ok === true && typeof note.sent === 'boolean',
+      `status ${status.status} body ${JSON.stringify(note)?.slice(0, 80)}`)
+
+    if (!priced.length) {
+      log('  \x1b[90m– skipped the round trip: week ' + liveWeek.id + ' has no priced lines\x1b[0m')
+    } else if (!note?.sent) {
+      // A week that has NOT been sent is the one case where pressing send
+      // would put NEW money in the budget. The suite must not do that behind
+      // the household's back, so the in-place-update half is reported as
+      // skipped instead of quietly passing. Press Send once in Laoka and this
+      // becomes a real check; every later run keeps proving the ledger holds.
+      log('  \x1b[90m– skipped the write half: week ' + liveWeek.id + ' has not been sent to Sompitra yet\x1b[0m')
+    } else {
+      // Count the transaction rows the history page is showing, by the id each
+      // one carries on its details panel. Counting the id being tested alone
+      // proves nothing about duplicates: it is on the page either way.
+      const idsOf = (html) => [...html.matchAll(/data-tx-details="([^"]+)"/g)].map((m) => m[1])
+      const beforeIds = idsOf(await body(await req('/budget/transactions')))
+      check('a sent week is a real expense in Sompitra', beforeIds.includes(note.transactionId), `transaction ${note.transactionId} is not on /budget/transactions`)
+
+      const again = await req('/budget/import-laoka', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ week: liveWeek.id }),
+      })
+      let sent = null
+      try { sent = JSON.parse(await body(again)) } catch (e) {}
+      check('re-sending counts the same items and total',
+        sent?.ok === true && sent.itemCount === priced.length && sent.amount === expected,
+        `amount=${sent?.amount} expected=${expected} items=${sent?.itemCount}/${priced.length}`)
+      // THE assertion this feature exists for. A second press must land on the
+      // same expense; a CSV could not tell the two apart at all.
+      check('re-sending UPDATES that expense instead of adding another',
+        sent?.action === 'updated' && sent.transactionId === note.transactionId,
+        `action=${sent?.action} id=${sent?.transactionId} was=${note.transactionId}`)
+
+      const page = await body(await req('/budget/transactions'))
+      const afterIds = idsOf(page)
+      check(
+        'the re-send created no second transaction',
+        afterIds.length <= beforeIds.length,
+        `${beforeIds.length} transaction rows before, ${afterIds.length} after — a duplicate was created`
+      )
+
+      // Not a text blob: Sompitra parses the notes back into structured items,
+      // which is what makes this an itemized expense rather than a paragraph.
+      const panel = page.slice(page.indexOf(`data-tx-details="${note.transactionId}"`))
+      const panelBody = panel.slice(0, panel.indexOf('</div>\n                  <div class="flex items-start'))
+      check('and renders as an itemized list in Sompitra',
+        panel.includes(`data-tx-details="${note.transactionId}"`) && panelBody.includes(`${priced.length} items`),
+        `expected "${priced.length} items" in the details panel`)
+    }
+  }
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {

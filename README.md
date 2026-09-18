@@ -43,6 +43,32 @@ These are system messages, never attributed to a person, and they arrive with
 or without ntfy configured — the chat is the record, ntfy is for reaching
 someone who is not looking. One scrollback tells the whole story of the day.
 
+## The week's shopping list becomes one expense
+
+Laoka ends where Sompitra begins: a planned week is priced during the shop,
+and the total belongs in the budget. That last step is a **button**, not a
+file — in Laoka's export sheet, **Send to Sompitra** posts the priced lines
+straight into Sompitra as **one itemized expense** (dated today, filed under
+the Groceries category when one exists). No download, no "Import CSV", no
+picking a file in a modal.
+
+| | |
+| --- | --- |
+| `GET /budget/laoka-import?week=N` | Was this week already sent, and to which expense |
+| `POST /budget/import-laoka` `{week:N}` | Create it, or refresh the expense this week already owns |
+
+It is **idempotent by construction**: `home-db` keeps one ledger row per
+Laoka week (`laoka_imports`, week id is the key), so pressing send twice
+cannot charge the budget twice — the second press updates the same expense,
+and even a re-import after the expense was deleted in Sompitra is handled
+(a fresh one is created and the ledger re-pointed). Once the expense exists,
+the household's own edits win: a re-send refreshes the **amount and items**
+but never overwrites the description, date or category someone chose by hand.
+
+The itemized list is the same shape the CSV imported into, so Sompitra
+renders it as items with a total rather than a paragraph of text. The CSV
+download is still there for anyone who wants the file.
+
 ## Settings & notifications
 
 **`/settings`** is the one settings surface, organised by who a setting

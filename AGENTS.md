@@ -191,6 +191,31 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     arrival/departure messages set it. Repair locally or remotely with
     `scripts/repair-way-messages-fk.sql` (idempotent). `npm run smoke` asserts
     `POST /way/api/flush` returns a real count and not `{error:true}`.
+20. **Laoka's shopping list becomes ONE Sompitra expense, keyed by the week.**
+    The button in Laoka's export sheet calls Sompitra's `POST /budget/import-laoka`
+    (`GET /budget/laoka-import?week=N` is its status). `home-db.laoka_imports`
+    holds one row per week, and the week id IS the expense's identity — so a
+    second press is an UPDATE of the same transaction, never a second charge.
+    Four rules to preserve when touching it:
+    * **Never trust the ledger alone.** `sent` is answered by looking the
+      transaction up in `sompitra-db`; a ledger row whose expense was deleted
+      reports `stale: true`, and the next send re-creates and re-points rather
+      than writing a dead id into the expense.
+    * **A re-send updates `amount` + `notes` ONLY.** Date, description and
+      category may be the household's own edits by then; refreshing them would
+      silently undo a person's choice.
+    * **Notify on `created` only.** Re-sending is a correction to numbers the
+      chat already announced; a second "💸" line reads as a second purchase.
+    * **The notes must stay CSV-shaped** — one `Name: Ar 1,234` line per priced
+      line, A→Z, unpriced lines dropped. Sompitra's `parseItemLines` (and the
+      itemized details panel) is what turns them back into a list; a different
+      shape degrades the expense into a paragraph of text. `laokaPricedLines()`
+      mirrors Laoka's own `buildCsv()` filtering, ordering and truncation.
+    The CSV export path still exists and is unchanged; the button is an
+    addition, not a replacement. `npm run smoke` asserts the identity property
+    (same id, no new row) and the itemized render — and deliberately does NOT
+    create an expense for a week that was never sent, reporting that half as
+    **skipped** instead. To enable it locally, press Send once in Laoka.
 
 ## Smoke test (local, after any identity change)
 

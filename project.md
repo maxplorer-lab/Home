@@ -158,9 +158,13 @@ Four D1 databases, three of them the pre-existing production ones (unchanged
 schemas, untouched data):
 
 * `home-db` — new; schema in `migrations-home/` (0001: users, sessions,
-  attempts; 0002: per-person ntfy channels + household `home_settings`).
+  attempts; 0002: per-person ntfy channels + household `home_settings`;
+  0003: `laoka_imports`, the Laoka→Sompitra hand-off ledger).
   It holds identity AND notification identity, because a phone follows one
-  ntfy topic — a channel belongs to a person, not to an app.
+  ntfy topic — a channel belongs to a person, not to an app. It also holds
+  the only record of a fact that belongs to **two** modules at once, which is
+  why the shopping-list hand-off ledger lives here rather than in either
+  module's database (see below).
 * `sompitra-db` — migrations in `migrations-sompitra/`.
 * `way-db` — migrations in `migrations-way/`.
 * `laoka` — migrations in `migrations-laoka/`.
@@ -206,6 +210,61 @@ time — so a missing `devices` table makes the flush fail as a whole (even for
 rows with a NULL `device_id`) while the live chat keeps working perfectly. The
 symptom is "history is empty and old tracks vanished", not an error. See
 `CUTOVER.md` and `scripts/repair-way-messages-fk.sql`.
+
+## The Laoka → Sompitra hand-off (no CSV hop)
+
+Laoka's week ends as a priced shopping list; Sompitra's budget is where that
+money belongs. The two were joined by a **file**: Laoka exported a CSV
+(`/api/weeks/:id/export`), the person downloaded it, opened Sompitra's
+itemized-expense modal and re-picked it through "Import CSV". Four steps and
+a file, for numbers both apps already held.
+
+Now there is a button in Laoka's export sheet (`public/laoka/app.js`) and two
+endpoints in Sompitra's router (`src/routes/budget.tsx`):
+
+| Route | Purpose |
+| --- | --- |
+| `GET /budget/laoka-import?week=N` | Status for the button: sent or not, which expense, how much, when |
+| `POST /budget/import-laoka` `{week:N}` | Create the expense, or refresh the one this week already owns |
+
+The rules that make it trustworthy, each of which a naive implementation
+gets wrong:
+
+* **The week id is the expense's identity.** `home-db.laoka_imports` is keyed
+  by `laoka_week_id`, so the operation is idempotent by construction: a
+  second press is an UPDATE, never a second expense. This is the difference
+  from the CSV path, which carried no identity and could double-charge the
+  budget if the same file was imported twice.
+* **A stale ledger is not a lie.** If the expense was deleted in Sompitra,
+  the status endpoint reports `stale: true` rather than `sent: false`-with-no-
+  explanation, and the next send creates a fresh expense and re-points the
+  ledger. `sent` is answered by *looking the transaction up*, never by
+  trusting the ledger alone.
+* **Once the expense exists, the household's edits win.** A re-send refreshes
+  `amount` and `notes` only — never `date`, `description` or `category_id`,
+  which may have been chosen by hand afterwards.
+* **The notes mirror the CSV contract exactly**, because the itemized render
+  (and `parseItemLines`) already depend on it: one `Name: Ar 1,234` line per
+  priced line, sorted A→Z case-insensitively, prices truncated to whole
+  units, unpriced lines omitted. `laokaPricedLines()` in budget.tsx copies
+  Laoka's `buildCsv()` filtering and ordering so both routes produce the same
+  expense. The week is also stamped `exported_at`, the same flag the CSV
+  export sets, so Laoka's own "already exported" warning stays truthful.
+* **The chat is told once.** Only `action === 'created'` calls
+  `notifyTransaction`. A re-send is a correction to numbers already
+  announced; repeating the "💸 … Ar 46 600" line would read as a second
+  purchase — exactly the confusion idempotency exists to prevent.
+* **It is a module-to-module read, not a module-to-module import.** The
+  endpoint reads `laoka-db` through the `LAOKA_DB` binding; Laoka's own code
+  is never imported into Sompitra's router, so neither module's release can
+  break the other by surprise.
+
+`npm run smoke` asserts the identity property directly (a re-send must return
+`action: 'updated'` with the **same** transaction id and must not increase the
+row count on `/budget/transactions`), plus that the expense renders as an
+itemized list. The suite deliberately does not create a week that was never
+sent — that would put money in the household's budget behind their back; it
+reports the write half as **skipped** until a week has been sent once.
 
 ## Invariants worth defending
 

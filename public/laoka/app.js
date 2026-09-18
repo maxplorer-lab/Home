@@ -1090,7 +1090,10 @@ function renderShop() {
     )
   );
   if (wk.exportedAt) {
-    head.appendChild(h('div', { class: 'warn', style: 'margin-top:8px', text: 'Already exported on ' + wk.exportedAt + '. Later changes are not in the file.' }));
+    // "the file" only ever told half the story once the hand-off could also be
+    // a button: a downloaded CSV is frozen, but a re-send refreshes the
+    // Sompitra expense in place, so later changes do land there.
+    head.appendChild(h('div', { class: 'warn', style: 'margin-top:8px', text: 'Already exported on ' + wk.exportedAt + '. A file you already downloaded will not have later changes; re-sending to Sompitra updates that expense in place.' }));
   }
 
   // Pantry items are on every list and rarely change, so they are folded away
@@ -1219,6 +1222,108 @@ function setText(id, value) {
   if (el) el.textContent = value;
 }
 
+// --------------------------------------------------- Sompitra hand-off
+//
+// The old way to get this shopping list into the budget was: Export preview →
+// Download CSV → open Sompitra → add an itemized expense → "Import CSV" → pick
+// the file. Four steps and a file, for numbers both apps already hold.
+//
+// Sompitra's endpoint, not ours, so it does not go through api() — that one
+// prefixes /laoka. The week id IS the identity of the expense on Sompitra's
+// side (it keeps a ledger keyed by week), so pressing send twice UPDATEs the
+// same expense instead of adding a second one. That is why the button can
+// safely say "send again", and why the state line below is worth showing.
+function sompitraFetch(method, path, body) {
+  var opts = { method: method, headers: {}, credentials: 'same-origin' };
+  if (body !== undefined) {
+    opts.headers['content-type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  return fetch(path, opts).then(function (res) {
+    return res.json().catch(function () { return null; }).then(function (data) {
+      if (!data) {
+        // A redirect here means the Home session is gone; Sompitra answers the
+        // login page instead of JSON, and nothing in this frame can sign in.
+        if (res.redirected) window.top.location.href = '/login';
+        throw new Error('Sompitra did not answer (' + res.status + ')');
+      }
+      if (!res.ok || data.ok === false) throw new Error(data.error || ('request failed (' + res.status + ')'));
+      return data;
+    });
+  });
+}
+
+function moneyAmount(n) { return 'Ar ' + Number(n || 0).toLocaleString('en-US'); }
+
+// Ledger timestamps arrive as ISO ("2026-09-18T09:12:00.846Z") and Laoka's own
+// as SQLite ("2026-09-18 09:12:00"). Show both as one readable form.
+function stampShort(s) { return String(s || '').replace('T', ' ').replace('Z', '').slice(0, 16); }
+
+function openSompitraTransactions() { window.top.location.href = '/budget/transactions'; }
+
+// The confirmation after a send. Worth its own sheet: the numbers just left
+// this app, so the reply has to say what Sompitra did with them.
+function sompitraResultSheet(r) {
+  var nodes = [h('h2', { text: r.action === 'updated' ? 'Sompitra expense updated' : 'Sent to Sompitra' })];
+  nodes.push(h('p', { text: r.description || '' }));
+  nodes.push(h('p', { class: 'muted', text: r.itemCount + ' items, ' + moneyAmount(r.amount) + ', as one itemized expense dated today.' }));
+  nodes.push(h('div', { class: 'row', style: 'margin-top:14px' },
+    h('button', { class: 'primary', style: 'flex:1', text: '↗ Open in Sompitra', onclick: openSompitraTransactions }),
+    h('button', { text: 'Done', onclick: closeModal })
+  ));
+  modalSheet(nodes);
+}
+
+function sendToSompitra(weekId, btn) {
+  var label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  sompitraFetch('POST', '/budget/import-laoka', { week: weekId }).then(function (r) {
+    closeModal();
+    toast((r.action === 'updated' ? 'Sompitra expense updated — ' : 'Sent to Sompitra — ') +
+      r.itemCount + ' items, ' + moneyAmount(r.amount));
+    softRefresh();
+    sompitraResultSheet(r);
+  }).catch(function (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+    reportError(e);
+  });
+}
+
+function paintSompitraActions(actions, wk, note) {
+  clear(actions);
+  var sent = note && note.sent;
+  var btn = h('button', { class: 'primary wide', text: sent ? '🔄 Send again (updates that expense)' : '📤 Send to Sompitra' });
+  btn.onclick = function () { sendToSompitra(wk.id, btn); };
+  actions.appendChild(btn);
+  if (sent) {
+    actions.appendChild(h('p', { class: 'note', text: 'In Sompitra already: ' + note.itemCount + ' items, ' + moneyAmount(note.amount) +
+      ' · ' + (note.updatedAt ? 'updated ' : 'sent ') + stampShort(note.updatedAt || note.importedAt) +
+      '. Sending again refreshes those numbers in place — it never adds a second expense.' }));
+    var openBtn = h('button', { class: 'wide', text: '↗ Open in Sompitra' });
+    openBtn.onclick = openSompitraTransactions;
+    actions.appendChild(openBtn);
+  } else if (note && note.stale) {
+    actions.appendChild(h('p', { class: 'note', text: 'The expense this week was sent to no longer exists in Sompitra, so this creates a fresh one.' }));
+  }
+}
+
+function loadSompitraActions(actions, wk) {
+  sompitraFetch('GET', '/budget/laoka-import?week=' + encodeURIComponent(wk.id)).then(function (note) {
+    paintSompitraActions(actions, wk, note);
+  }).catch(function (e) {
+    // Could not read the state — still offer the send, because it is safe by
+    // construction: the week id keys the ledger, so a blind send cannot
+    // duplicate. Say so rather than hiding the button.
+    clear(actions);
+    var btn = h('button', { class: 'primary wide', text: '📤 Send to Sompitra' });
+    btn.onclick = function () { sendToSompitra(wk.id, btn); };
+    actions.appendChild(btn);
+    actions.appendChild(h('p', { class: 'note', text: 'Could not ask Sompitra whether this week was sent (' + (e && e.message ? e.message : 'no answer') + '). Sending is still safe: the week id is the key, so it updates rather than duplicates.' }));
+  });
+}
+
 function openExportPreview() {
   var lines = (state.week.shopping || []).filter(function (l) { return l.price > 0; });
   var wk = state.week.week;
@@ -1236,13 +1341,19 @@ function openExportPreview() {
     return;
   }
 
-  nodes.push(h('p', { class: 'muted', text: lines.length + ' lines, total ' + total + '. Two columns, sorted A to Z, no currency.' }));
+  nodes.push(h('p', { class: 'muted', text: lines.length + ' lines, total ' + total + '. Sorted A to Z, no currency.' }));
   var table = h('table', { class: 'preview-table' }, h('tr', null, h('th', { text: 'Item' }), h('th', { text: 'Price' })));
   for (var j = 0; j < sorted.length; j++) table.appendChild(h('tr', null, h('td', { text: sorted[j].name }), h('td', { text: String(sorted[j].price) })));
-  nodes.push(h('div', { style: 'max-height:46vh; overflow:auto' }, table));
-  nodes.push(h('div', { class: 'row', style: 'margin-top:14px' },
+  nodes.push(h('div', { style: 'max-height:38vh; overflow:auto' }, table));
+
+  // Straight into the budget as ONE itemized expense. The CSV download stays
+  // for anyone who wants the file, but it is no longer the only way across.
+  var actions = h('div', { class: 'row', style: 'margin-top:14px; flex-direction:column; align-items:stretch' },
+    h('button', { class: 'primary wide', disabled: true, text: 'Checking Sompitra…' }));
+  nodes.push(actions);
+  nodes.push(h('div', { class: 'row', style: 'margin-top:8px' },
     h('button', {
-      class: 'primary', style: 'flex:1', text: 'Download CSV',
+      style: 'flex:1', text: 'Download CSV',
       onclick: function () {
         window.location.href = '/laoka/api/weeks/' + wk.id + '/export';
         closeModal();
@@ -1252,6 +1363,7 @@ function openExportPreview() {
     h('button', { text: 'Cancel', onclick: closeModal })
   ));
   modalSheet(nodes);
+  loadSompitraActions(actions, wk);
 }
 
 // -------------------------------------------------------------- catalog
@@ -1616,7 +1728,8 @@ async function editGourmet(g) {
 
 async function deleteGourmet(g) {
   var ok = await confirmAction('Delete ' + g.title + '?', 'It stops being offered for new Sundays. Past weeks keep the title they used.', 'Delete');
-  if (!ok) return;    try { await api('DELETE', '/api/gourmet/' + g.id); await refreshBootstrap(); render(); } catch (e) { reportError(e); }
+  if (!ok) return;
+  try { await api('DELETE', '/api/gourmet/' + g.id); await refreshBootstrap(); render(); } catch (e) { reportError(e); }
 }
 
 // -------------------------------------------------------------- history

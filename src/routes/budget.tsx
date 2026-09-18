@@ -778,6 +778,219 @@ budget.post('/add-income', async (c) => {
   return c.redirect('/budget')
 })
 
+// ─── Laoka → Sompitra, without the CSV round trip ─────────────
+//
+// The old hand-off was: Laoka exports a CSV, you download it, open the
+// itemized expense modal, click "Import CSV", pick the file. Four steps and a
+// file, for data both apps already hold. These two endpoints replace it with
+// one press.
+//
+// The rules are copied from Laoka's export so the result matches what the CSV
+// would have produced: only lines with a price above zero, sorted A to Z by
+// item name (case-insensitively), one `Name: Ar 1 234`-style note line each, and
+// the sum in the amount. Laoka truncates prices to whole units; we do too.
+//
+// The ledger lives in home-db (`laoka_imports`) and is keyed by week, so this
+// is idempotent by construction: a second press UPDATES the expense it created
+// instead of adding a second one. That is the difference from the CSV path,
+// which could not detect a double import at all.
+
+/** Money as the itemized notes show it: `Ar 1 234` (comma form, like mga()). */
+function noteAmount(amount: number): string {
+  const n = Math.round(Number.isFinite(amount) ? amount : 0)
+  return 'Ar ' + n.toLocaleString('en-US')
+}
+
+interface LaokaPricedLine { name: string; price: number }
+
+/**
+ * The priced lines of a Laoka week, in the exact order and shape Laoka's own
+ * CSV export uses. Unpriced lines are not bought, so they are not expenses.
+ */
+async function laokaPricedLines(env: Env, weekId: number): Promise<LaokaPricedLine[]> {
+  const { results } = await env.LAOKA_DB.prepare(
+    `SELECT i.name AS name, l.price AS price
+       FROM shopping_lines l
+       JOIN items i ON i.id = l.item_id
+      WHERE l.week_id = ?1 AND l.price IS NOT NULL AND l.price > 0`
+  )
+    .bind(weekId)
+    .all<LaokaPricedLine>()
+  const rows = (results || []).map((r) => ({ name: String(r.name), price: Math.trunc(Number(r.price)) }))
+  rows.sort((a, b) => {
+    const an = a.name.toLowerCase()
+    const bn = b.name.toLowerCase()
+    return an < bn ? -1 : an > bn ? 1 : 0
+  })
+  return rows
+}
+
+/**
+ * Which category a Laoka shopping expense belongs in. Preferred: an explicit
+ * `laoka_category_id` household setting. Otherwise the first category whose
+ * name reads like food shopping, so a normal install files it under Groceries
+ * with no configuration. NULL is a legitimate answer — the expense still
+ * exists and is editable in Sompitra.
+ */
+async function laokaCategoryId(env: Env): Promise<string | null> {
+  try {
+    const set = await env.DB.prepare(`SELECT value FROM app_settings WHERE key = 'laoka_category_id'`).first<{ value: string }>()
+    const wanted = (set?.value || '').trim()
+    if (wanted) {
+      const hit = await env.DB.prepare('SELECT id FROM categories WHERE id = ?').bind(wanted).first<{ id: string }>()
+      if (hit) return hit.id
+    }
+    const guess = await env.DB.prepare(
+      `SELECT id, name FROM categories
+        ORDER BY CASE WHEN lower(name) LIKE '%grocer%' THEN 0
+                      WHEN lower(name) LIKE '%food%' THEN 1
+                      WHEN lower(name) LIKE '%market%' THEN 2
+                      WHEN lower(name) LIKE '%shopping%' THEN 3
+                      ELSE 9 END, sort_order
+        LIMIT 1`
+    ).first<{ id: string; name: string }>()
+    if (guess && /grocer|food|market|shopping/i.test(guess.name)) return guess.id
+  } catch { /* a category is a nicety, never a blocker */ }
+  return null
+}
+
+/** Describe the week the way a person would read it. */
+function laokaDescription(startDate: string, endDate: string): string {
+  return `Laoka shopping ${startDate} \u2013 ${endDate}`
+}
+
+// Status for the button: has this week already been sent, and to which expense?
+budget.get('/laoka-import', async (c) => {
+  const weekId = Number(c.req.query('week') || 0)
+  if (!weekId) return c.json({ ok: false, error: 'a week id is required' }, 400)
+  const row = await c.env.HOME_DB.prepare(
+    'SELECT transaction_id, amount, item_count, imported_at, updated_at FROM laoka_imports WHERE laoka_week_id = ?'
+  )
+    .bind(weekId)
+    .first<{ transaction_id: string; amount: number; item_count: number; imported_at: string; updated_at: string | null }>()
+  if (!row) return c.json({ ok: true, sent: false })
+  // The expense may have been deleted in Sompitra since. Reporting `sent` for a
+  // transaction that no longer exists is what would make the button lie.
+  const live = await c.env.DB.prepare('SELECT id FROM transactions WHERE id = ?').bind(row.transaction_id).first<{ id: string }>()
+  return c.json({
+    ok: true,
+    sent: !!live,
+    stale: !live,
+    transactionId: row.transaction_id,
+    amount: row.amount,
+    itemCount: row.item_count,
+    importedAt: row.imported_at,
+    updatedAt: row.updated_at,
+  })
+})
+
+// The one button. Creates the expense, or refreshes the one this week already
+// owns. Returns JSON because the caller is Laoka's single-page app.
+budget.post('/import-laoka', async (c) => {
+  const user = c.get('user')
+  const contentType = c.req.header('content-type') || ''
+  let body: Record<string, unknown> = {}
+  try {
+    body = contentType.includes('application/json')
+      ? ((await c.req.json()) as Record<string, unknown>)
+      : ((await c.req.parseBody()) as Record<string, unknown>)
+  } catch {
+    return c.json({ ok: false, error: 'unreadable request body' }, 400)
+  }
+
+  const weekId = Number(body.week || 0)
+  if (!weekId) return c.json({ ok: false, error: 'a week id is required' }, 400)
+
+  const week = await c.env.LAOKA_DB.prepare('SELECT id, start_date, end_date FROM weeks WHERE id = ?')
+    .bind(weekId)
+    .first<{ id: number; start_date: string; end_date: string }>()
+  if (!week) return c.json({ ok: false, error: 'no such week in Laoka' }, 404)
+
+  const lines = await laokaPricedLines(c.env, weekId)
+  if (!lines.length) {
+    return c.json({ ok: false, error: 'nothing is priced yet, so there is nothing to send' }, 409)
+  }
+
+  const amount = lines.reduce((sum, l) => sum + l.price, 0)
+  // Same shape the itemized modal builds from an imported CSV, so notes read
+  // identically whichever route the numbers arrived by.
+  const notes = lines.map((l) => `${l.name}: ${noteAmount(l.price)}`).join('\n')
+  const description = laokaDescription(week.start_date, week.end_date)
+
+  const existing = await c.env.HOME_DB.prepare('SELECT transaction_id FROM laoka_imports WHERE laoka_week_id = ?')
+    .bind(weekId)
+    .first<{ transaction_id: string }>()
+
+  let transactionId: string | null = null
+  let action: 'created' | 'updated' = 'created'
+
+  if (existing) {
+    const stillThere = await c.env.DB.prepare('SELECT id FROM transactions WHERE id = ?')
+      .bind(existing.transaction_id)
+      .first<{ id: string }>()
+    if (stillThere) {
+      // Refresh amount + items, but deliberately NOT the date, category or
+      // description: those are the household's own choices once the expense
+      // exists, and re-sending a shopping list must not undo them.
+      await c.env.DB.prepare('UPDATE transactions SET amount = ?, notes = ? WHERE id = ?')
+        .bind(amount, notes, existing.transaction_id)
+        .run()
+      transactionId = existing.transaction_id
+      action = 'updated'
+    }
+  }
+
+  if (!transactionId) {
+    const categoryId = await laokaCategoryId(c.env)
+    const id = generateId()
+    await c.env.DB.prepare(
+      `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id)
+       VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)`
+    )
+      .bind(id, new Date().toISOString().slice(0, 10), amount, categoryId, description, notes, user.id)
+      .run()
+    transactionId = id
+
+    await c.env.HOME_DB.prepare(
+      `INSERT INTO laoka_imports (laoka_week_id, transaction_id, amount, item_count, category_id, imported_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL)
+       ON CONFLICT(laoka_week_id) DO UPDATE SET
+         transaction_id = excluded.transaction_id, amount = excluded.amount,
+         item_count = excluded.item_count, category_id = excluded.category_id,
+         imported_at = excluded.imported_at, updated_at = NULL`
+    )
+      .bind(weekId, transactionId, amount, lines.length, categoryId, new Date().toISOString())
+      .run()
+  } else {
+    await c.env.HOME_DB.prepare(
+      'UPDATE laoka_imports SET amount = ?, item_count = ?, updated_at = ? WHERE laoka_week_id = ?'
+    )
+      .bind(amount, lines.length, new Date().toISOString(), weekId)
+      .run()
+  }
+
+  // Mark the week as having left the app -- the same flag the CSV export sets,
+  // so Laoka's "already exported" warning stays truthful about which numbers
+  // went where.
+  await c.env.LAOKA_DB.prepare("UPDATE weeks SET exported_at = datetime('now') WHERE id = ?1").bind(weekId).run()
+
+  // Announce it to the household chat only the FIRST time. A re-send is a
+  // correction to numbers already announced; repeating the "💸 … Ar 46 700"
+  // line would read as a second purchase, which is exactly the confusion this
+  // endpoint exists to prevent.
+  if (action === 'created') await notifyTransaction(c.env, transactionId)
+
+  return c.json({
+    ok: true,
+    action,
+    transactionId,
+    amount,
+    itemCount: lines.length,
+    weekId,
+    description,
+  })
+})
+
 // ─── GET /budget/edit/:id ─────────────────────────────────────
 budget.get('/edit/:id', async (c) => {
   const id = c.req.param('id')
