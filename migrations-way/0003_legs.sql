@@ -1,0 +1,17 @@
+-- WAY (Where Are You) - migration 0003: legs
+-- Run with:
+--   wrangler d1 execute way-db --remote --file=migrations/0003_legs.sql
+--
+-- A "leg" is a BACKEND-ONLY concept: one continuous movement episode,
+-- opened when movement is confirmed (STAYING -> TRAVELING) or the device
+-- leaves a geofence, and closed when it stops or arrives at another
+-- geofence. Driving <-> walking never breaks a leg.
+--
+-- Only DRIVEN legs are kept long-term, and every stored point now carries
+-- the id of the leg it belongs to. That lets the dashboard group a day
+-- into legs (for the trip summary) while still drawing the WHOLE day at
+-- once as one continuous review -- no per-leg restriction on the map.
+--
+-- Existing rows predate legs and keep leg_id = NULL; the dashboard falls
+-- back to gap-based segmentation for them.
+ALTER TABLE gps_pings ADD COLUMN leg_id INTEGER;

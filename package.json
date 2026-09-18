@@ -1,0 +1,22 @@
+{
+  "name": "home",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "npm run check && npm run smoke",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "hono": "^4.7.11"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250901.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.42.0"
+  }
+}

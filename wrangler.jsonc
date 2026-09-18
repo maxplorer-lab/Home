@@ -1,0 +1,81 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "home",
+  "main": "src/index.tsx",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+
+  // ────────────────────────────────────────────────────────
+  // ONE Worker, THREE modules, ONE login, FOUR databases.
+  //
+  //   Sompitra (finance suite, Hono JSX SSR) → served at /
+  //   W.A.Y    (GPS tracking + chat, DO)     → served at /way/*
+  //   Laoka    (meal planner, vanilla SPA)   → served at /laoka/*
+  //
+  // The whole thing is branded "Home" — one app for the whole household.
+  // The login is ONE username + password per person, created by an admin,
+  // stored in the central home-db. On login the Worker provisions the
+  // person into each module's own database (first time only) and mints
+  // every module's session cookie — see src/identity.ts.
+  //
+  //   central:  HOME_DB    home-db      users + sessions (the login)
+  //   Sompitra: DB         sompitra-db  finance data + its sessions
+  //   W.A.Y:    WAY_DB     way-db       tracking + accounts
+  //   Laoka:    LAOKA_DB   laoka        meal plans + its sessions
+  //
+  // Durable Objects:
+  //   FLEET_DO → W.A.Y live fleet + chat
+  //   LOBBY    → Laoka realtime fan-out (metadata only)
+  // ────────────────────────────────────────────────────────
+
+  "vars": {
+    "APP_NAME": "Home",
+    // Laoka's password hashing cost. Deliberately low for the free plan's
+    // 10 ms CPU limit — the AUTH_PEPPER secret carries the real strength.
+    "PBKDF2_ITERATIONS": "5000",
+    // Push notifications go to the self-hosted ntfy instance, not public
+    // ntfy.sh (its free quota silently drops messages when hit).
+    "NTFY_URL": "https://ntfy-424942506653.africa-south1.run.app"
+  },
+
+  // Static assets served by the edge BEFORE the Worker runs:
+  //   /sw.js, /manifest.webmanifest, /favicon.svg, /icons/*  → Home/Sompitra PWA
+  //   /way/manifest.json, /way/sw.js, /way/icon-512.png …    → WAY PWA bits
+  //   /laoka/*                                               → Laoka SPA files
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/ws", "/laoka-ws", "/ulogger", "/ulogger/*", "/way/", "/way/index.html", "/laoka/", "/laoka/index.html"],
+    "not_found_handling": "none"
+  },
+
+  // The pre-existing module databases, unchanged — plus the new central
+  // identity database. Create home-db with:
+  //   wrangler d1 create home-db    → then paste its database_id here.
+  "d1_databases": [
+    { "binding": "HOME_DB", "database_name": "home-db", "database_id": "00000000-0000-0000-0000-000000000000" },
+    { "binding": "DB", "database_name": "sompitra-db", "database_id": "701cd942-a736-442c-bd00-265061101494" },
+    { "binding": "WAY_DB", "database_name": "way-db", "database_id": "e098df3d-585b-4804-923b-65d0ae74c820" },
+    { "binding": "LAOKA_DB", "database_name": "laoka", "database_id": "24acf3ed-531d-4117-ac7c-f9c7aa1c02c5" }
+  ],
+
+  // W.A.Y's Fleet DO (live tracking/chat) and Laoka's Lobby DO (fan-out).
+  "durable_objects": {
+    "bindings": [
+      { "name": "FLEET_DO", "class_name": "FleetDO" },
+      { "name": "LOBBY", "class_name": "Lobby" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["FleetDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["Lobby"] }
+  ],
+
+  // Daily flush of the fleet DO's buffers into way-db at 21:00 UTC ==
+  // 00:00 UTC+3 (Antananarivo midnight). This cron IS the "today" boundary
+  // for WAY's dashboard — do NOT move it to UTC midnight.
+  "triggers": {
+    "crons": ["0 21 * * *"]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Laoka",
+  "short_name": "Laoka",
+  "description": "Weekly dinner randomiser with a shared shopping list.",
+  "start_url": "/laoka/",
+  "scope": "/laoka/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f9fafb",
+  "theme_color": "#ea580c",
+  "icons": [
+    { "src": "/laoka/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

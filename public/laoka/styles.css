@@ -1,0 +1,606 @@
+/* Laoka - styled to match the Sompitra house style, in deep orange.
+   Tailwind's gray ramp, rounded cards, class-based dark mode, emoji bottom
+   navigation on mobile. Mobile first throughout. */
+
+:root {
+  --brand: #ea580c;
+  --brand-dark: #c2410c;
+  --brand-soft: #fff7ed;
+  --brand-ring: #fed7aa;
+  --brand-ink: #ffffff;
+
+  --bg: #f9fafb;
+  --card: #ffffff;
+  --ink: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --line-soft: #f3f4f6;
+  --field: #ffffff;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow-lg: 0 4px 16px rgba(16, 24, 40, .08);
+
+  --danger: #dc2626;
+  --danger-soft: #fef2f2;
+  --ok: #16a34a;
+  --warn: #ea580c;
+  --warn-soft: #fff7ed;
+  --warn-line: #fdba74;
+
+  --r-card: 18px;
+  --r-btn: 12px;
+  --tap: 44px;
+}
+
+html.dark {
+  --brand: #fb923c;
+  --brand-dark: #f97316;
+  --brand-soft: rgba(124, 45, 18, .3);
+  --brand-ring: rgba(194, 65, 12, .55);
+  --brand-ink: #2a1004;
+
+  --bg: #111827;
+  --card: #1f2937;
+  --ink: #f3f4f6;
+  --muted: #9ca3af;
+  --line: #374151;
+  --line-soft: #273244;
+  --field: #111827;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, .4);
+
+  --danger: #f87171;
+  --danger-soft: rgba(127, 29, 29, .28);
+  --ok: #4ade80;
+  --warn: #fb923c;
+  --warn-soft: rgba(124, 45, 18, .3);
+  --warn-line: rgba(154, 52, 18, .6);
+}
+
+/* Group palette in catalog order: Protein blue, Sides green, Pantry amber,
+   then violet and teal for anything added later. */
+/* g0 protein blue, g1 side amber, g2 salad green, g3 pantry violet, g4 spare.
+   On the plan the shade follows the slot, so a side is never green like a
+   salad even though both live under the same type. */
+.g0 { --gbg: #eff6ff; --gink: #2563eb; --gline: #bfdbfe; --gsoft: #f8fbff; }
+.g1 { --gbg: #fef3c7; --gink: #b45309; --gline: #fcd34d; --gsoft: #fffbeb; }
+.g2 { --gbg: #f0fdf4; --gink: #16a34a; --gline: #bbf7d0; --gsoft: #f7fef9; }
+.g3 { --gbg: #f5f3ff; --gink: #6d28d9; --gline: #ddd6fe; --gsoft: #faf8ff; }
+.g4 { --gbg: #f0fdfa; --gink: #0d9488; --gline: #99f6e4; --gsoft: #f7fffe; }
+html.dark .g0 { --gbg: rgba(30, 58, 138, .26); --gink: #60a5fa; --gline: rgba(29, 78, 216, .45); --gsoft: rgba(30, 58, 138, .12); }
+html.dark .g1 { --gbg: rgba(120, 53, 15, .3); --gink: #fbbf24; --gline: rgba(180, 83, 9, .5); --gsoft: rgba(120, 53, 15, .14); }
+html.dark .g2 { --gbg: rgba(20, 83, 45, .3); --gink: #4ade80; --gline: rgba(21, 128, 61, .5); --gsoft: rgba(20, 83, 45, .14); }
+html.dark .g3 { --gbg: rgba(76, 29, 149, .3); --gink: #a78bfa; --gline: rgba(109, 40, 217, .5); --gsoft: rgba(76, 29, 149, .14); }
+html.dark .g4 { --gbg: rgba(19, 78, 74, .3); --gink: #2dd4bf; --gline: rgba(15, 118, 110, .5); --gsoft: rgba(19, 78, 74, .14); }
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  transition: background-color .2s ease, color .2s ease;
+  overscroll-behavior-y: contain;
+}
+
+/* ------------------------------------------------------- tap feedback */
+a, button, select, summary, input[type="checkbox"], [role="button"] {
+  touch-action: manipulation;
+  transition: transform .08s ease-out, opacity .08s ease-out, filter .08s ease-out,
+              background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out;
+}
+button:active, summary:active, [role="button"]:active { transform: scale(.97); filter: brightness(.94); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  a, button, select, summary, [role="button"] { transition: none; }
+  button:active, summary:active, [role="button"]:active { transform: none; filter: brightness(.88); }
+  .fade-in { animation: none; }
+}
+
+@keyframes laoka-bar { 0% { left: -45%; } 100% { left: 100%; } }
+#nav-progress { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 200; display: none; overflow: hidden; pointer-events: none; }
+#nav-progress.on { display: block; }
+#nav-progress > i {
+  position: absolute; top: 0; bottom: 0; width: 45%; border-radius: 999px;
+  background: linear-gradient(90deg, #fb923c, #c2410c, #fb923c);
+  animation: laoka-bar 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { #nav-progress > i { animation: none; left: 0; width: 100%; } }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.fade-in { animation: fadeIn .2s ease-in; }
+
+/* ------------------------------------------------------------- chrome */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.topbar-inner {
+  max-width: 1024px; margin: 0 auto; padding: 0 12px;
+  display: flex; align-items: center; gap: 10px; height: 56px;
+}
+.brand { font-size: 19px; font-weight: 800; color: var(--brand); letter-spacing: -.2px; white-space: nowrap; }
+.weekbar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font-size: 13px; color: var(--muted); }
+.weekbar .range { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.weekbar select {
+  font: inherit; font-size: 13px; padding: 5px 8px; min-height: 34px; width: auto; max-width: 46vw;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--field); color: var(--ink);
+}
+.top-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.iconbtn {
+  min-height: 38px; min-width: 40px; padding: 4px 8px; font-size: 17px; line-height: 1;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); cursor: pointer;
+}
+.who { font-size: 12px; color: var(--muted); max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.topnav { display: none; position: sticky; top: 56px; z-index: 40; background: var(--card); border-bottom: 1px solid var(--line); }
+.topnav .inner { max-width: 1024px; margin: 0 auto; padding: 6px 12px; display: flex; gap: 4px; }
+.topnav button {
+  border: 0; background: none; cursor: pointer; font: inherit; font-size: 14px; font-weight: 600;
+  padding: 7px 12px; border-radius: 10px; color: var(--muted); white-space: nowrap;
+}
+.topnav button.active { background: var(--brand); color: var(--brand-ink); }
+
+.bottomnav {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+  background: var(--card); border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, .05);
+}
+.bottomnav .inner { display: grid; grid-template-columns: repeat(6, 1fr); }
+.bottomnav button {
+  border: 0; background: none; cursor: pointer; font: inherit;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 7px 2px 6px; font-size: 10px; font-weight: 600; line-height: 1.1; color: var(--muted);
+}
+.bottomnav button .ico { font-size: 20px; line-height: 1; }
+.bottomnav button.active { color: var(--brand); }
+
+.view {
+  max-width: 1024px; margin: 0 auto; padding: 14px 12px;
+  padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 640px) {
+  .topnav { display: block; }
+  .bottomnav { display: none; }
+  .view { padding: 20px 16px; padding-bottom: 20px; }
+  .brand { font-size: 20px; }
+  .topbar-inner { padding: 0 16px; }
+  .topnav .inner { padding: 6px 16px; }
+}
+
+/* ------------------------------------------------------------- blocks */
+.card {
+  background: var(--card); border: 1px solid var(--line-soft);
+  border-radius: var(--r-card); padding: 14px; margin-bottom: 12px; box-shadow: var(--shadow);
+}
+.card.flush { padding: 0; overflow: hidden; }
+@media (min-width: 640px) { .card { padding: 18px; } }
+.card-title {
+  margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .6px; color: var(--muted);
+}
+.card h2 { margin: 0 0 8px; font-size: 17px; font-weight: 700; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.hidden { display: none; }
+
+button, .btn {
+  font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  border-radius: var(--r-btn); border: 1px solid var(--line);
+  background: var(--card); color: var(--ink);
+  padding: 10px 14px; min-height: var(--tap);
+}
+button.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+button.primary:hover { background: var(--brand-dark); border-color: var(--brand-dark); }
+button.wide { width: 100%; }
+button.big { font-size: 17px; padding: 15px; min-height: 54px; border-radius: 14px; }
+button.ghost { background: transparent; }
+button.danger { color: var(--danger); border-color: var(--line); background: var(--danger-soft); }
+button.icon { min-height: 40px; min-width: 42px; padding: 5px 8px; font-size: 15px; }
+button.tiny { min-height: 36px; padding: 5px 10px; font-size: 13px; }
+
+/* A filled action that must read as a button, not a text field. */
+.btn-export {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; min-height: 50px; border-radius: 14px; cursor: pointer;
+  background: var(--brand); border: 1px solid var(--brand); color: var(--brand-ink);
+  font-weight: 700; font-size: 16px;
+}
+.btn-export:hover { background: var(--brand-dark); border-color: var(--brand-dark); }
+.btn-export .ico { font-size: 18px; }
+
+input, select, textarea {
+  font: inherit; font-size: 16px; padding: 11px 12px; width: 100%;
+  border: 1px solid var(--line); border-radius: var(--r-btn);
+  background: var(--field); color: var(--ink); min-height: var(--tap);
+}
+textarea { min-height: 130px; resize: vertical; line-height: 1.45; }
+input.price { text-align: right; font-variant-numeric: tabular-nums; width: 96px; min-height: 44px; padding: 8px 12px; font-weight: 700; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+label.f { display: block; font-size: 12px; font-weight: 700; letter-spacing: .5px; color: var(--muted); margin: 12px 0 5px; }
+input[type="checkbox"] { width: 24px; height: 24px; min-height: 0; padding: 0; flex: 0 0 auto; accent-color: var(--brand); }
+
+.warn {
+  background: var(--warn-soft); border: 1px solid var(--warn-line); color: var(--warn);
+  padding: 10px 12px; border-radius: var(--r-btn); font-size: 13px; font-weight: 600;
+}
+.pill-tag {
+  display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: .4px; padding: 3px 9px; border-radius: 999px;
+  background: var(--brand-soft); color: var(--brand);
+}
+
+/* --------------------------------------------------------- plan cards */
+.daycard {
+  background: var(--card); border: 1px solid var(--line-soft);
+  border-radius: 18px; margin-bottom: 10px; box-shadow: var(--shadow); overflow: hidden;
+}
+.daycard.past { opacity: .55; }
+.daycard.gourmet { background: var(--brand-soft); border-color: var(--brand-ring); }
+.dayrow { display: flex; align-items: center; gap: 12px; padding: 11px 12px; }
+.datebadge {
+  flex: 0 0 50px; width: 50px; height: 50px; border-radius: 14px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--brand-soft); color: var(--brand);
+}
+.datebadge .dow { font-size: 10px; font-weight: 800; letter-spacing: .6px; }
+.datebadge .num { font-size: 19px; font-weight: 800; line-height: 1.05; }
+.daycard.gourmet .datebadge { background: var(--card); }
+.dayrow .items { flex: 1; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
+.slotchip {
+  font-size: 12.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+  background: var(--gbg); color: var(--gink); border: 1px solid var(--gline);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.slotchip.dim { background: transparent; border-style: dashed; border-color: var(--line); color: var(--muted); font-weight: 600; }
+.gourmet-title { font-size: 16px; font-weight: 800; color: var(--brand); }
+.thumb { flex: 0 0 50px; width: 50px; height: 50px; border-radius: 14px; object-fit: cover; }
+.dayrow .editbtn {
+  flex: 0 0 auto; min-height: 38px; min-width: 38px; padding: 4px; border-radius: 11px;
+  border: 1px solid var(--line); background: var(--card); font-size: 15px; cursor: pointer;
+}
+
+.editor { padding: 2px 12px 14px; background: var(--line-soft); border-top: 1px solid var(--line); }
+.editor .slot + .slot { margin-top: 12px; }
+.editor .slot label {
+  display: block; font-size: 11px; font-weight: 800; letter-spacing: .5px; color: var(--muted); margin-bottom: 5px;
+}
+.slotbtn { width: 100%; text-align: left; font-size: 15px; }
+.slotbtn.marked { background: #dcfce7; border-color: #86efac; color: #166534; }
+.slotbtn.unmarked { background: #ffedd5; border-color: #fdba74; color: #9a3412; }
+html.dark .slotbtn.marked { background: rgba(20, 83, 45, .4); border-color: rgba(134, 239, 172, .4); color: #86efac; }
+html.dark .slotbtn.unmarked { background: rgba(124, 45, 18, .4); border-color: rgba(253, 186, 116, .4); color: #fdba74; }
+
+/* Colour is the only label for availability: green marked, orange not. */
+.picklist { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.pickrow { width: 100%; text-align: left; font-size: 15px; padding: 13px 14px; }
+.pickrow.marked { background: #dcfce7; border-color: #86efac; color: #166534; }
+.pickrow.unmarked { background: #ffedd5; border-color: #fdba74; color: #9a3412; }
+html.dark .pickrow.marked { background: rgba(20, 83, 45, .4); border-color: rgba(134, 239, 172, .4); color: #86efac; }
+html.dark .pickrow.unmarked { background: rgba(124, 45, 18, .4); border-color: rgba(253, 186, 116, .4); color: #fdba74; }
+.pickrow.current { outline: 3px solid var(--brand); outline-offset: 1px; }
+
+/* ------------------------------------------------------ shopping list */
+.sec { display: flex; align-items: center; gap: 8px; padding: 11px 13px 7px; background: var(--gsoft); }
+.sec h3 { margin: 0; font-size: 12px; font-weight: 800; letter-spacing: .6px; color: var(--gink); text-transform: uppercase; }
+.sec .pill {
+  font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 999px;
+  background: var(--gbg); color: var(--gink); border: 1px solid var(--gline);
+}
+.shopline {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 13px; border-top: 1px solid var(--line); min-height: 58px;
+  background: var(--gsoft); cursor: text;
+}
+.shopline .nm { flex: 1; font-size: 15px; overflow-wrap: anywhere; }
+.shopline .nm .qty { color: var(--muted); font-size: 12px; font-weight: 700; margin-left: 6px; }
+.shopline input.price { background: var(--gbg); border-color: var(--gline); color: var(--gink); }
+.shopline.bought { background: transparent; }
+.shopline.bought .nm { text-decoration: line-through; color: var(--muted); }
+
+.totals {
+  position: fixed; left: 0; right: 0; z-index: 45;
+  bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+  background: var(--card); border-top: 1px solid var(--line);
+  padding: 10px 14px; display: flex; align-items: center; gap: 12px;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, .06);
+}
+@media (min-width: 640px) { .totals { bottom: 0; } }
+.totals .big { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.totals .sub { font-size: 12px; color: var(--muted); }
+.under { color: var(--ok); font-weight: 700; }
+.over { color: var(--danger); font-weight: 700; }
+
+/* ------------------------------------------------------------ catalog */
+.node { border: 1px solid var(--line); border-radius: var(--r-card); margin-bottom: 12px; overflow: hidden; background: var(--card); box-shadow: var(--shadow); }
+.node > header {
+  display: flex; align-items: center; gap: 8px; padding: 11px 13px;
+  background: var(--gbg); color: var(--gink); font-weight: 800; font-size: 15px;
+}
+.node > header .head-actions { margin-left: auto; display: flex; gap: 6px; }
+.node > header .iconbtn { background: transparent; border-color: transparent; color: inherit; }
+.sublist { padding: 4px 13px 10px; }
+.sub { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.sub:last-child { border-bottom: 0; }
+.sub > header { display: flex; align-items: center; gap: 8px; }
+.sub > header strong { flex: 1; font-size: 15px; }
+.role-tag { font-size: 10px; font-weight: 800; letter-spacing: .4px; color: var(--muted); }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 9px; }
+.pill-item {
+  display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 10px;
+  border: 1px solid var(--gline); border-radius: 999px; background: var(--card);
+}
+.pill-item.on { background: var(--gbg); }
+.pill-item .nm { font-size: 14px; font-weight: 600; color: var(--gink); }
+.pill-item input[type="checkbox"] { width: 21px; height: 21px; }
+.pill-item button { border: 0; background: none; min-height: 30px; min-width: 30px; padding: 2px; font-size: 14px; }
+
+/* The add-item strip that sits under each level 2 group. */
+.additem { display: flex; gap: 6px; align-items: center; padding-top: 9px; }
+.additem input { min-height: 42px; font-size: 15px; }
+.additem button { min-height: 42px; padding: 6px 14px; }
+
+.mgr { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: var(--line-soft); margin-bottom: 10px; }
+.mgr:last-child { margin-bottom: 0; }
+.mgr h4 { margin: 0 0 8px; font-size: 12px; font-weight: 800; letter-spacing: .5px; color: var(--muted); }
+.swatch { width: 15px; height: 15px; border-radius: 5px; border: 1px solid rgba(0,0,0,.12); flex: 0 0 auto; display: inline-block; background: var(--gink, var(--muted)); }
+html.dark .swatch { border-color: rgba(255,255,255,.18); }
+
+/* ------------------------------------------------------------ gourmet */
+.recipe { border-bottom: 1px solid var(--line); padding: 12px 13px; }
+.recipe:last-child { border-bottom: 0; }
+.recipe .head { display: flex; align-items: center; gap: 10px; }
+.recipe .head strong { flex: 1; font-size: 15px; }
+.recipe .photo { width: 54px; height: 54px; border-radius: 14px; object-fit: cover; flex: 0 0 auto; }
+.recipe .link { display: block; font-size: 13px; color: var(--brand); overflow-wrap: anywhere; margin-top: 4px; }
+.recipe .ing {
+  white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; margin-top: 9px;
+  background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--r-btn); padding: 11px;
+}
+.photo-lg { width: 100%; max-height: 240px; object-fit: cover; border-radius: 14px; margin-top: 10px; }
+.photo-pick { display: flex; align-items: center; gap: 10px; }
+.photo-pick img { width: 64px; height: 64px; border-radius: 14px; object-fit: cover; }
+.photo-pick .btnfile { position: relative; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; }
+.photo-pick .btnfile input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+/* -------------------------------------------------------------- modal */
+.modal { position: fixed; inset: 0; z-index: 100; background: rgba(17, 24, 39, .55); display: flex; align-items: flex-end; justify-content: center; }
+.modal.hidden { display: none; }
+.modal .sheet {
+  background: var(--card); width: 100%; max-width: 640px;
+  border-radius: 20px 20px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+  max-height: 92vh; overflow: auto; animation: fadeIn .18s ease-in;
+}
+.modal .sheet h2 { margin: 0 0 4px; font-size: 18px; font-weight: 800; }
+@media (min-width: 640px) { .modal { align-items: center; } .modal .sheet { border-radius: 20px; } }
+
+.preview-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.preview-table th { text-align: left; font-size: 11px; letter-spacing: .5px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.preview-table td { padding: 7px 8px; border-bottom: 1px solid var(--line-soft); }
+.preview-table td:last-child, .preview-table th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 300;
+  bottom: calc(126px + env(safe-area-inset-bottom, 0px));
+  background: #111827; color: #fff; padding: 11px 18px; border-radius: 999px;
+  font-size: 14px; font-weight: 600; max-width: 92vw; text-align: center;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+}
+html.dark .toast { background: #f3f4f6; color: #111827; }
+.toast.hidden { display: none; }
+.toast.err { background: var(--danger); color: #fff; }
+
+details summary { cursor: pointer; padding: 12px 13px; font-weight: 700; font-size: 15px; }
+details summary::marker { color: var(--brand); }
+
+/* Type names are the one place set in capitals, which sets them apart from
+   the group and item names underneath them. */
+.type-name { text-transform: uppercase; letter-spacing: .6px; font-size: 13px; }
+
+.iconinput {
+  width: 64px; flex: 0 0 auto; text-align: center;
+  font-size: 18px; padding: 9px 6px;
+}
+
+/* ------------------------------------------------------ settings rows */
+.setrow { padding: 0; }
+.setrow > summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 14px; min-height: 54px; font-weight: 700; font-size: 15px; cursor: pointer;
+}
+.setrow > summary::-webkit-details-marker { display: none; }
+.setlabel { flex: 1; min-width: 0; }
+.setval { color: var(--muted); font-weight: 600; font-size: 14px; white-space: nowrap; }
+.setbody { padding: 0 14px 14px; }
+.setrow[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.chev { transition: transform .15s ease; }
+.setrow[open] > summary .chev { transform: rotate(90deg); }
+
+.plainrow { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.plainrow:last-child { border-bottom: 0; }
+.plainrow .nm { flex: 1; min-width: 0; }
+.plainrow .nm strong { font-size: 15px; }
+.plainrow .qty { display: block; color: var(--muted); font-size: 12px; }
+
+.invitecode {
+  font-size: 38px; font-weight: 800; letter-spacing: 9px; text-align: center;
+  color: var(--brand); margin: 14px 0 4px; font-variant-numeric: tabular-nums;
+}
+
+/* ----------------------------------------------------------- auth screen */
+.authwrap { max-width: 420px; margin: 5vh auto 0; }
+.brandauth { text-align: center; font-size: 36px; font-weight: 800; color: var(--brand); margin-bottom: 4px; }
+button.link {
+  border: 0; background: none; color: var(--brand); text-decoration: underline;
+  min-height: 44px; font-weight: 600;
+}
+
+/* ------------------------------------------------- compact + refinements */
+
+/* The shopping list is the screen most used one-handed in a shop, so every
+   row is as short as it can be while staying a comfortable tap target. */
+.card.tight { padding: 5px 12px; }
+.shopline { padding: 6px 12px; min-height: 46px; gap: 8px; }
+.shopline .nm { font-size: 14.5px; }
+.shopline input.price { width: 84px; min-height: 38px; font-size: 15px; }
+.sec { padding: 7px 12px 4px; }
+.pill-item .nm { font-size: 13.5px; }
+
+.budget-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: 0; padding: 6px 2px; min-height: 42px;
+  text-align: left; cursor: pointer; color: var(--ink); font-size: 15px;
+}
+.budget-label { font-weight: 700; }
+.budget-value { margin-left: auto; color: var(--muted); font-weight: 700; font-size: 14px; }
+.chev { color: var(--muted); font-size: 22px; line-height: 1; }
+
+.totals { justify-content: space-between; }
+.totals .tot { min-width: 0; flex: 1; }
+.totals .big { font-size: 20px; }
+.totals .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.totals .btn-export {
+  width: auto; min-height: 44px; padding: 0 16px; font-size: 15px;
+  border-radius: 12px; gap: 6px; flex: 0 0 auto;
+}
+
+/* The unsaved wishlist previews the real day cards, toned down a little. */
+.cand .daycard { margin-bottom: 8px; box-shadow: none; }
+.cand .daycard:last-of-type { margin-bottom: 2px; }
+.cand .dayrow { padding: 9px 10px; gap: 9px; }
+.cand .datebadge { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 12px; }
+.cand .datebadge .num { font-size: 17px; }
+
+/* A recipe row is a title until View is tapped. */
+.recipe .head { gap: 8px; }
+.recipe .head strong { font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recipe .head button.tiny { min-height: 34px; padding: 4px 12px; font-size: 13px; }
+
+/* Drag handle for trading meals between days. touch-action none stops the
+   browser scrolling the page instead of dragging. */
+.handle {
+  flex: 0 0 auto; width: 18px; height: 20px; cursor: grab; touch-action: none;
+  background-image: repeating-linear-gradient(90deg, var(--muted) 0 2px, transparent 2px 6px);
+  background-size: 14px 16px; background-position: center; background-repeat: no-repeat;
+  opacity: .5; margin-right: -2px;
+}
+.handle:active { cursor: grabbing; }
+.daycard.lifted { opacity: .45; }
+.daycard.dropTarget { outline: 2px dashed var(--brand); outline-offset: 2px; }
+
+/* Salad chips carry their own off switch: no salad today, and none on the
+   shopping list either. */
+.chipx { display: inline-flex; align-items: center; gap: 4px; padding-right: 3px; }
+.chipdrop {
+  border: 0; background: none; color: inherit; cursor: pointer; font-size: 11px;
+  line-height: 1; padding: 0 2px; min-height: 0; opacity: .7;
+}
+.chipdrop:hover { opacity: 1; }
+.addchip { cursor: pointer; font-family: inherit; }
+
+.pantryToggle { margin-top: 8px; font-weight: 600; }
+
+body.with-totals .view { padding-bottom: calc(128px + env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 640px) { body.with-totals .view { padding-bottom: 78px; } }
+
+/* Availability is opt-out, so an unavailable item is the one that stands out:
+   struck through and dimmed, with a cross to put it back. */
+.pill-item.off { opacity: .6; border-style: dashed; }
+.pill-item.off .nm { text-decoration: line-through; }
+.availbtn {
+  border: 0; background: none; padding: 1px 2px; min-height: 26px; min-width: 24px;
+  font-size: 12px; line-height: 1; cursor: pointer; color: var(--ok); flex: 0 0 auto;
+}
+.availbtn.out { font-size: 13px; }
+
+/* ------------------------------------------------------ mobile density */
+/* Used one handed, often in a shop. Everything is a step tighter than the
+   defaults above: this is a list of thirty things, not a marketing page. */
+.view { padding: 9px 8px; padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+.card { padding: 10px; border-radius: 13px; margin-bottom: 7px; }
+.card h2 { font-size: 15px; margin-bottom: 5px; }
+.card-title { font-size: 10.5px; margin-bottom: 7px; }
+.note { font-size: 12px; margin-top: 4px; }
+.small { font-size: 12px; }
+
+button, .btn { min-height: 38px; padding: 7px 11px; font-size: 14px; border-radius: 10px; }
+button.big { min-height: 46px; font-size: 15px; padding: 10px; border-radius: 12px; }
+button.icon { min-height: 32px; min-width: 34px; font-size: 13px; padding: 3px 6px; }
+button.tiny { min-height: 28px; padding: 2px 8px; font-size: 12px; }
+input, select, textarea { padding: 8px 9px; min-height: 38px; font-size: 15px; border-radius: 10px; }
+label.f { font-size: 10.5px; margin: 8px 0 3px; }
+input.price { width: 74px; min-height: 32px; font-size: 14px; padding: 5px 8px; }
+textarea { min-height: 100px; }
+
+.topbar-inner { height: 46px; padding: 0 9px; }
+.brand { font-size: 16px; }
+.weekbar { font-size: 12px; }
+.weekbar select { font-size: 12px; min-height: 30px; padding: 4px 6px; }
+.iconbtn { min-height: 32px; min-width: 34px; font-size: 15px; }
+.who { font-size: 11px; max-width: 68px; }
+.bottomnav button { padding: 4px 2px 3px; font-size: 9.5px; }
+.bottomnav button .ico { font-size: 17px; }
+.topnav .inner { padding: 4px 9px; }
+.topnav button { padding: 5px 10px; font-size: 13px; }
+
+.daycard { border-radius: 13px; margin-bottom: 5px; }
+.dayrow { padding: 6px 8px; gap: 7px; }
+.datebadge { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 10px; }
+.datebadge .dow { font-size: 9px; }
+.datebadge .num { font-size: 15px; }
+.slotchip { font-size: 11px; padding: 2px 7px; border-radius: 7px; }
+.dayrow .editbtn { min-height: 30px; min-width: 30px; font-size: 12px; border-radius: 8px; }
+.thumb { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 10px; }
+.gourmet-title { font-size: 13.5px; }
+.editor { padding: 2px 8px 9px; }
+.editor .slot + .slot { margin-top: 8px; }
+.slotbtn { font-size: 13.5px; min-height: 36px; }
+
+.shopline { padding: 4px 8px; min-height: 38px; gap: 7px; }
+.shopline .nm { font-size: 13.5px; }
+.shopline .nm .qty { font-size: 11px; }
+.sec { padding: 5px 8px 2px; }
+.sec h3 { font-size: 10.5px; }
+.sec .pill { font-size: 10px; padding: 1px 7px; }
+.totals { padding: 6px 9px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
+.totals .big { font-size: 17px; }
+.totals .sub { font-size: 11px; }
+.totals .btn-export { min-height: 36px; padding: 0 12px; font-size: 13.5px; border-radius: 10px; }
+
+.node { border-radius: 13px; margin-bottom: 7px; }
+.node > header { padding: 7px 9px; font-size: 13.5px; }
+.sublist { padding: 1px 9px 7px; }
+.sub { padding: 5px 0; }
+.sub > header strong { font-size: 13.5px; }
+.role-tag { font-size: 9.5px; }
+.pills { gap: 4px; padding-top: 5px; }
+.pill-item { padding: 2px 4px 2px 8px; }
+.pill-item .nm { font-size: 12.5px; }
+.pill-item input[type="checkbox"] { width: 18px; height: 18px; }
+.pill-item button { min-height: 26px; min-width: 26px; font-size: 12px; }
+
+.setrow > summary { padding: 9px 11px; min-height: 44px; font-size: 14px; }
+.setval { font-size: 12.5px; }
+.setbody { padding: 0 11px 11px; }
+.plainrow { padding: 7px 0; }
+.recipe { padding: 8px 9px; }
+.recipe .photo { width: 44px; height: 44px; border-radius: 11px; }
+.mgr { padding: 9px; border-radius: 12px; }
+
+.pickrow { padding: 9px 11px; font-size: 14px; }
+.picklist { gap: 4px; margin-top: 9px; }
+.modal .sheet { padding: 13px 12px calc(13px + env(safe-area-inset-bottom, 0px)); }
+.modal .sheet h2 { font-size: 16px; }
+.invitecode { font-size: 30px; letter-spacing: 6px; margin: 10px 0 2px; }
+.photo-lg { max-height: 180px; }
+.recipe .ing { font-size: 13px; padding: 9px; }
+details summary { padding: 10px 11px; font-size: 14px; }
+.toast { font-size: 13px; padding: 9px 14px; }
+.warn { font-size: 12px; padding: 8px 10px; }

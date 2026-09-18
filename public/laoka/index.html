@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ea580c">
+<title>Laoka</title>
+<link rel="manifest" href="/laoka/manifest.webmanifest">
+<link rel="icon" href="/laoka/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/laoka/icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Laoka">
+<link rel="stylesheet" href="/laoka/styles.css">
+<script>
+  // Applied before first paint so a dark-mode reload never flashes white.
+  try {
+    var saved = localStorage.getItem('laoka-theme');
+    if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+  } catch (e) {}
+
+  // ── Home embed mode ────────────────────────────────────────────
+  // Running as a tab inside the Home super app (iframe = embed): drop this
+  // app's own chrome — the shell provides the header and the tab bar — and
+  // keep the week pills reachable on every screen size. Standalone visits
+  // (window.self === window.top) keep the complete original UI.
+  if (window.self !== window.top) {
+    document.documentElement.classList.add('home-embed');
+    document.write('<style>' +
+      /* The shell owns the brand and dark-mode, so the topbar keeps only
+         the week selector. The bottom nav is replaced by the Home tab bar. */
+      '.topbar .brand, .topbar .top-actions, #bottomnav { display: none !important; }' +
+      '#topnav { display: block !important; position: static; }' +
+      '#view { padding-bottom: 16px !important; }' +
+      'html, body { overflow-x: hidden !important; }' +
+    '<\/style>');
+  }
+</script>
+</head>
+<body>
+
+<div id="nav-progress"><i></i></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <span class="brand">🍲 Laoka</span>
+    <div id="weekbar" class="weekbar"></div>
+    <div class="top-actions">
+      <button class="iconbtn" id="themeBtn" title="Toggle dark mode" onclick="window.__laokaTheme()">🌙</button>
+      <span class="who" id="userbar"></span>
+    </div>
+  </div>
+</header>
+
+<nav id="topnav" class="topnav"></nav>
+
+<main id="view" class="view"></main>
+
+<nav id="bottomnav" class="bottomnav"></nav>
+
+<div id="modal" class="modal hidden"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="/laoka/app.js" type="module"></script>
+</body>
+</html>

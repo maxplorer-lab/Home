@@ -1,0 +1,15 @@
+{
+  "name": "WAY — Where Are You",
+  "short_name": "WAY",
+  "description": "Family GPS tracking dashboard",
+  "id": "/way/",
+  "start_url": "/way/",
+  "scope": "/way/",
+  "display": "standalone",
+  "background_color": "#0a0a0c",
+  "theme_color": "#0a0a0c",
+  "icons": [
+    { "src": "/way/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/way/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
