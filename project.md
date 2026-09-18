@@ -124,8 +124,10 @@ which render as blurry colour glyphs and cannot inherit the active tint.
 Four D1 databases, three of them the pre-existing production ones (unchanged
 schemas, untouched data):
 
-* `home-db` — new; schema in `migrations-home/0001_identity.sql`
-  (users, sessions, attempts).
+* `home-db` — new; schema in `migrations-home/` (0001: users, sessions,
+  attempts; 0002: per-person ntfy channels + household `home_settings`).
+  It holds identity AND notification identity, because a phone follows one
+  ntfy topic — a channel belongs to a person, not to an app.
 * `sompitra-db` — migrations in `migrations-sompitra/`.
 * `way-db` — migrations in `migrations-way/`.
 * `laoka` — migrations in `migrations-laoka/`.
@@ -133,6 +135,26 @@ schemas, untouched data):
 Durable Objects: `FLEET_DO` (W.A.Y live fleet + chat) and `LOBBY` (Laoka
 metadata-only fan-out). Cron `0 21 * * *` flushes the FleetDO into way-db —
 **that cron is the "today" boundary for W.A.Y; never move it to UTC midnight.**
+
+## Notifications (one channel per person)
+
+Before the merge each app had its own idea of "where notifications go":
+Sompitra pushed to a single household topic, W.A.Y owned a topic per person.
+The merged app has **one channel per person**, owned by `home-db`
+(`users.ntfy_topic`), and every module pushes to it:
+
+* `src/lib/notify.ts` takes the whole `Env` and fans an event out to every
+  active person's channel; there is one transport for the whole product.
+* The ntfy **server** is household-level (`home_settings.ntfy_server`), with
+  a fallback read of Sompitra's legacy `app_settings.ntfy_server` so a deploy
+  that has not moved it keeps working.
+* W.A.Y's existing topics are **adopted** into home-db (case-insensitive
+  username match) rather than abandoned — the phone is still following them.
+* A person with no channel is skipped; the whole push no-ops without a
+  server. Notifications are best-effort and never break a user action.
+
+All of this is managed in one place: **`/settings`**, organised by who a
+setting belongs to (You / the household / a module) rather than by app.
 
 ## Invariants worth defending
 

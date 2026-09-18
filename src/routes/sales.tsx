@@ -272,8 +272,8 @@ sales.post('/record/new', async (c) => {
     await c.env.DB.prepare(
       `INSERT INTO transactions (id, date, amount, type, description, added_by_user_id) VALUES (?, ?, ?, 'expense', ?, ?)`
     ).bind(expenseId, date, totalCost, `Stock Cost – ${item.name} ×${qty}`, user.id).run()
-    await notifyTransaction(c.env.DB, incomeId)
-    await notifyTransaction(c.env.DB, expenseId)
+    await notifyTransaction(c.env, incomeId)
+    await notifyTransaction(c.env, expenseId)
   }
 
   const saleId = generateId()
@@ -310,8 +310,8 @@ sales.post('/record/:id/sync', async (c) => {
     'UPDATE sales_records SET synced_income_txn_id=?, synced_expense_txn_id=? WHERE id=?'
   ).bind(incomeId, expenseId, id).run()
 
-  await notifyTransaction(c.env.DB, incomeId)
-  await notifyTransaction(c.env.DB, expenseId)
+  await notifyTransaction(c.env, incomeId)
+  await notifyTransaction(c.env, expenseId)
   return c.redirect('/sales')
 })
 

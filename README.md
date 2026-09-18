@@ -22,6 +22,22 @@ same FleetDO as the map, so history, replies and reactions are one stream.
 WAY itself has no chat any more. Visited standalone (outside the shell), the
 modules keep their original UI.
 
+## Settings & notifications
+
+**`/settings`** is the one settings surface, organised by who a setting
+belongs to: **you** (name, password), **notifications**, then a section per
+module. Module panels are still being folded in; the W.A.Y and Laoka sections
+link into their own UIs until then.
+
+Notifications are **one ntfy channel per person**, owned by `home-db` — not
+a topic per app. Every module (Sompitra's transactions and Kiné events,
+W.A.Y's tracking) pushes to the channel of every household member, so one
+topic on your phone covers the whole app. An admin sets the household ntfy
+server and can manage or regenerate anyone's channel; each person can see,
+copy, rotate or turn off their own. W.A.Y's existing topics were **adopted**
+(not replaced), so a phone already following one keeps working — the
+**Adopt channels from W.A.Y** button re-runs that for anyone added later.
+
 ## One login, how it works
 
 * An admin creates each person at **`/admin`** (username + password + role).
@@ -76,6 +92,7 @@ Secrets live in `.dev.vars` (never committed): `AUTH_PEPPER` (required,
 # and `npm run deploy` will NOT warn you about it.
 wrangler d1 create home-db     # paste the id into wrangler.jsonc (HOME_DB)
 wrangler d1 execute home-db    --remote --file=migrations-home/0001_identity.sql
+wrangler d1 execute home-db    --remote --file=migrations-home/0002_notifications.sql
 wrangler secret put AUTH_PEPPER      # NEW — required, ≥16 random chars
 wrangler secret put SESSION_SECRET   # reuse the old W.A.Y value
 npm run deploy

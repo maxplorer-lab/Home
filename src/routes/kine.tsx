@@ -329,7 +329,7 @@ kine.post('/tick', async (c) => {
          FROM service_contracts sc JOIN customers cu ON sc.customer_id = cu.id
         WHERE sc.id = ?`
     ).bind(contractId).first<{ customer_name: string; delivered: number }>()
-    if (info) await kineNotify.sessionLogged(c.env.DB, info.customer_name, info.delivered)
+    if (info) await kineNotify.sessionLogged(c.env, info.customer_name, info.delivered)
   }
 
   return c.redirect(`/kine?w=${wo}`)
@@ -461,7 +461,7 @@ kine.post('/clients/new', async (c) => {
     ).bind(contractId, customerId, pkgTitle, defaultRate, pkgSessions, pkgStart).run()
   }
 
-  await kineNotify.newClient(c.env.DB, name)
+  await kineNotify.newClient(c.env, name)
 
   return c.redirect('/kine')
 })
@@ -783,7 +783,7 @@ kine.post('/contract/:id/end', async (c) => {
     `SELECT cu.name AS customer_name FROM service_contracts sc
        JOIN customers cu ON sc.customer_id = cu.id WHERE sc.id = ?`
   ).bind(id).first<{ customer_name: string }>()
-  if (ended) await kineNotify.contractFinished(c.env.DB, ended.customer_name)
+  if (ended) await kineNotify.contractFinished(c.env, ended.customer_name)
 
   return c.redirect('/kine')
 })
@@ -906,7 +906,7 @@ kine.post('/payment/new', async (c) => {
          VALUES (?, ?, ?, 'income', ?, ?, ?)`
       ).bind(syncedTxnId, paymentDate, amount, niriAccount.id, `${clientName} - Kiné Privée`, user.id).run()
       // Renders as "{client} (Ar …) paid" via classifyTransaction
-      await notifyTransaction(c.env.DB, syncedTxnId)
+      await notifyTransaction(c.env, syncedTxnId)
     }
   }
 
@@ -925,7 +925,7 @@ kine.post('/payment/new', async (c) => {
       ).bind(contractId).first<{ customer_name: string }>()
       clientName = p?.customer_name || 'Kiné'
     }
-    await kineNotify.paid(c.env.DB, clientName, amount)
+    await kineNotify.paid(c.env, clientName, amount)
   }
 
   return c.redirect('/kine')

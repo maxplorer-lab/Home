@@ -14,6 +14,8 @@
 // ("Ar 10 000"); the rest of the UI keeps mga()'s comma form ("Ar 10,000").
 
 import type { Transaction } from '../db/schema'
+import type { Env } from '../env'
+import { listNtfyChannels, getHomeSetting } from '../identity'
 
 export interface NotifLine {
   href: string
@@ -110,37 +112,93 @@ const TAGS: Record<string, string[]> = {
 }
 
 /**
- * Push a notification to the configured ntfy server.
- * Silently no-ops when the server/topic settings are missing, and never throws —
- * a failed notification must never break a user action.
+ * The ntfy server root: household-wide, so it lives in home-db. Falls back to
+ * the old Sompitra-only value so notifications keep working on a deployment
+ * that has not moved it yet.
+ */
+export async function ntfyServer(env: Env): Promise<string> {
+  const fromHome = ((await getHomeSetting(env.HOME_DB, 'ntfy_server')) || '').trim()
+  if (fromHome) return fromHome
+  const legacy = ((await getSetting(env.DB, 'ntfy_server')) || '').trim()
+  return legacy
+}
+
+/**
+ * Push one event to EVERY person's own ntfy channel.
+ *
+ * One channel per person is the whole point: each phone follows its own topic,
+ * so the household's finance events and its tracking events all land in the
+ * same place for each member. People with no channel set are simply skipped,
+ * as is the whole push when there is no server — notifications are
+ * best-effort and must never break a user action.
  *
  * With two lines: line 1 becomes the ntfy title and line 2 the message.
  * A one-line event (Kiné) has no second line, so the text is sent as the message
  * with no title — never as an empty message with only a title, which some ntfy
  * clients render as a blank body.
  */
-export async function pushNtfy(db: D1Database, title: string, message: string, accent = 'green'): Promise<void> {
+export async function pushNtfy(env: Env, title: string, message: string, accent = 'green'): Promise<void> {
   try {
-    const server = ((await getSetting(db, 'ntfy_server')) || '').trim()
-    const topic = ((await getSetting(db, 'ntfy_topic')) || '').trim()
-    if (!server || !topic) return
+    const server = await ntfyServer(env)
+    if (!server) return
+
+    const channels = (await listNtfyChannels(env.HOME_DB)).filter((u) => (u.ntfy_topic || '').trim())
+    if (channels.length === 0) return
 
     const hasBody = message.trim().length > 0
-    const payload: Record<string, unknown> = {
-      topic,
-      message: hasBody ? message : title,
-      tags: TAGS[accent] || [],
-    }
-    if (hasBody && title.trim()) payload.title = title
-
     const base = server.replace(/\/+$/, '')
-    await fetch(base, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`
+
+    // Best-effort in parallel: one dead channel must not stop the others.
+    await Promise.all(
+      channels.map((u) => pushTo(base, headers, u.ntfy_topic as string, title, message, hasBody, accent))
+    )
   } catch {
     // ignore — notifications are best-effort
+  }
+}
+
+/** One channel, one event. Used by the fan-out above and by the "send test"
+ *  button, which must reach the person's OWN channel and nobody else's. */
+async function pushTo(
+  base: string,
+  headers: Record<string, string>,
+  topic: string,
+  title: string,
+  message: string,
+  hasBody: boolean,
+  accent: string
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    topic,
+    message: hasBody ? message : title,
+    tags: TAGS[accent] || [],
+  }
+  if (hasBody && title.trim()) payload.title = title
+  try {
+    await fetch(base, { method: 'POST', headers, body: JSON.stringify(payload) })
+  } catch {
+    // one channel failing is not an error worth surfacing
+  }
+}
+
+/**
+ * Send to exactly ONE person's channel. Returns false when there is no server
+ * or that person has no channel, so the caller can say so plainly instead of
+ * claiming a notification went out.
+ */
+export async function pushNtfyTo(env: Env, topic: string, title: string, message: string, accent = 'green'): Promise<boolean> {
+  try {
+    const server = await ntfyServer(env)
+    const target = (topic || '').trim()
+    if (!server || !target) return false
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`
+    await pushTo(server.replace(/\/+$/, ''), headers, target, title, message, message.trim().length > 0, accent)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -148,8 +206,9 @@ export async function pushNtfy(db: D1Database, title: string, message: string, a
  * Load a transaction (with its category/group/account/user names) and push it to ntfy.
  * Call this right after inserting a transaction.
  */
-export async function notifyTransaction(db: D1Database, txnId: string | null): Promise<void> {
+export async function notifyTransaction(env: Env, txnId: string | null): Promise<void> {
   if (!txnId) return
+  const db = env.DB
   try {
     const t = await db
       .prepare(
@@ -167,7 +226,7 @@ export async function notifyTransaction(db: D1Database, txnId: string | null): P
     if (!t) return
 
     const n = classifyTransaction(t)
-    await pushNtfy(db, n.line1, n.line2, n.accent)
+    await pushNtfy(env, n.line1, n.line2, n.accent)
   } catch {
     // ignore
   }
@@ -179,18 +238,18 @@ export async function notifyTransaction(db: D1Database, txnId: string | null): P
 // can never drift apart (the same reason classifyTransaction exists).
 export const kineNotify = {
   /** A session was ticked in the attendance grid. */
-  sessionLogged(db: D1Database, client: string, sessions: number): Promise<void> {
-    return pushNtfy(db, '', kineSessionLine(client, sessions), 'orange')
+  sessionLogged(env: Env, client: string, sessions: number): Promise<void> {
+    return pushNtfy(env, '', kineSessionLine(client, sessions), 'orange')
   },
   /** A payment recorded without a synced budget income (the synced case goes
    *  through notifyTransaction, which renders the same line). */
-  paid(db: D1Database, client: string, amount: number): Promise<void> {
-    return pushNtfy(db, '', kinePaidLine(client, amount), 'orange')
+  paid(env: Env, client: string, amount: number): Promise<void> {
+    return pushNtfy(env, '', kinePaidLine(client, amount), 'orange')
   },
-  newClient(db: D1Database, client: string): Promise<void> {
-    return pushNtfy(db, '', kineNewClientLine(client), 'orange')
+  newClient(env: Env, client: string): Promise<void> {
+    return pushNtfy(env, '', kineNewClientLine(client), 'orange')
   },
-  contractFinished(db: D1Database, client: string): Promise<void> {
-    return pushNtfy(db, '', kineContractEndLine(client), 'orange')
+  contractFinished(env: Env, client: string): Promise<void> {
+    return pushNtfy(env, '', kineContractEndLine(client), 'orange')
   },
 }

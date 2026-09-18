@@ -261,7 +261,7 @@ debts.post('/new', async (c) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, personName, type, amount, amount, notes, debtAccountId, initialTxnId).run()
 
-  await notifyTransaction(c.env.DB, initialTxnId)
+  await notifyTransaction(c.env, initialTxnId)
   return c.redirect('/debts')
 })
 
@@ -350,7 +350,7 @@ debts.post('/:id/pay', async (c) => {
     'UPDATE debt_credit_accounts SET current_balance = ? WHERE id = ?'
   ).bind(newBalance, acctId).run()
 
-  await notifyTransaction(c.env.DB, syncedTxnId)
+  await notifyTransaction(c.env, syncedTxnId)
   return c.redirect('/debts')
 })
 
@@ -383,7 +383,7 @@ debts.post('/:id/collect', async (c) => {
     'UPDATE debt_credit_accounts SET current_balance = ? WHERE id = ?'
   ).bind(newBalance, acctId).run()
 
-  await notifyTransaction(c.env.DB, syncedTxnId)
+  await notifyTransaction(c.env, syncedTxnId)
   return c.redirect('/debts')
 })
 

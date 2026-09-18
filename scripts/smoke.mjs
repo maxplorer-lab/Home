@@ -187,6 +187,31 @@ log('\n9. WAY basemap stays where the user put it')
   check('both manual basemaps still offered', way.includes("setLayer('lite')") && way.includes("setLayer('osm')"), 'LITE / OSM buttons missing')
 }
 
+// ─── 10. unified settings & per-person channels ──────────────────
+log('\n10. Unified settings + one notification channel per person')
+{
+  const page = await body(await req('/settings'))
+  for (const section of ['You', 'Notifications', 'Sompitra', 'W.A.Y', 'Laoka']) {
+    check(`/settings has the ${section} section`, page.includes(`>${section}<`), 'section heading missing')
+  }
+  // The channel block is personal: either this person has a channel (show it)
+  // or they are offered one. Both are correct — a blank block is not.
+  check(
+    '/settings shows this person\'s channel or offers one',
+    page.includes('Your channel') && (page.includes('Generate my channel') || page.includes('New channel')),
+    'no channel block'
+  )
+
+  // Every channel write is authenticated and self-scoped.
+  const anonPost = await fetch(`${BASE}/settings/channel`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form({ action: 'rotate' }),
+  })
+  const anonLoc = anonPost.headers.get('location') || ''
+  check('POST /settings/channel anonymous → /login', anonPost.status === 302 && anonLoc.includes('/login'), `${anonPost.status} → ${anonLoc || '(none)'}`)
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {

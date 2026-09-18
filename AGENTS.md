@@ -44,7 +44,7 @@ npm run smoke          # 36 end-to-end checks against a RUNNING dev server
 npm run verify         # check + smoke — what "tested locally" means here
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
-npm run deploy         # wrangler deploy (see rule 14 first)
+npm run deploy         # wrangler deploy (see rule 17 first)
 ```
 
 `npm run smoke` needs the server up first; point it at another port with
@@ -57,6 +57,7 @@ Local DB setup (first time only):
 
 ```bash
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0001_identity.sql
+npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0002_notifications.sql
 npx wrangler d1 execute DB           --local --file=migrations-sompitra/0001_initial_schema.sql   # + 0002…0009
 npx wrangler d1 execute WAY_DB       --local --file=migrations-way/0000_baseline.sql              # + 0001…0007
 npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.sql                # + 0002…0008
@@ -105,14 +106,33 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     renders as someone else's.
 12. Don't rename the D1 binding `DB` (Sompitra) — Laoka's standalone code
     reads `env.DB` and the adapter remaps it to `LAOKA_DB` explicitly.
-13. **One chrome, one place**: the header and the tab bar are ONLY defined in
+13. **`/settings` is the ONE settings surface** (`src/routes/settings.tsx`),
+    organised by who a setting belongs to — You / the household / a module —
+    not by which app it came from. Module-specific panels are being folded
+    into it; until then the W.A.Y and Laoka sections link into their own
+    UIs. Notification settings live here and nowhere else.
+14. **One chrome, one place**: the header and the tab bar are ONLY defined in
     `src/views/app-chrome.tsx` (`HomeHeader`, `HomeTabBar`, `CHROME_CSS`).
     `views/layout.tsx` (Sompitra pages) and `views/shell.tsx` (module tabs)
     both import them. Never re-implement the tab bar in a page — the two hosts
     drifted once and the module tabs ended up with emoji icons, no dark-mode
     toggle and no `.pb-safe`. Tab-bar icons are the real assets plus inline
     SVG (`TabSvg`); no emoji in the bar (content emoji is fine).
-14. `HOME_DB`'s `database_id` is still the **placeholder**
+15. **One ntfy channel per PERSON, owned by home-db** (`users.ntfy_topic`) —
+    not one topic per app and not one per module. Before this, Sompitra pushed
+    to a single household topic and W.A.Y owned a topic per person; a phone
+    follows exactly one topic, so the channel had to become an identity fact.
+    `src/lib/notify.ts` now takes the whole `Env` (not a `D1Database`) and
+    fans every event out to the channels in home-db; the old copy in
+    Sompitra's `app_settings` is dead weight kept only for rollback. W.A.Y's
+    existing topics were adopted by `adoptWayTopics()` (admin button in
+    /settings, username-matched case-insensitively) — never delete
+    `way-db users.ntfy_topic` without migrating first, or every phone silently
+    stops receiving.
+16. The household ntfy **server** lives in home-db (`home_settings`), with a
+    fallback read of Sompitra's legacy `app_settings.ntfy_server`. Only an
+    admin can change it, and it is written to both places on purpose.
+17. `HOME_DB`'s `database_id` is still the **placeholder**
     `00000000-0000-0000-0000-000000000000`. `wrangler deploy --dry-run` passes
     anyway. Create `home-db` and paste the real id BEFORE `npm run deploy`,
     otherwise the deployed Worker has a dead identity database.
@@ -152,6 +172,7 @@ repositories and their own history.
 | A chat/`/ws` frame stops working after a WAY change | the socket carries pings AND chat; WAY ignores the chat frames, the chat page handles them — see both `ws.onmessage` handlers |
 | Only some tabs render the same icons | `HomeTabBar` / `TabIcon` in `app-chrome.tsx`; assets under `public/` |
 | Identity/login behaves oddly after a schema change | `migrations-home/0001_identity.sql` + the local D1 in `.wrangler/state` |
+| A notification never arrives | `users.ntfy_topic` in **home-db** (not the app it came from) — an empty channel is skipped silently; also check the `home_settings.ntfy_server` value |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |
 
 ### What is actually served

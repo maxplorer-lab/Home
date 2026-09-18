@@ -694,7 +694,7 @@ budget.post('/add-expense', async (c) => {
      VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)`
   ).bind(id, date, amount, categoryId || null, description, notes, user.id).run()
 
-  await notifyTransaction(c.env.DB, id)
+  await notifyTransaction(c.env, id)
   return c.redirect('/budget')
 })
 
@@ -774,7 +774,7 @@ budget.post('/add-income', async (c) => {
      VALUES (?, ?, ?, 'income', ?, ?, ?, ?)`
   ).bind(id, date, amount, incomeAccountId, description, notes, user.id).run()
 
-  await notifyTransaction(c.env.DB, id)
+  await notifyTransaction(c.env, id)
   return c.redirect('/budget')
 })
 
