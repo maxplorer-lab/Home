@@ -71,6 +71,12 @@ export async function reloadWayNotifications(env: Env): Promise<void> {
   }
 }
 
+// Re-exported for callers that already reach WAY's surface (and so the
+// module's public shape stays one place). The implementation lives in
+// ./system-chat so src/lib/notify.ts can call it WITHOUT importing this worker
+// and everything it pulls in -- see that file's header for why.
+export { postSystemChat } from "./system-chat";
+
 export async function handleWay(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 

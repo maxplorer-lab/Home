@@ -247,6 +247,117 @@ log('\n11. WAY and Sompitra resolve the SAME notification channel')
   }
 }
 
+// ─── 12. the chat is the app's ONE activity feed ─────────────────
+log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra money)')
+{
+  // WAY's geofence events and Sompitra's budget/kine events must render in the
+  // SAME scrollback as centred system rows. Two independent halves have to
+  // agree for that: the DO decides which event types are allowed in, and the
+  // chat page decides how each type looks. A drift between them is invisible
+  // in the code of either file, so it is asserted here.
+
+  // The DO must be running the code that accepts them at all. Durable Objects
+  // are NOT swapped by a plain deploy the way a Worker is, so a stale instance
+  // is a real possibility -- especially right after a cutover. This marker is
+  // what makes that answerable.
+  const dbg = await req('/way/api/debug/notify')
+  if (dbg.status === 200) {
+    let d = null
+    try { d = JSON.parse(await body(dbg)) } catch (e) {}
+    check(
+      'FleetDO is running the /system-chat build',
+      typeof d?.build === 'string' && /system-chat/.test(d.build),
+      `build=${d?.build ?? 'unreadable'} — the DO is serving older code`
+    )
+  }
+
+  const chat = await body(await req('/chat/index.html'))
+  check('chat styles budget events', /AUTO_STYLE[\s\S]{0,400}budget\s*:/.test(chat) && chat.includes('.system-msg.money .text'), 'budget event type has no styling')
+  check('chat styles kine events', /AUTO_STYLE[\s\S]{0,400}kine\s*:/.test(chat) && chat.includes('.system-msg.kine .text'), 'kine event type has no styling')
+  check(
+    'an unknown event type still renders as a system row',
+    chat.includes('AUTO_FALLBACK') && /AUTO_STYLE\[msg\.event_type\]\s*\|\|\s*CONFIG\.AUTO_FALLBACK/.test(chat),
+    'a new event type would fall through to a sender-less bubble'
+  )
+  // The renderer must branch on is_auto ALONE. It used to test for exactly
+  // arrived/left, so any other auto message rendered as a chat bubble from
+  // "System" -- which is how a budget event would have appeared.
+  check(
+    'every is_auto message renders as a system row',
+    /if\s*\(\s*msg\.is_auto\s*\)/.test(chat) && !/msg\.is_auto\s*&&\s*\(/.test(chat),
+    'the renderer still special-cases only arrived/left'
+  )
+
+  // The intake is internal: it is reached through the DO binding, so no public
+  // path may lead to it. Otherwise anyone could post into the household chat.
+  const publicPaths = ['/system-chat', '/way/system-chat', '/api/system-chat']
+  const reachable = []
+  for (const p of publicPaths) {
+    const r = await req(p, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'injected', eventType: 'budget' }),
+    })
+    if (r.status === 204) reachable.push(`${p}→${r.status}`)
+  }
+  check('the system-chat intake is not publicly reachable', reachable.length === 0, reachable.join(', '))
+
+  // ---- The real round trip: a Sompitra action lands in the chat ----
+  // An auto-repair is not enough here: the only proof that the wiring exists is
+  // causing a genuine event and finding it in the chat afterwards.
+  if (ADMIN) {
+    const probe = `smoke probe ${Date.now()}`
+    const added = await req('/budget/add-expense', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form({ mode: 'quick', date: new Date().toISOString().slice(0, 10), category_id: 'cat_gas', amount: '1234', description: probe }),
+    })
+    if (added.status !== 302) {
+      check('could not add an expense to test the chat wiring', false, `status ${added.status}`)
+    } else {
+      // The chat lives in the DO's own SQLite; /api/chat/history reads the copy
+      // flushed to D1, so flush first (same work as the midnight cron).
+      // This also exercises the flush itself: it is the ONLY thing that moves
+      // chat rows out of the DO, and it fails as a whole if way-db is missing
+      // the `devices` FK parent (see scripts/repair-way-messages-fk.sql).
+      const flushed = await req('/way/api/flush', { method: 'POST' })
+      let flushResult = null
+      try { flushResult = JSON.parse(await body(flushed)) } catch (e) {}
+      check('the DO flush completes (way-db schema is intact)', flushed.status === 200 && !flushResult?.error,
+        `status ${flushed.status}: ${flushResult?.message || 'unreadable'}`)
+
+      const hist = await req('/way/api/chat/history')
+      // NOTE: like /way/api/users/me, this endpoint answers with the payload
+      // DIRECTLY -- {start, end, messages} -- not wrapped in {data: ...}.
+      let messages = []
+      try { messages = JSON.parse(await body(hist))?.messages ?? [] } catch (e) {}
+      const mine = messages.find((m) => String(m.message || '').includes(probe))
+      check('a Sompitra expense reaches the chat', !!mine, 'no chat row for the probe expense')
+      if (mine) {
+        check('the chat row is a system message, not a person\'s', mine.is_auto === 1 || mine.is_auto === true, `is_auto=${mine.is_auto}`)
+        check('and it is typed as a budget event', mine.event_type === 'budget', `event_type=${mine.event_type}`)
+        // D1's messages.sender is NOT NULL, so the DO writes "System" for an
+        // auto row (a null would abort the whole flush). Attribution must never
+        // be a real person's name.
+        check('and attributed to nobody', mine.sender === 'System' || !mine.sender, `sender=${mine.sender}`)
+      }
+
+      // Self-cleaning: find this row's own delete form on /budget and remove it,
+      // so re-running the suite does not leave phantom spending behind.
+      const page = await body(await req('/budget'))
+      const at = page.indexOf(probe)
+      const id = at === -1 ? null : page.slice(at).match(/action="\/budget\/delete\/([^"]+)"/)?.[1]
+      if (id) {
+        await req(`/budget/delete/${encodeURIComponent(id)}`, { method: 'POST' })
+        const after = await body(await req('/budget'))
+        check('probe expense cleaned up', !after.includes(probe), 'the probe transaction is still in the budget')
+      } else {
+        log(`  \x1b[33m!\x1b[0m could not locate the probe expense on /budget — it may still be listed under "${probe}"`)
+      }
+    }
+  }
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {

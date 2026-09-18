@@ -16,12 +16,17 @@
 import type { Transaction } from '../db/schema'
 import type { Env } from '../env'
 import { listNtfyChannels, getHomeSetting } from '../identity'
+import { postSystemChat } from '../way/system-chat'
 
 export interface NotifLine {
   href: string
   accent: string
   line1: string
   line2: string
+  /** Which system-chat event type this describes. Kept here, next to the
+   *  wording, so the dashboard feed, the ntfy push and the chat line can never
+   *  disagree about what kind of thing just happened. */
+  kind: 'budget' | 'kine'
 }
 
 /**
@@ -66,13 +71,14 @@ export function classifyTransaction(t: Transaction): NotifLine {
   // Kiné payment — a synced income transaction is described "{client} - Kiné Privée"
   if (KINE_TXN_SUFFIX.test(desc)) {
     const client = desc.replace(/\s*-\s*Kiné Privée$/, '').trim() || 'Kiné'
-    return { href: '/kine', accent: 'orange', line1: kinePaidLine(client, t.amount), line2: '' }
+    return { href: '/kine', accent: 'orange', kind: 'kine', line1: kinePaidLine(client, t.amount), line2: '' }
   }
 
   if (t.type === 'expense') {
     return {
       href: '/budget',
       accent: 'red',
+      kind: 'budget',
       line1: `${who} - Expense - ${t.category_name || t.group_name || '—'}`,
       line2: desc ? `${amount} - ${desc}` : amount,
     }
@@ -81,9 +87,32 @@ export function classifyTransaction(t: Transaction): NotifLine {
   return {
     href: '/budget',
     accent: 'green',
+    kind: 'budget',
     line1: `${who} - Income - ${t.income_account_name || '—'}`,
     line2: desc ? `${amount} - ${desc}` : amount,
   }
+}
+
+/**
+ * The single-line form of a notification, used for the in-app chat where a
+ * system row is one centred pill and has no room for a title/body split.
+ * Derived from the same lines the ntfy push uses, so both always read alike.
+ */
+export function notifText(n: NotifLine): string {
+  return n.line2 ? `${n.line1} · ${n.line2}` : n.line1
+}
+
+/**
+ * Mirror an event into the household chat as a system message, so the chat is
+ * the app's ONE activity feed -- WAY's arrivals and Sompitra's money events
+ * land in the same scrollback, rendered the same way.
+ *
+ * Deliberately independent of ntfy: the chat works with no push server and no
+ * per-person channel configured, because it is an in-app fact rather than a
+ * delivery. Best-effort, never throws (postSystemChat swallows failures).
+ */
+async function mirrorToChat(env: Env, n: NotifLine): Promise<void> {
+  await postSystemChat(env, notifText(n), n.kind)
 }
 
 // ─── App settings (key/value) ────────────────────────────────
@@ -227,6 +256,7 @@ export async function notifyTransaction(env: Env, txnId: string | null): Promise
 
     const n = classifyTransaction(t)
     await pushNtfy(env, n.line1, n.line2, n.accent)
+    await mirrorToChat(env, n)
   } catch {
     // ignore
   }
@@ -238,18 +268,26 @@ export async function notifyTransaction(env: Env, txnId: string | null): Promise
 // can never drift apart (the same reason classifyTransaction exists).
 export const kineNotify = {
   /** A session was ticked in the attendance grid. */
-  sessionLogged(env: Env, client: string, sessions: number): Promise<void> {
-    return pushNtfy(env, '', kineSessionLine(client, sessions), 'orange')
+  async sessionLogged(env: Env, client: string, sessions: number): Promise<void> {
+    const line = kineSessionLine(client, sessions)
+    await pushNtfy(env, '', line, 'orange')
+    await postSystemChat(env, line, 'kine')
   },
   /** A payment recorded without a synced budget income (the synced case goes
    *  through notifyTransaction, which renders the same line). */
-  paid(env: Env, client: string, amount: number): Promise<void> {
-    return pushNtfy(env, '', kinePaidLine(client, amount), 'orange')
+  async paid(env: Env, client: string, amount: number): Promise<void> {
+    const line = kinePaidLine(client, amount)
+    await pushNtfy(env, '', line, 'orange')
+    await postSystemChat(env, line, 'kine')
   },
-  newClient(env: Env, client: string): Promise<void> {
-    return pushNtfy(env, '', kineNewClientLine(client), 'orange')
+  async newClient(env: Env, client: string): Promise<void> {
+    const line = kineNewClientLine(client)
+    await pushNtfy(env, '', line, 'orange')
+    await postSystemChat(env, line, 'kine')
   },
-  contractFinished(env: Env, client: string): Promise<void> {
-    return pushNtfy(env, '', kineContractEndLine(client), 'orange')
+  async contractFinished(env: Env, client: string): Promise<void> {
+    const line = kineContractEndLine(client)
+    await pushNtfy(env, '', line, 'orange')
+    await postSystemChat(env, line, 'kine')
   },
 }

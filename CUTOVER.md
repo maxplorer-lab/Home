@@ -1,0 +1,203 @@
+# Cutting over to Home — production runbook
+
+Sompitra, W.A.Y and Laoka are each already live as standalone Workers, with the
+same two people (MaxX, Niri) and real data. This is how to move to the merged
+**Home** Worker without losing the data that matters (Sompitra's) and without
+silently breaking the parts that keep working by accident.
+
+The governing fact: **Home binds the SAME three production databases by their
+real ids.** `wrangler.jsonc` already carries them, so no module data moves:
+
+| Binding | Database | State |
+| --- | --- | --- |
+| `DB` | `sompitra-db` (`701cd942-…`) | **keep — this is the real data** |
+| `WAY_DB` | `way-db` (`e098df3d-…`) | keep (or wipe; see below) |
+| `LAOKA_DB` | `laoka` (`24acf3ed-…`) | keep (or wipe) |
+| `HOME_DB` | `home-db` | **must be created** — still the placeholder id |
+
+---
+
+## 0. What carries over by itself, and why
+
+**Sompitra's data survives untouched, attribution included.** On login Home
+provisions each module by looking the person up with
+`WHERE lower(username) = lower(?1)`, and when a row is found it is **left
+alone** (`src/identity.ts`). MaxX's existing Sompitra `users.id` (a uuid) is
+therefore reused, and every `transactions.added_by_user_id` keeps pointing at
+him. Nothing re-creates accounts, so nothing re-attributes spending.
+
+**W.A.Y's phone credentials survive too**, as long as you keep `way-db`:
+existing rows keep their `password_hash` untouched on provisioning.
+
+The rest (WAY tracks/chat, Laoka plans) genuinely can be reset — the only
+module whose loss is unacceptable is Sompitra, and it is safe by construction.
+
+---
+
+## 1. Do this before deploying (each one is a real, verified failure mode)
+
+### 1a. Create the identity database
+```bash
+npx wrangler d1 create home-db
+# paste the returned database_id over the 00000000-… placeholder for HOME_DB
+```
+`wrangler deploy --dry-run` passes happily with the placeholder id, so a deploy
+with it ships a Worker whose login database does not exist. This is the single
+most likely way to break the cutover.
+
+### 1b. Apply the identity + notification schema to that database
+```bash
+npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0001_identity.sql
+npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0002_notifications.sql
+```
+The three module databases are already migrated in production (their schemas
+exist) — only the new one needs this. Do **not** blindly re-run the module
+migrations remotely; several use bare `CREATE TABLE` / `ALTER TABLE` and will
+abort on an already-migrated database.
+
+### 1c. Give MaxX back Sompitra's admin pages
+Sompitra's `is_admin` is **not** re-derived on provisioning — an existing row
+keeps its flag, and the Home role is only applied when a row is *created*. So
+the Home admin does not automatically become the Sompitra admin:
+```bash
+npx wrangler d1 execute DB --remote \
+  --command "UPDATE users SET is_admin = 1 WHERE lower(username) = 'maxx'"
+```
+Symptom if skipped: MaxX logs in fine, can use the whole finance suite, but
+`/settings`-style admin pages and anything gated on `is_admin` misbehave.
+
+### 1d. Verify `way-db` still has the `devices` table
+```bash
+npx wrangler d1 execute WAY_DB --remote \
+  --command "SELECT device_id FROM devices"
+```
+`messages.device_id` carries `REFERENCES devices(device_id)`, and SQLite/D1
+resolve FK parents at write time — so if `devices` is missing, **every** insert
+into `messages` fails and the DO's whole flush aborts. The symptom looks nothing
+like a schema problem: `POST /way/api/flush` returns
+`D1_ERROR: no such table: main.devices`, `/way/api/chat/history` is
+permanently empty, map history is empty, and unsynced rows pile up inside the
+DO. The row list also has to contain every `device_id` used in auto events
+(`MaxX`, `Niri`), because WAY's arrival/departure messages set it.
+
+If it is missing, restore it with `scripts/repair-way-messages-fk.sql`
+(idempotent; safe on a populated database).
+
+### 1e. Local dry run first
+```bash
+npm run check && npm run verify && npx wrangler deploy --dry-run
+```
+`npm run smoke` needs a running server; it covers the whole surface including
+the chat round trip (Sompitra expense → chat system row).
+
+---
+
+## 2. Secrets
+
+```bash
+npx wrangler secret put AUTH_PEPPER      # ≥16 chars; signs Home passwords
+npx wrangler secret put SESSION_SECRET   # signs module sessions/device tokens
+npx wrangler secret put NTFY_TOKEN       # only if the ntfy instance needs auth
+```
+
+- `AUTH_PEPPER` is new (Home-only). It is the reason both people set a new
+  password at bootstrap. **Changing it later invalidates every Home password.**
+- `SESSION_SECRET` signs W.A.Y's device tokens. Reusing the production W.A.Y
+  value keeps any still-valid device session working; a new value simply makes
+  each phone re-authenticate once.
+
+---
+
+## 3. Deploy, in an order that avoids two writers
+
+1. **Deploy Home** (`npm run deploy`) — it is additive; the old Workers keep
+   serving their own domains.
+2. **Verify on the new domain** before touching anything else: log in, open
+   each tab, send a chat message, add and delete a test expense.
+3. **Disable or delete the three old Workers** (Sompitra, W.A.Y, Laoka).
+   This is not cosmetic:
+   * the old W.A.Y **cron** flushes its own FleetDO into the *same* `way-db`,
+     while Home's cron flushes Home's FleetDO into it too — two writers racing
+     over one dataset,
+   * the old W.A.Y DO still holds its own `device_state`, so it keeps emitting
+     arrival/departure events from a second, stale view of the same phones,
+   * the old Sompitra Worker would keep serving its domain against the same
+     `sompitra-db`, so the household can end up looking at two frontends with
+     two different states.
+4. **Re-point the μlogger phones** at the Home domain.
+
+### About the phones (the step most likely to be missed)
+μlogger does not use per-request Basic Auth. It calls `action=auth` on
+`/ulogger` with a **username and password that are the same as the dashboard
+login**, checked against `way-db.users` with an exact-case username match
+(`src/way/routes/ingest.ts`). Consequences:
+
+- Keeping `way-db` means both phones keep working with their current
+  credentials — the recommended path even though the data is disposable.
+- If you *do* wipe `way-db`, each phone must then authenticate with the
+  person's **Home username and password**, because a fresh W.A.Y row is created
+  from the password typed at Home login.
+- Changing the domain invalidates the phone's stored session cookie, so expect
+  one re-login per phone.
+
+### About the Durable Object
+The FleetDO is a **new instance** under the new Worker name, so its SQLite
+starts empty: chat scrollback and per-device `device_state` are gone. Practical
+effect: a phone that is *already inside* a geofence at deploy time can fire one
+extra "arrived" event on its first ping. Harmless — and the chat now records it.
+
+---
+
+## 4. Bootstrap the two people
+
+1. Open `/bootstrap` on the new domain — the **first account becomes the
+   admin**. Create **MaxX** there, using the *same username* the module
+   databases already know (`MaxX`; matching is case-insensitive).
+2. As MaxX, open `/admin` and create **Niri**.
+3. Each person's ntfy channel: `/settings` → *Adopt channels from W.A.Y* keeps
+   the topics the phones already follow, so no phone has to be reconfigured. If
+   you wipe `way-db` before this, there is nothing to adopt and each phone's
+   ntfy app needs its topic re-entered.
+4. `/bootstrap` disappears on its own once an account exists.
+
+---
+
+## 5. Post-deploy verification
+
+```bash
+B=https://<new-domain>
+
+# Login works and mints all four module sessions
+curl -s -c /tmp/j -o /dev/null -w "%{http_code}\n" -d "username=MaxX&password=…" $B/login
+
+# Identity database is really bound (not the placeholder)
+curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-only
+
+# The DO is running the merged code, not a stale instance
+curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
+#   expect build notify-v3-system-chat
+
+# The chat flush completes (this is the `devices` FK check, live)
+curl -s -b /tmp/j -X POST $B/way/api/flush
+#   expect {"pingsFlushed":N,"messagesFlushed":M} — NOT {"error":true,…}
+
+# Sompitra's real data is still attributed to real people
+curl -s -b /tmp/j $B/budget | grep -c "Ar"
+```
+
+Then, in the app: each tab loads; one chat message sends and arrives on the
+other phone; a budget expense shows up in the chat as a 💸 system row; and the
+map shows both devices with live pings.
+
+The `build` marker matters because a Durable Object is **not** replaced by a
+plain deploy the way a Worker is — an instance can keep running older code until
+it is evicted, so "did my DO change take effect?" is a real question here.
+
+---
+
+## 6. Rollback
+
+The old Workers were only *disabled*, and all three module databases are
+untouched, so rolling back is: re-enable them, point the phones back. Data
+written through Home is in the same databases, so nothing needs migrating back —
+only `home-db` becomes unused. This is why step 3.3 comes **after** step 3.2.

@@ -146,6 +146,40 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `00000000-0000-0000-0000-000000000000`. `wrangler deploy --dry-run` passes
     anyway. Create `home-db` and paste the real id BEFORE `npm run deploy`,
     otherwise the deployed Worker has a dead identity database.
+    For the full production cutover (existing deployments, real data, the
+    phones), follow **`CUTOVER.md`**.
+18. **The chat carries EVERY module's activity, so the chat's data path is a
+    shared dependency.** WAY's geofence transitions write system rows itself
+    (`handleChatMessage` with `is_auto`), and Sompitra's budget/kine events
+    arrive through the DO's `/system-chat`, posted by
+    `src/way/system-chat.ts` (`postSystemChat`) from `src/lib/notify.ts`. The
+    DO allowlists the event types (`EXTERNAL_SYSTEM_EVENTS`, budget/kine) and
+    always writes `sender: null`, so a system line can never impersonate a
+    person; the intake is reachable ONLY through the DO binding, never as a
+    public route. The chat page renders **any** `is_auto` row as a centred
+    system pill, styled per event type with `AUTO_FALLBACK` for types it does
+    not know yet — it must never fall through to a bubble.
+    Three invariants worth keeping:
+    * `postSystemChat` lives in its own module (`src/way/system-chat.ts`) on
+      purpose: importing it from `way/worker.ts` would drag WAY's whole runtime
+      into Sompitra's notify lib and form an import cycle the moment
+      `way/lib/notify.ts` needs a shared helper from `src/lib/notify.ts`.
+    * Mirroring into the chat is INDEPENDENT of ntfy. A person with no channel
+      and a household with no ntfy server still see every event in the chat.
+    * The 200-char limit on chat input is **client-side only**; the DO enforces
+      no length cap, which is what lets a system line carry a full transaction
+      description. Don't add a server-side cap without checking that first.
+19. **A missing `messages` FK parent silently kills the entire chat flush.**
+    `messages.device_id` is `REFERENCES devices(device_id)`, and D1 resolves FK
+    parents at write time, so if `devices` does not exist EVERY insert into
+    `messages` fails — including rows whose `device_id` is NULL — and
+    `flushToD1` aborts as a whole. That breaks chat history, map history/tracks
+    and lets unsynced rows pile up in the DO while the live chat keeps working,
+    so nothing looks wrong in the UI. The `devices` table must also hold a row
+    for every `device_id` used in auto events (`MaxX`, `Niri`), because WAY's
+    arrival/departure messages set it. Repair locally or remotely with
+    `scripts/repair-way-messages-fk.sql` (idempotent). `npm run smoke` asserts
+    `POST /way/api/flush` returns a real count and not `{error:true}`.
 
 ## Smoke test (local, after any identity change)
 
@@ -185,6 +219,10 @@ repositories and their own history.
 | A notification never arrives | `users.ntfy_topic` in **home-db** (not the app it came from) — an empty channel is skipped silently; also check the `home_settings.ntfy_server` value |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | WAY activity alerts missing from the chat | they are auto chat rows (`is_auto`/`event_type`) written by the DO, not pushes — `sender` is null in the DO and becomes "System" in D1 |
+| Sompitra events never appear in the chat | the DO's `/system-chat` allowlist (`EXTERNAL_SYSTEM_EVENTS`) and `postSystemChat` call in `src/lib/notify.ts`; the handler is best-effort by design, so failures only show in the console |
+| A system event shows as a bubble from "System" instead of a pill | the chat renderer must branch on `is_auto` alone; a new `event_type` also needs a style in `AUTO_STYLE` (unknown types fall back via `AUTO_FALLBACK`) |
+| `/way/api/chat/history` is always empty, map history has no tracks | the DO **flush** is failing — almost always the missing `devices` FK parent (rule 19). `POST /way/api/flush` returns the real error |
+| Chat history looks frozen at some past day | `/api/chat/history` reads only what the flush has already written to `way-db`; the last 24h live in the DO and arrive over `/ws` |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |
 
 ### What is actually served

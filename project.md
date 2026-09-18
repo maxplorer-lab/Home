@@ -66,6 +66,29 @@ which render as blurry colour glyphs and cannot inherit the active tint.
   Sompitra's old WebSocket chat re-implementation was deleted earlier
   (`src/routes/chat.tsx`, `src/lib/way.ts`). There is exactly one chat in
   the product and it has one home.
+* **That one chat is also the app's activity feed.** Because the chat is the
+  only place the household already looks, every module reports into it as a
+  system message rather than each growing its own notification list. WAY's
+  geofence transitions (`arrived` / `left`) are written by the DO itself, and
+  Sompitra's money events (`budget` / `kine`) arrive through the DO's
+  `/system-chat` intake, posted by `src/way/system-chat.ts`. So the scrollback
+  reads as one story — "📍 MaxX arrived at Home" next to "💸 MaxX - Expense ·
+  Ar 45 000" — instead of the finance events being invisible to the person who
+  is not looking at the Budget tab.
+
+  The rules that keep this honest:
+  * System rows are always `is_auto` with `sender: null` ("System" once
+    flushed to D1, whose column is NOT NULL). A system message can never
+    impersonate a person, and a person can never post one: the intake is
+    reachable only through the DO binding, not as a public route.
+  * The DO allowlists the event types it accepts from other modules
+    (`EXTERNAL_SYSTEM_EVENTS`), and the chat page styles each type
+    (`AUTO_STYLE`) with a neutral fallback, so a type added on one side only
+    degrades to a plain bell pill rather than a bubble from nobody.
+  * Mirroring into the chat is **independent of ntfy**: no push server and no
+    per-person channel are needed for the household to see activity in the
+    app. ntfy is for reaching someone who is not looking; the chat is the
+    record.
 * Sompitra (budget/kine/debts/sales) is one tab with its own desktop sub-nav;
   `/settings` is the You tab; `/admin` stays a Sompitra-style page.
 
@@ -161,6 +184,18 @@ The merged app has **one channel per person**, owned by `home-db`
 
 All of this is managed in one place: **`/settings`**, organised by who a
 setting belongs to (You / the household / a module) rather than by app.
+
+### The chat's data path is shared, so watch it during any cutover
+
+The chat is the one surface every module now depends on, and it has a failure
+mode that is invisible in the UI. Live messages travel over `/ws` straight from
+the DO, but **history** (`/way/api/chat/history`) is only what the daily flush
+has already written into `way-db`, as are map tracks. `messages.device_id`
+carries `REFERENCES devices(device_id)`, and D1 resolves FK parents at write
+time — so a missing `devices` table makes the flush fail as a whole (even for
+rows with a NULL `device_id`) while the live chat keeps working perfectly. The
+symptom is "history is empty and old tracks vanished", not an error. See
+`CUTOVER.md` and `scripts/repair-way-messages-fk.sql`.
 
 ## Invariants worth defending
 

@@ -119,6 +119,16 @@ const REPLY_SNIPPET_MAX_CHARS = 120;
 // a different emoji replaces theirs, tapping the same one removes it.
 const REACTION_EMOJIS = ["👍", "🤣", "💖"];
 
+// Event types an OUTSIDE caller (the Sompitra module, via lib/notify.ts) may
+// stamp on a system chat message. Validated against this exact list so the
+// intake endpoint can never be used to mint an arbitrary event type that the
+// chat renderer would then have no styling for.
+//
+// "arrived"/"left" are NOT accepted here -- WAY generates those itself from
+// geofence transitions (see handleGeofenceEvents) and their wording carries a
+// device id. This endpoint is for the OTHER modules.
+const EXTERNAL_SYSTEM_EVENTS = ["budget", "kine"];
+
 interface NotifyUser {
   id: number;
   username: string;
@@ -290,6 +300,36 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(null, { status: 204 });
     }
 
+    // System chat message posted by a SIBLING MODULE (Sompitra's budget/kine
+    // events), so the household's one chat carries every activity, not just
+    // WAY's geofence arrivals. Always attributed to "nobody" (sender null) and
+    // flagged is_auto, so it renders as a centred system row exactly like
+    // WAY's own "📍 arrived at Home" lines.
+    //
+    // The sender is deliberately NOT accepted from the request body: a system
+    // message must never be able to masquerade as a person's message.
+    if (url.pathname === "/system-chat" && request.method === "POST") {
+      const body = (await request.json()) as {
+        message?: string;
+        eventType?: string;
+        gpsTimestamp?: string;
+      };
+      const text = (body.message ?? "").trim();
+      const eventType = body.eventType ?? "";
+      if (!text || !EXTERNAL_SYSTEM_EVENTS.includes(eventType)) {
+        return new Response(
+          JSON.stringify({ error: true, message: `Expected a message and eventType one of: ${EXTERNAL_SYSTEM_EVENTS.join(", ")}` }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      this.handleChatMessage(null, text, {
+        isAuto: true,
+        eventType,
+        gpsTimestamp: body.gpsTimestamp ?? null,
+      });
+      return new Response(null, { status: 204 });
+    }
+
     if (url.pathname === "/flush" && request.method === "POST") {
       try {
         const result = await this.flushToD1();
@@ -324,7 +364,13 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(
         JSON.stringify(
           {
-            build: "notify-v2",
+            // Bump this whenever the DO's own code changes. Durable Objects are
+            // NOT replaced by a plain deploy in the way a Worker is: an
+            // instance can keep running older code until it is evicted, so
+            // "did my DO change actually take effect?" is a real question --
+            // especially at cutover. GET /way/api/debug/notify answers it.
+            // v3 = accepts /system-chat (Sompitra's activity in the chat).
+            build: "notify-v3-system-chat",
             // Effective publish target, plus WHICH layer supplied it, so
             // "I changed the setting but pushes still fail" is answerable
             // without a live tail.

@@ -133,6 +133,8 @@ body {
 .system-msg .line { flex: 1; height: 1px; background: rgba(255,255,255,0.1); }
 .system-msg.entry .text { color: #34d399; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.25); padding: 4px 10px; border-radius: 9999px; }
 .system-msg.exit .text { color: #93a4b8; background: rgba(148,163,184,0.1); border: 1px solid rgba(148,163,184,0.22); padding: 4px 10px; border-radius: 9999px; }
+.system-msg.money .text { color: #fbbf24; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.26); padding: 4px 10px; border-radius: 9999px; }
+.system-msg.kine .text { color: #c084fc; background: rgba(168,85,247,0.13); border: 1px solid rgba(168,85,247,0.27); padding: 4px 10px; border-radius: 9999px; }
 
 .chat-input-bar { display: flex; gap: 8px; padding: 10px 0 calc(10px + env(safe-area-inset-bottom, 0px)) 0; border-top: 1px solid rgba(255,255,255,0.1); }
 .chat-input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 9px 12px; font-size: 12px; color: #fff; outline: none; font-family: inherit; }
@@ -160,7 +162,20 @@ const CONFIG = {
     ENTRY_ICON: '📍',
     EXIT_ICON: '🚪',
     WS_RECONNECT_BASE_MS: 1500,
-    WS_RECONNECT_MAX_MS: 20000
+    WS_RECONNECT_MAX_MS: 20000,
+    // Used for any auto event type this page does not know about yet, so a new
+    // system message from any module still renders as a system row.
+    AUTO_FALLBACK: { cls: 'exit', icon: '🔔' }
+};
+
+// How each system (auto) event type looks. WAY owns arrived/left (geofence
+// transitions); Sompitra owns budget/kine (money activity, posted through the
+// DO's /system-chat). The event type is set server-side and never by this page.
+const AUTO_STYLE = {
+    arrived: { cls: 'entry', icon: CONFIG.ENTRY_ICON },
+    left:    { cls: 'exit',  icon: CONFIG.EXIT_ICON },
+    budget:  { cls: 'money', icon: '💸' },
+    kine:    { cls: 'kine',  icon: '🩺' }
 };
 const REACTIONS = ['👍', '🤣', '💖'];
 
@@ -272,12 +287,17 @@ function handleNewMessage(msg, isLive) {
     // still detached when the branch runs.
     let reactRow = null;
 
-    if (msg.is_auto && (msg.event_type === 'arrived' || msg.event_type === 'left')) {
-        const isExit = msg.event_type === 'left';
+    // EVERY is_auto message renders as a centred system row -- not just WAY's
+    // arrivals/departures. Sompitra's budget and kine events arrive here too
+    // (via the DO's /system-chat), and the chat is the app's one activity feed.
+    // Unknown event types fall back to the neutral style with a bell, because a
+    // system message must never degrade into a sender-less chat bubble.
+    if (msg.is_auto) {
+        const style = AUTO_STYLE[msg.event_type] || CONFIG.AUTO_FALLBACK;
         div = document.createElement('div');
-        div.className = 'system-msg' + (isExit ? ' exit' : ' entry');
+        div.className = 'system-msg ' + style.cls;
         div.dataset.id = msg.id;
-        const icon = isExit ? CONFIG.EXIT_ICON : CONFIG.ENTRY_ICON;
+        const icon = style.icon;
         div.innerHTML =
             '<div class="timestamp">' + formatTime(msg.gps_timestamp || msg.created_at) + '</div>' +
             '<div class="message-row"><span class="line"></span><span class="text">' + icon + ' ' + escapeHtml(msg.message) + '</span><span class="line"></span></div>';

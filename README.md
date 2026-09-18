@@ -10,7 +10,7 @@ by an admin.
 | 💰 **Sompitra** | Budget, Kiné, Debts & Credits, Sales & Stock | `/` | `sompitra-db` |
 | 📍 **W.A.Y** | Live GPS tracking, geofences, μlogger ingest | `/way/` | `way-db` |
 | 🍲 **Laoka** | Weekly dinner planner with a shared shopping list | `/laoka/` | `laoka` |
-| 💬 **Chat** | THE family chat (one room, powered by W.A.Y's FleetDO) | `/chat` | `way-db` |
+| 💬 **Chat** | THE family chat **and the app's activity feed** (W.A.Y's FleetDO) | `/chat` | `way-db` |
 | 👥 **Home** | Central login + admin console (`/admin`) | `/login` | `home-db` |
 
 Each module keeps its own database and its own palette. Inside Home they run
@@ -21,6 +21,23 @@ into its own page (`/chat/`) — it shares the same realtime socket and the
 same FleetDO as the map, so history, replies and reactions are one stream.
 WAY itself has no chat any more. Visited standalone (outside the shell), the
 modules keep their original UI.
+
+That one chat is also **where the app reports activity**, so the household
+does not have to watch each module to know what happened. WAY's arrivals and
+departures were always system rows in it; now Sompitra's money events appear
+there too, as their own colours — 💸 amber for a budget entry, 🩺 violet for
+a Kiné event, alongside 📍 green arrivals and 🚪 grey departures:
+
+```
+       10:57 AM
+  💸 MaxX - Expense - Gas · Ar 45 000 - Fuel
+       10:58 AM
+  🩺 New client - Rakoto - Added
+```
+
+These are system messages, never attributed to a person, and they arrive with
+or without ntfy configured — the chat is the record, ntfy is for reaching
+someone who is not looking. One scrollback tells the whole story of the day.
 
 ## Settings & notifications
 
@@ -101,15 +118,29 @@ npm run deploy
 Then open `<your-worker>/bootstrap` once to create the admin, and add the
 household at `/admin`.
 
-### Cutover notes from the standalone apps
+### Cutover from the three standalone apps
+
+**Full runbook: [`CUTOVER.md`](./CUTOVER.md).** The shape of it:
 
 * Module data needs **no migration** — the Worker binds the same databases
-  (`sompitra-db`, `way-db`, `laoka`) the standalone apps used.
+  (`sompitra-db`, `way-db`, `laoka`) the standalone apps used, and Sompitra's
+  existing accounts are matched **by username and left alone**, so every
+  transaction keeps its attribution.
 * Existing **W.A.Y** users whose username matches the new Home username are
   linked automatically (their password/μlogger credential is untouched);
   unknown names get fresh rows on first Home login.
-* The old `way.maxx-lab.workers.dev` deployment can stay up for μlogger
-  phones until you re-point their base URL to `<home-domain>/ulogger`.
+* Two traps worth reading the runbook for:
+  * Sompitra's `users.is_admin` is **never** re-derived on provisioning, so the
+    Home admin does not become the Sompitra admin — MaxX needs the flag set by
+    hand or he loses the finance admin pages.
+  * `way-db` must still contain the `devices` table. It is the FK parent of
+    `messages.device_id`, and without it the DO's flush fails **as a whole**
+    while the live chat keeps working — so chat history and map tracks go
+    quietly empty.
+* **Disable the three old Workers once Home is verified.** The old W.A.Y cron
+  and its FleetDO would otherwise flush the same `way-db` as Home's, from a
+  second stale view of the same phones. Re-pointing the μlogger phones is a
+  step in the runbook, not an afterthought.
 * Sompitra's old PIN logins stop working (by design — the password replaces
   the PIN); sessions minted after the cutover are normal.
 
