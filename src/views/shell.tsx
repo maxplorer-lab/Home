@@ -17,7 +17,7 @@
 // The header and tab bar come from views/app-chrome.tsx — the SAME
 // components Sompitra's pages use, so all six tabs share one chrome
 // (and one set of real brand icons).
-import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, TabSvg, type Badge } from './app-chrome'
+import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, TabSvg, tabColorFor, type Badge } from './app-chrome'
 
 type ModuleKind = 'way' | 'laoka' | 'chat'
 
@@ -27,7 +27,9 @@ interface ShellProps {
 }
 
 const MODULES: Record<ModuleKind, { label: string; badge: Badge; src: string }> = {
-  way:   { label: 'WAY',   badge: { img: '/way/icon-512.png',   label: 'WAY'   }, src: '/way/index.html' },
+  // The badge renders at 20px, and WAY's icon-512.png is a 1MB 1254px source:
+  // icon-64.png is the same mark cropped to its pin and scaled (≈10KB).
+  way:   { label: 'WAY',   badge: { img: '/way/icon-64.png',    label: 'WAY'   }, src: '/way/index.html' },
   laoka: { label: 'Laoka', badge: { img: '/laoka/icon.svg',     label: 'Laoka' }, src: '/laoka/index.html' },
   chat:  { label: 'Chat',  badge: { svg: 'chat',                label: 'Chat'  }, src: '/chat/index.html' },
 }
@@ -39,7 +41,9 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-        <meta name="theme-color" content="#16a34a" />
+        {/* Matches the tab you are in — an installed app's status bar then
+            follows the module instead of always showing Home green. */}
+        <meta name="theme-color" content={tabColorFor(kind)} />
         <title>{`${displayName} – ${mod.label} · Home`}</title>
         <link rel="manifest" href="/manifest.webmanifest" />
         <link rel="icon" href="/favicon-32.png" type="image/png" />
@@ -73,7 +77,7 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
         ? 'bg-[#0a0a0c] text-gray-100'
         : 'bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100'}`}>
         {/* ── the one Home header ── */}
-        <HomeHeader displayName={displayName} badge={mod.badge} />
+        <HomeHeader displayName={displayName} badge={mod.badge} active={kind} />
 
         {/* ── the module, chromeless ── */}
         <div id="home-module-frame" class="flex-1 min-h-0 relative">
@@ -85,8 +89,21 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
           </div>
         </div>
 
-        {/* ── the one Home tab bar ── */}
+        {/* ── the one Home tab bar (hidden from md up, where the header nav
+               takes over) ── */}
         <HomeTabBar active={kind} />
+
+        {/* Register the app-wide service worker HERE too. Only the Sompitra
+            pages used to do it, so the tabs people actually install from (the
+            map, Laoka, the chat) were the ones with no offline shell — and a
+            service worker is part of what makes the app installable. */}
+        <script dangerouslySetInnerHTML={{ __html: `
+          if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function () {
+              navigator.serviceWorker.register('/sw.js').catch(function () {});
+            });
+          }
+        `}} />
 
         {/* Fade the loader once the module starts painting. Each module's
             own head script detects the iframe and drops its chrome — the

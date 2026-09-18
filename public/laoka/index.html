@@ -33,9 +33,39 @@
       /* The shell owns the brand and dark-mode, so the topbar keeps only
          the week selector. The bottom nav is replaced by the Home tab bar. */
       '.topbar .brand, .topbar .top-actions, #bottomnav { display: none !important; }' +
-      '#topnav { display: block !important; position: static; }' +
-      '#view { padding-bottom: 16px !important; }' +
-      'html, body { overflow-x: hidden !important; }' +
+      /* Sticky, like the standalone bar: the shell owns the bottom nav, so this
+         row is the ONLY way to move between Laoka's six tabs — it must not scroll
+         out of reach on a long shopping list. It pins to the 46px header above it. */
+      '#topnav { display: block !important; top: 46px; }' +
+
+      /* Six nav buttons on a phone-width frame do not fit on one line, and the
+         standalone version leans on the bar being wide enough at md+ (the shell
+         embeds this app at ANY width, so the bar has to cope with 360px).
+         Wrapping is what keeps History and Settings reachable -- clipping them
+         (the overflow-x hack that used to live here) left both tabs unusable. */
+      '#topnav .inner { flex-wrap: wrap; }' +
+
+      /* NO overflow rule on html/body here, deliberately. `overflow-x: hidden`
+         on the root element (a) hides the bottom tabs behind the nav instead of
+         wrapping them and (b) is a documented way to kill WHEEL SCROLLING of the
+         document, because the root element stops being the viewport scroller.
+         Losing the mouse wheel on a long shopping list is far worse than a
+         clipped button row, so horizontal overflow is fixed at its source
+         instead: the nav wraps, and nothing in this app is wider than a phone. */
+
+      /* The bottom nav is gone in here, so the fixed totals ribbon moves down to
+         the frame's edge (it used to float one nav-height above it) and the
+         toast moves with it. */
+      '.totals { bottom: 0 !important; }' +
+      '.toast { bottom: calc(74px + env(safe-area-inset-bottom, 0px)) !important; }' +
+
+      /* Room for the ribbon, and NOTHING else: the shell's tab bar lives in the
+         host document, so this app no longer reserves space for a bottom nav it
+         does not draw. The `body.with-totals` rule has to be repeated at this
+         specificity or the reserved 16px wins and the last rows of the
+         shopping list sit permanently under the export ribbon. */
+      '#view { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important; }' +
+      'body.with-totals #view { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important; }' +
     '<\/style>');
   }
 </script>

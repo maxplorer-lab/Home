@@ -697,7 +697,11 @@ function renderPlan() {
         h('span', { class: 'pill-tag', text: 'not confirmed' })
       ),
       h('p', { class: 'note', text: 'Go shopping with it. Swap any day whose ingredients turn out to be unavailable or too expensive, then confirm once the week is settled.' }),
-      h('button', { class: 'primary wide big', style: 'margin-top:8px', text: '✅ Confirm this week', onclick: confirmWeek })
+      h('button', { class: 'primary wide big', style: 'margin-top:8px', text: '✅ Confirm this week', onclick: confirmWeek }),
+      // The way back out. A template is a proposal, so an unwanted one has to be
+      // forgettable rather than merely replaced — otherwise the only escape is
+      // to roll again and leave the wrong plan's prices behind.
+      h('button', { class: 'danger wide', style: 'margin-top:8px', text: '🗑 Discard the template', onclick: function () { discardTemplate(priced); } })
     ));
   } else {
     wrap.appendChild(h('div', { class: 'card' },
@@ -2011,6 +2015,33 @@ async function discardDraft() {
     var data = await api('DELETE', '/api/weeks/' + state.week.week.id + '/candidates');
     state.week = data;
     render();
+  } catch (e) { reportError(e); }
+}
+
+// Forgets the saved template, leaving the week open and empty. Only reachable
+// while the week is unconfirmed — a settled week is not a proposal any more, so
+// the server refuses it and this never has to guess.
+//
+// The warning states what actually disappears, because "discard" reads as
+// "revert my last edit" and this is much more than that.
+async function discardTemplate(priced) {
+  var lines = priced > 0
+    ? priced + ' priced line' + (priced === 1 ? '' : 's') + ', the week\u2019s plan and its shopping list are thrown away'
+    : 'The week\u2019s plan and the shopping list it built are thrown away';
+  var ok = await confirmAction(
+    'Discard the template?',
+    lines + ' — Pantry items stay on the list. Anything already sent to Sompitra stays in the budget. ' +
+      'You can generate a fresh plan for this week afterwards.',
+    'Discard it'
+  );
+  if (!ok) return;
+  try {
+    var data = await api('DELETE', '/api/weeks/' + state.week.week.id + '/plan');
+    await refreshBootstrap();
+    state.week = data;
+    state.tab = 'plan';
+    render();
+    toast('Template discarded. This week is open again.');
   } catch (e) { reportError(e); }
 }
 

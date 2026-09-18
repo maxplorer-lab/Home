@@ -110,7 +110,7 @@ dashboard.get('/', async (c) => {
       <Card title="Your other apps" noUppercase className="mb-4">
         <div class="grid grid-cols-3 gap-2">
           <a href="/way/" class="flex items-center gap-2.5 rounded-2xl bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800 px-3 py-3 transition-transform active:scale-95">
-            <img src="/way/icon-512.png" alt="" class="w-8 h-8 rounded-lg" />
+            <img src="/way/icon-64.png" alt="" class="w-8 h-8 rounded-lg" />
             <span class="min-w-0">
               <span class="block text-sm font-semibold text-indigo-700 dark:text-indigo-300">WAY</span>
               <span class="block text-[10px] text-gray-400 truncate">family map</span>

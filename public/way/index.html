@@ -225,6 +225,7 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
         <div class="hud-card">
             <div class="hud-top">
                 <span class="badge-live" id="hud-freshness">Live</span>
+                <span class="badge-idle" id="hud-playback" style="display:none;">map behind</span>
                 <span class="follow-btn" id="hud-follow-status" style="display:none;">Following</span>
             </div>
             <div class="hud-core" id="hud-core">
@@ -358,7 +359,43 @@ const CONFIG = {
 
     FOLLOW_ZOOM_LEVEL: 16,
     FOLLOW_FLY_DURATION: 1.2,
-    FOLLOW_PAN_DURATION: 0.4,
+
+    // ── Follow camera (VISUAL ONLY) ──────────────────────────────
+    // The camera used to re-centre on the followed device on EVERY ping, so
+    // the world slid under a device that never left the middle of the screen
+    // and the motion read as ping-by-ping judder. Now the device roams the
+    // MIDDLE OF THE SCREEN and the camera re-centres only when it leaves that
+    // box -- along the axis it left, by the minimum needed -- and glides there
+    // instead of snapping. Side effect worth having: while someone is parked
+    // the map no longer wanders, because GPS jitter stays inside the box.
+    //
+    // This is the fraction of the viewport the device may roam, so 0.5 means
+    // "the middle half": it can drift a quarter of the screen in any
+    // direction. Why not the numpad's middle ninth (a third of each axis)?
+    // On a phone that box is ~140px wide at follow zoom, and a device at town
+    // speed crosses it in a few seconds -- the camera would be moving most of
+    // the time, which is the behaviour this replaces, and every wobble near a
+    // corner would trigger it. Half is the comfortable middle ground: the
+    // device is never near an edge and the road ahead stays visible, while at
+    // ~50km/h the box takes ~15s to cross, so the map sits still most of the
+    // time and moves in one glide when it has to.
+    //
+    // Deliberately a SCREEN fraction and not a distance: a metre-based box is
+    // a handful of pixels when zoomed out, so the camera would move on every
+    // ping there instead -- and how far the eye tolerates the device drifting
+    // depends on the screen, not on the ground.
+    FOLLOW_DEAD_ZONE_SCREEN_FRACTION: 0.5,
+    FOLLOW_GLIDE_DURATION: 1.4,
+    // A device that keeps moving produces a sub-pixel overshoot EVERY frame,
+    // and each one would restart the glide -- a camera that never arrives.
+    // So corrections below this many pixels are ignored (the device sits a few
+    // pixels outside the box, which is invisible) and only one glide runs at a
+    // time.
+    FOLLOW_GLIDE_MIN_PX: 3,
+    // A stale follow-zoom preference used to be re-checked on every ping,
+    // which is what made the camera swoop mid-drive. It can only really be
+    // wrong after the preference changes, so correct it at most this often.
+    FOLLOW_ZOOM_FIX_INTERVAL_MS: 8000,
 
     TRACK_GAP_SECONDS: 90,
 
@@ -380,6 +417,25 @@ const CONFIG = {
 
     ETA_MIN_SPEED_KMH: 15,
     ETA_MAX_BEARING_DIFF_DEG: 55,
+
+    // ── Playback (VISUAL ONLY) ───────────────────────────────────
+    // The map is drawn from a cursor that trails real time by
+    // PLAYBACK_LAG_SECONDS, so a ping is always already in hand by the time
+    // the marker has to reach it and the marker can be interpolated between
+    // pings instead of snapped to each arrival. Nothing else reads this
+    // clock: devicePings stays the complete record, the HUD and the Trips
+    // totals stay live (see the playback loop further down).
+    PLAYBACK_LAG_SECONDS: 25,
+    // A trail break (TRACK_GAP_SECONDS) is not crawled across -- there are no
+    // points there, so the marker holds at the last one and eases the final
+    // stretch as the cursor reaches the next.
+    PLAYBACK_GLIDE_MS: 1400,
+    // Only used to glide a parked device's metre-scale shuffles.
+    MARKER_EASE_PER_SECOND: 2.0,
+    // The live tail is redrawn only once the cursor has moved this far: a
+    // walking run's polyline grows for the whole walk, and rebuilding it every
+    // frame buys motion that cannot be seen.
+    MARKER_TAIL_MIN_METERS: 1.5,
 
     STATIONARY_DOT_CLUSTER_RADIUS_M: 20,
     STATIONARY_DOT_RADIUS_PX: 5,
@@ -433,7 +489,7 @@ let wsReconnectDelay = CONFIG.WS_RECONNECT_BASE_MS;
 
 let selectedDevice = null;
 let followDeviceId = localStorage.getItem('follow_device') || null;
-let ignoreZoomEvent = false;
+let ignoreMapEventsUntil = 0;
 
 let latestPing = {};
 let todayDist = {};
@@ -445,6 +501,13 @@ let deviceControlState = {};
 
 let markerLayers = {};
 let tipLayers = {};
+let tipClassByDevice = {};   // devId -> the tip-dot class currently drawn
+let markerPositions = {};    // devId -> where its marker actually is (playback clock)
+let trailState = {};         // devId -> append-only trail drawing state
+let playbackState = {};      // devId -> is the map drawing it behind live?
+let followCam = { lastZoomFix: 0, glideUntil: 0 };
+let playbackRunning = false;
+let playbackLastFrame = 0;
 let geofenceCircleLayers = [];
 let editingGeofence = null;
 let reviewLegLayer = null;
@@ -632,7 +695,11 @@ function drawGeofenceCircles() {
 
 if (map) {
   map.on('dragstart zoomstart', function() {
-    if (ignoreZoomEvent) { ignoreZoomEvent = false; return; }
+    // Our own animations must not read as "the user took the map over". This
+    // is a DEADLINE, not a one-shot flag: a flyTo fires zoomstart more than
+    // once, and a consumed flag let the second one cancel the follow that had
+    // just started.
+    if (Date.now() < ignoreMapEventsUntil) return;
     if (followDeviceId) {
         followDeviceId = null;
         localStorage.removeItem('follow_device');
@@ -640,6 +707,12 @@ if (map) {
         renderBadges();
     }
   });
+}
+
+/** Suppress the "user moved the map" handler for the duration of one of OUR
+ * animations (flyTo fires zoomstart, movestart and moveend). */
+function ignoreMapEvents(ms) {
+    ignoreMapEventsUntil = Date.now() + (ms || Math.round(CONFIG.FOLLOW_FLY_DURATION * 1000) + 400);
 }
 
 function switchView(tab) {
@@ -690,86 +763,429 @@ function maybeAddStationaryDot(devId, ping) {
     dots.push({ layer: marker, lat: ping.latitude, lng: ping.longitude });
 }
 
-function drawSegments(deviceId, points) {
-    if (!map || points.length < 2) return;
-    const fallbackColor = DEVICE_COLORS[deviceId] || CONFIG.DEFAULT_DEVICE_COLOR;
-    if (!trackLayersByDevice[deviceId]) trackLayersByDevice[deviceId] = [];
+// ── The trail engine (append-only) ───────────────────────────────
+// The old path re-drew EVERY track from scratch on every ping: clear all
+// polylines, rebuild them from the whole point list, destroy and re-add every
+// marker. That is what made the motion judder -- each arrival threw the
+// geometry away and the camera could only snap. The same drawing now happens
+// incrementally, driven by the playback cursor: a segment, once committed, is
+// never touched again, and the piece between the last committed point and the
+// cursor is a live "tail" that grows with it. The RULES are untouched -- same
+// TRACK_GAP_SECONDS break, same mode-change break, same walking dash, same
+// speed ramp, same colours -- only WHEN they reach the screen changed.
 
-    let currentSeg = [], currentIsDriving = null, lastTs = null, lastPoint = null;
+function walkingLineStyle(color) {
+    // Verbatim the options the old flushWalking() used.
+    return { color: color, weight: CONFIG.TRACK_WEIGHT_WALKING, opacity: CONFIG.TRACK_OPACITY_WALKING, smoothFactor: 1.5, dashArray: CONFIG.WALK_TRACK_DASH_ARRAY };
+}
+function drivingLineStyle(kmh) {
+    // Verbatim the options the old driving-pair push used.
+    return { color: speedColor(kmh), weight: CONFIG.TRACK_WEIGHT_DRIVING, opacity: CONFIG.TRACK_OPACITY_DRIVING, smoothFactor: 1.5 };
+}
 
-    function flushWalking() {
-        if (currentSeg.length >= 2) {
-            trackLayersByDevice[deviceId].push(L.polyline(currentSeg, {
-                color: fallbackColor, weight: CONFIG.TRACK_WEIGHT_WALKING, opacity: CONFIG.TRACK_OPACITY_WALKING,
-                smoothFactor: 1.5, dashArray: CONFIG.WALK_TRACK_DASH_ARRAY
-            }).addTo(map));
-        }
+function trailFor(devId) {
+    if (!trailState[devId]) {
+        trailState[devId] = { drawnIdx: 0, runDriving: null, walkPts: null, walkLayer: null, tail: null, tailColor: null, tailAt: null, lastTs: null, lastPoint: null };
     }
+    return trailState[devId];
+}
 
-    for (const p of points) {
+function addTrackLayer(devId, layer) {
+    if (!trackLayersByDevice[devId]) trackLayersByDevice[devId] = [];
+    layer.__devId = devId;
+    trackLayersByDevice[devId].push(layer);
+    return layer.addTo(map);
+}
+
+function dropTrackLayer(layer) {
+    if (!layer) return;
+    map.removeLayer(layer);
+    const list = trackLayersByDevice[layer.__devId];
+    if (list) { const i = list.indexOf(layer); if (i !== -1) list.splice(i, 1); }
+}
+
+function hideTail(st) {
+    if (!st.tail) return;
+    dropTrackLayer(st.tail);
+    st.tail = null; st.tailColor = null; st.tailAt = null;
+}
+
+/** Has the cursor moved far enough to be worth redrawing the tail? A walking
+ * run grows its polyline for the whole walk, and at 60fps that is a path of
+ * every point in the run rebuilt 60 times a second for motion nobody can see. */
+function tailNeedsDraw(st, lat, lng) {
+    if (!st.tailAt) return true;
+    if (distanceMeters(st.tailAt.lat, st.tailAt.lng, lat, lng) < CONFIG.MARKER_TAIL_MIN_METERS) return false;
+    return true;
+}
+function tailDrawn(st, lat, lng) { st.tailAt = { lat: lat, lng: lng }; }
+
+/** Commit every point the playback cursor has reached. This mirrors the old
+ * drawSegments() loop decision for decision, but resumable: an already-drawn
+ * segment is never revisited, so nothing flickers and nothing is redrawn. */
+function commitTrail(devId, pts, cursorIdx, fallbackColor) {
+    const st = trailFor(devId);
+    while (st.drawnIdx <= cursorIdx && st.drawnIdx < pts.length) {
+        const p = pts[st.drawnIdx];
         const ts = new Date(p.timestamp).getTime();
         const isDriving = !!p.is_driving;
         const pt = [p.latitude, p.longitude];
 
-        if (currentIsDriving === null) { currentSeg = [pt]; currentIsDriving = isDriving; lastTs = ts; lastPoint = pt; continue; }
+        if (st.runDriving === null) {
+            st.runDriving = isDriving;
+            st.lastTs = ts; st.lastPoint = pt;
+            if (!isDriving) { st.walkPts = [pt]; st.walkLayer = addTrackLayer(devId, L.polyline(st.walkPts, walkingLineStyle(fallbackColor))); }
+            st.drawnIdx++;
+            continue;
+        }
 
-        const gapSec = (ts - lastTs) / 1000;
-        const modeChanged = isDriving !== currentIsDriving;
-
-        if (gapSec > CONFIG.TRACK_GAP_SECONDS || modeChanged) {
-            if (!currentIsDriving) { currentSeg.push(pt); flushWalking(); }
-            currentSeg = [pt]; currentIsDriving = isDriving; lastPoint = pt; lastTs = ts;
+        const gapSec = (ts - st.lastTs) / 1000;
+        if (gapSec > CONFIG.TRACK_GAP_SECONDS || isDriving !== st.runDriving) {
+            // The open run ends here. A walking run keeps this point -- the old
+            // code pushed it before flushing, closing the dashed line up to the
+            // boundary -- while a driving run stops at the previous point.
+            if (!st.runDriving && st.walkLayer) {
+                st.walkPts.push(pt);
+                st.walkLayer.setLatLngs(st.walkPts);
+                st.walkLayer = null; st.walkPts = null;
+            }
+            hideTail(st);
+            st.runDriving = isDriving;
+            st.lastTs = ts; st.lastPoint = pt;
+            if (!isDriving) { st.walkPts = [pt]; st.walkLayer = addTrackLayer(devId, L.polyline(st.walkPts, walkingLineStyle(fallbackColor))); }
+            st.drawnIdx++;
             continue;
         }
 
         if (isDriving) {
             const kmh = (p.speed !== null && p.speed !== undefined) ? p.speed : 0;
-            trackLayersByDevice[deviceId].push(L.polyline([lastPoint, pt], {
-                color: speedColor(kmh), weight: CONFIG.TRACK_WEIGHT_DRIVING, opacity: CONFIG.TRACK_OPACITY_DRIVING, smoothFactor: 1.5
-            }).addTo(map));
-        } else {
-            currentSeg.push(pt);
+            addTrackLayer(devId, L.polyline([st.lastPoint, pt], drivingLineStyle(kmh)));
+        } else if (st.walkLayer) {
+            st.walkPts.push(pt);
+            st.walkLayer.setLatLngs(st.walkPts);
         }
-        lastPoint = pt; lastTs = ts;
+        st.lastTs = ts; st.lastPoint = pt;
+        st.drawnIdx++;
     }
-    if (!currentIsDriving) flushWalking();
+}
+
+/** The piece of trail between the last committed point and the cursor. It grows
+ * as the cursor moves, so nothing has to be thrown away when the pair it is
+ * drawing completes and gets committed. */
+function drawTail(devId, pos) {
+    const st = trailFor(devId);
+    if (st.runDriving === null || !pos.next || !pos.prev) { hideTail(st); return; }
+    const cursorPt = [pos.lat, pos.lng];
+
+    if (!st.runDriving && st.walkLayer) {
+        // A walking run only used to be flushed when it ENDED, so drawing it
+        // live to the cursor is what it always looked like -- just smooth now.
+        hideTail(st);
+        if (tailNeedsDraw(st, pos.lat, pos.lng)) {
+            st.walkLayer.setLatLngs(st.walkPts.concat([cursorPt]));
+            tailDrawn(st, pos.lat, pos.lng);
+        }
+        return;
+    }
+
+    // A driving pair is drawn only when the old loop would have drawn it: not
+    // across a TRACK_GAP_SECONDS break, and not across a mode change.
+    const gapSec = (new Date(pos.next.timestamp).getTime() - new Date(pos.prev.timestamp).getTime()) / 1000;
+    if (!st.runDriving || gapSec > CONFIG.TRACK_GAP_SECONDS || !pos.next.is_driving) { hideTail(st); return; }
+    // A driving pair is two points, so it is redrawn whenever the cursor moves:
+    // the tail has to meet the committed pair, and this one cannot cut a corner
+    // the way a growing walk line can.
+
+    const kmh = (pos.next.speed !== null && pos.next.speed !== undefined) ? pos.next.speed : 0;
+    const style = drivingLineStyle(kmh);
+    const ptPair = [[pos.prev.latitude, pos.prev.longitude], cursorPt];
+    if (!st.tail) {
+        st.tail = addTrackLayer(devId, L.polyline(ptPair, style));
+        st.tailColor = style.color;
+    } else {
+        if (st.tailColor !== style.color) { st.tail.setStyle(style); st.tailColor = style.color; }
+        st.tail.setLatLngs(ptPair);
+    }
+    tailDrawn(st, pos.lat, pos.lng);
+}
+
+// ── The playback cursor (visual clock) ───────────────────────────
+
+function playbackClock() { return Date.now() - CONFIG.PLAYBACK_LAG_SECONDS * 1000; }
+
+/** Index of the last point at or before `clock`; -1 when every point is newer.
+ * Binary search, because late `track` points are re-sorted INTO this list, so
+ * no index may ever be cached across frames. */
+function cursorIndex(pts, clock) {
+    let lo = 0, hi = pts.length - 1, found = -1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (new Date(pts[mid].timestamp).getTime() <= clock) { found = mid; lo = mid + 1; }
+        else hi = mid - 1;
+    }
+    return found;
+}
+
+/** Where the marker belongs on the delayed clock, and which pair it is
+ * crossing. */
+function playbackPosition(pts) {
+    const newestTs = new Date(pts[pts.length - 1].timestamp).getTime();
+    // Never pass a point that has not arrived yet: the exit guard holds pings
+    // back and delivers them later as `track` messages, so the cursor waits.
+    const clock = Math.min(playbackClock(), newestTs);
+    const i = cursorIndex(pts, clock);
+    const p0 = i >= 0 ? pts[i] : pts[0];
+    const next = i >= 0 ? pts[i + 1] : null;
+    if (!next) {
+        return { lat: p0.latitude, lng: p0.longitude, ping: p0, prev: p0, next: null, alpha: 1, idx: i };
+    }
+    const t0 = new Date(p0.timestamp).getTime();
+    const t1 = new Date(next.timestamp).getTime();
+    const span = t1 - t0;
+    let alpha;
+    if (span > CONFIG.TRACK_GAP_SECONDS * 1000) {
+        // There are no points in that gap, so the marker is not dragged across
+        // it as if the device had driven there: it holds, then eases the last
+        // stretch. A break is a break, but never a jump.
+        alpha = Math.max(0, 1 - (t1 - clock) / CONFIG.PLAYBACK_GLIDE_MS);
+    } else {
+        alpha = span > 0 ? (clock - t0) / span : 1;
+    }
+    alpha = Math.max(0, Math.min(1, alpha));
+    return {
+        lat: p0.latitude + (next.latitude - p0.latitude) * alpha,
+        lng: p0.longitude + (next.longitude - p0.longitude) * alpha,
+        // The class the trail shows here (it drives the tip dot's colour): the
+        // nearer-in-time of the two, so it flips where the old jump did.
+        ping: alpha < 0.5 ? p0 : next,
+        prev: p0, next: next, alpha: alpha, idx: i
+    };
+}
+
+// ── Markers and tips (moved, never rebuilt) ──────────────────────
+
+function tipClass(ping) {
+    if (!ping || ping.is_inside_geofence) return null;
+    if (ping.is_driving) return 'tip-red';
+    if (ping.is_stationary) return 'tip-green';
+    return 'tip-yellow';
+}
+
+/** Build (or rebuild) a device's marker -- its emoji comes from Settings, so
+ * this is the one thing that legitimately has to be recreated. Its position is
+ * the playback loop's, so recreating it does not interrupt the motion. */
+function buildMarker(devId) {
+    if (!map) return null;
+    const emoji = EMOJI_MAP[devId] || CONFIG.DEFAULT_DEVICE_EMOJI;
+    const icon = L.divIcon({
+        // iconAnchor already puts the icon's BOTTOM at the point; the extra
+        // translate(-50%,-100%) used to shift it a second time, which drew the
+        // pin ~30px above where it actually was -- obvious now that the marker
+        // glides along its own trail instead of jumping to it.
+        html: '<div style="font-size:28px; text-shadow:0 0 12px rgba(0,0,0,0.9); line-height:1;">' + emoji + '</div>',
+        iconSize: [30, 30], iconAnchor: [15, 30], className: ''
+    });
+    const at = markerPositions[devId] || { lat: CONFIG.MAP_DEFAULT_CENTER[0], lng: CONFIG.MAP_DEFAULT_CENTER[1] };
+    if (markerLayers[devId]) map.removeLayer(markerLayers[devId]);
+    const marker = L.marker([at.lat, at.lng], { icon: icon }).addTo(map);
+    marker.bindTooltip(devId, { permanent: false, direction: 'top' });
+    marker.on('click', function() { followDevice(devId); });
+    markerLayers[devId] = marker;
+    return marker;
+}
+
+function placeTip(devId, lat, lng, cls) {
+    if (!map) return;
+    if (tipClassByDevice[devId] === cls && tipLayers[devId]) { tipLayers[devId].setLatLng([lat, lng]); return; }
+    if (tipLayers[devId]) { map.removeLayer(tipLayers[devId]); delete tipLayers[devId]; }
+    tipClassByDevice[devId] = cls;
+    if (!cls) return;
+    const tipIcon = L.divIcon({ html: '<div class="tip-dot ' + cls + '"></div>', iconSize: [14, 14], iconAnchor: [7, 7], className: '' });
+    tipLayers[devId] = L.marker([lat, lng], { icon: tipIcon, interactive: false, zIndexOffset: 1000 }).addTo(map);
+}
+
+/** Frame-rate independent exponential ease: a slow phone lands in the same
+ * place at the same time as a fast one. */
+function easeNumber(cur, target, dtSec) {
+    if (cur === null || cur === undefined) return target;
+    const k = 1 - Math.exp(-CONFIG.MARKER_EASE_PER_SECOND * dtSec);
+    return cur + (target - cur) * k;
+}
+
+// ── The playback loop ────────────────────────────────────────────
+// One animation frame owns everything that moves continuously. Ping handling
+// keeps doing exactly what it did -- classify, store, notify, and feed the HUD
+// from the newest ping -- and the loop only decides when that already-decided
+// state reaches the screen.
+
+function renderDeviceFrame(devId, dtSec) {
+    const pts = devicePings[devId] || [];
+    const live = latestPing[devId];
+    let targetLat = null, targetLng = null, ping = null, inPlayback = false;
+
+    if (pts.length) {
+        const pos = playbackPosition(pts);
+        // The eye hides a TRACK, never a device: the marker keeps moving either
+        // way, which is how it behaved before the trails became incremental.
+        if (trackVisible[devId] !== false) {
+            commitTrail(devId, pts, pos.idx, DEVICE_COLORS[devId] || CONFIG.DEFAULT_DEVICE_COLOR);
+            drawTail(devId, pos);
+        }
+        // Case A -- still inside recorded movement: the cursor is the truth, and
+        // it is already smooth, so the marker sits on it exactly.
+        // Case B -- the newest drawable point is behind the cursor and the live
+        // ping says the device is parked or fenced (its moves are metres, and no
+        // point is drawn for them): the live position is the truth there, eased
+        // from where the marker already is, so those wiggles glide.
+        inPlayback = new Date(pts[pts.length - 1].timestamp).getTime() > playbackClock();
+        if (inPlayback || !live) { targetLat = pos.lat; targetLng = pos.lng; ping = pos.ping; }
+        else { targetLat = live.latitude; targetLng = live.longitude; ping = live; }
+    } else if (live) {
+        // Nothing drawable (parked inside a fence, say) -- the live position is
+        // all there is, and it is what this device's marker has always shown.
+        targetLat = live.latitude; targetLng = live.longitude; ping = live;
+    } else {
+        return;
+    }
+
+    const cur = markerPositions[devId];
+    if (inPlayback || !cur) markerPositions[devId] = { lat: targetLat, lng: targetLng };
+    else markerPositions[devId] = { lat: easeNumber(cur.lat, targetLat, dtSec), lng: easeNumber(cur.lng, targetLng, dtSec) };
+
+    const placed = markerPositions[devId];
+    const marker = markerLayers[devId] || buildMarker(devId);
+    if (marker) marker.setLatLng([placed.lat, placed.lng]);
+    placeTip(devId, placed.lat, placed.lng, tipClass(ping));
+    playbackState[devId] = inPlayback;
+}
+
+/** The "map is behind" pill. The map deliberately trails live, and the HUD
+ * stays live, so the difference has to be visible instead of reading as a
+ * stale screen. */
+function updatePlaybackBadge() {
+    const el = document.getElementById('hud-playback');
+    if (!el) return;
+    const devId = followDeviceId || selectedDevice;
+    const on = !!(devId && playbackState[devId]);
+    const text = on ? ('map ~' + CONFIG.PLAYBACK_LAG_SECONDS + 's behind') : '';
+    if (el.__txt === text) return;
+    el.__txt = text;
+    el.textContent = text;
+    el.style.display = text ? 'inline-block' : 'none';
+}
+
+function renderPlaybackFrame(dtSec) {
+    if (!map) return;
+    for (const devId of DEVICES) renderDeviceFrame(devId, dtSec);
+    updateFollowCamera();
+    updatePlaybackBadge();
+}
+
+function playbackTick(ts) {
+    if (!playbackRunning) return;
+    const now = (typeof ts === 'number') ? ts : performance.now();
+    const dtSec = playbackLastFrame ? Math.min((now - playbackLastFrame) / 1000, 0.5) : 0;
+    playbackLastFrame = now;
+    renderPlaybackFrame(dtSec);
+    requestAnimationFrame(playbackTick);
+}
+
+function startPlaybackLoop() {
+    if (playbackRunning) return;
+    playbackRunning = true;
+    playbackLastFrame = 0;
+    requestAnimationFrame(playbackTick);
+}
+
+// ── The follow camera (dead zone + glide) ────────────────────────
+
+/** Metres per screen pixel at the map's current zoom and latitude. Derived
+ * Half-extents of the box the device may roam before the camera moves, in
+ * pixels: half of FOLLOW_DEAD_ZONE_SCREEN_FRACTION of each side of the map. */
+function followDeadZonePx() {
+    const size = map.getSize();
+    return {
+        halfX: (size.x * CONFIG.FOLLOW_DEAD_ZONE_SCREEN_FRACTION) / 2,
+        halfY: (size.y * CONFIG.FOLLOW_DEAD_ZONE_SCREEN_FRACTION) / 2
+    };
+}
+
+function updateFollowCamera() {
+    if (!map) return;
+    if (!followDeviceId) return;
+    const pos = markerPositions[followDeviceId];
+    if (!pos) return;
+
+    const nowMs = Date.now();
+    if (map.getZoom() < userPrefs.followZoom && nowMs - followCam.lastZoomFix > CONFIG.FOLLOW_ZOOM_FIX_INTERVAL_MS) {
+        followCam.lastZoomFix = nowMs;
+        followCam.glideUntil = nowMs + CONFIG.FOLLOW_FLY_DURATION * 1000;
+        ignoreMapEvents();
+        map.flyTo([pos.lat, pos.lng], userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
+        return;
+    }
+    // One glide at a time: re-deciding mid-flight is what turned a moving
+    // device into a hundred pans a second.
+    if (nowMs < (followCam.glideUntil || 0)) return;
+
+    // How far the device sits from the middle of the screen right now. Pixels,
+    // because that is the unit both the box and panBy are defined in.
+    const size = map.getSize();
+    const zone = followDeadZonePx();
+    const at = map.latLngToContainerPoint([pos.lat, pos.lng]);
+    const dx = at.x - size.x / 2;
+    const dy = at.y - size.y / 2;
+
+    // Re-centre only along the axis the device left the box, and only by the
+    // overshoot, so it comes back to the edge of the box and a slow drift
+    // stays a slow drift. Inside the box the map does not move at all.
+    let ox = 0, oy = 0;
+    if (dx > zone.halfX) ox = dx - zone.halfX; else if (dx < -zone.halfX) ox = dx + zone.halfX;
+    if (dy > zone.halfY) oy = dy - zone.halfY; else if (dy < -zone.halfY) oy = dy + zone.halfY;
+    if (ox && Math.abs(ox) < CONFIG.FOLLOW_GLIDE_MIN_PX) ox = 0;
+    if (oy && Math.abs(oy) < CONFIG.FOLLOW_GLIDE_MIN_PX) oy = 0;
+    if (!ox && !oy) return;
+
+    followCam.glideUntil = nowMs + CONFIG.FOLLOW_GLIDE_DURATION * 1000;
+    ignoreMapEvents(CONFIG.FOLLOW_GLIDE_DURATION * 1000 + 400);
+    map.panBy([ox, oy], { animate: true, duration: CONFIG.FOLLOW_GLIDE_DURATION, easeLinearity: 0.2 });
+}
+
+/** Rebuild every device's drawn trail from its first point. This is the old
+ * redrawAllTracks() behaviour -- and it used to run on EVERY ping, which is
+ * precisely why the map could only ever jump. Now it is the rare path: a fresh
+ * snapshot, the track eye switched back on, or a late `track` point that slots
+ * in BEFORE the cursor, where a commit index stops meaning anything. The next
+ * frame draws the identical geometry, plus whatever arrived. */
+function resetTrail(devId) {
+    clearDeviceTrack(devId);
+    const st = trailFor(devId);
+    st.drawnIdx = 0; st.runDriving = null; st.walkPts = null; st.walkLayer = null;
+    st.tail = null; st.tailColor = null; st.tailAt = null; st.lastTs = null; st.lastPoint = null;
+    delete markerPositions[devId];
 }
 
 function redrawAllTracks() {
     if (!map) return;
-    clearTracks();
-    for (const devId of DEVICES) {
-        if (trackVisible[devId] === false) continue;
-        const pts = (devicePings[devId] || []).filter(shouldDrawPoint);
-        if (pts.length > 0) drawSegments(devId, pts);
-    }
+    for (const devId of DEVICES) resetTrail(devId);
+    startPlaybackLoop();   // "redraw" now means "let the next frame draw it"
 }
 
+/** (Re)build a device's marker + tip dot. Placement itself belongs to the
+ * playback loop, so this only has to run when the ICON changes (a profile save)
+ * or when a device needs a marker for the first time. */
 function updateMarker(devId, ping) {
     if (!map) return;
-    if (markerLayers[devId]) map.removeLayer(markerLayers[devId]);
-    const emoji = EMOJI_MAP[devId] || CONFIG.DEFAULT_DEVICE_EMOJI;
-    const icon = L.divIcon({
-        html: '<div style="font-size:28px; text-shadow:0 0 12px rgba(0,0,0,0.9); line-height:1; transform:translate(-50%,-100%);">' + emoji + '</div>',
-        iconSize: [30, 30], iconAnchor: [15, 30], className: ''
-    });
-    const marker = L.marker([ping.latitude, ping.longitude], { icon: icon }).addTo(map);
-    marker.bindTooltip(devId, { permanent: false, direction: 'top' });
-    marker.on('click', function() { followDevice(devId); });
-    markerLayers[devId] = marker;
-    updateTip(devId, ping);
+    if (!markerPositions[devId] && ping) markerPositions[devId] = { lat: ping.latitude, lng: ping.longitude };
+    if (!buildMarker(devId)) return;
+    const placed = markerPositions[devId];
+    placeTip(devId, placed.lat, placed.lng, tipClass(ping || latestPing[devId]));
 }
 
 function updateTip(devId, ping) {
-    if (!map) return;
-    if (tipLayers[devId]) { map.removeLayer(tipLayers[devId]); delete tipLayers[devId]; }
-    if (ping.is_inside_geofence) return;
-    let colorClass;
-    if (ping.is_driving) colorClass = 'tip-red';
-    else if (ping.is_stationary) colorClass = 'tip-green';
-    else colorClass = 'tip-yellow';
-    const tipIcon = L.divIcon({ html: '<div class="tip-dot ' + colorClass + '"></div>', iconSize: [14, 14], iconAnchor: [7, 7], className: '' });
-    tipLayers[devId] = L.marker([ping.latitude, ping.longitude], { icon: tipIcon, interactive: false, zIndexOffset: 1000 }).addTo(map);
+    const placed = markerPositions[devId];
+    if (!map || !placed) return;
+    placeTip(devId, placed.lat, placed.lng, tipClass(ping));
 }
 
 function selectSpeedoDevice(devId) {
@@ -782,11 +1198,20 @@ function followDevice(devId) {
     followDeviceId = devId;
     localStorage.setItem('follow_device', devId);
     renderBadges();
+    // Fly to where the marker is DRAWN, not to the newest ping: the map is on
+    // the playback clock, so centring on the live position would leave the
+    // marker half a screen behind and make the camera chase it straight away.
+    const drawn = markerPositions[devId];
     const p = latestPing[devId];
-    if (p && map) {
-        ignoreZoomEvent = true;
-        map.flyTo([p.latitude, p.longitude], userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
-        map.once('moveend', function() { ignoreZoomEvent = false; });
+    const target = drawn || (p ? { lat: p.latitude, lng: p.longitude } : null);
+    startPlaybackLoop();
+    if (target && map) {
+        // No camera target to seed: the box is measured from the middle of the
+        // screen every time, so centring the view IS the target. Just don't
+        // start a glide while the flight is still running.
+        followCam.glideUntil = Date.now() + CONFIG.FOLLOW_FLY_DURATION * 1000;
+        ignoreMapEvents();
+        map.flyTo([target.lat, target.lng], userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
     }
     renderBadges();
 }
@@ -969,7 +1394,8 @@ function renderBadges() {
                 const newVisible = !(trackVisible[devId] !== false);
                 trackVisible[devId] = newVisible;
                 localStorage.setItem('track_hidden_' + devId, newVisible ? 'false' : 'true');
-                redrawAllTracks();
+                resetTrail(devId);   // hidden: layers gone; shown again: re-committed from the start
+                startPlaybackLoop();
                 renderBadges();
             });
         }
@@ -1084,7 +1510,7 @@ function renderSettingsMenu() {
         '<div id="notif-grid">' + renderNotifGrid() + '</div>' +
         '<button class="export-btn" onclick="saveNotifications()">Save notifications</button>' +
         '<div id="notif-msg" style="font-size:10px;color:#9ca3af;"></div>' +
-        '<div class="settings-hint">Pushes go to each person\'s own ntfy topic, which the admin shares with them.</div>'
+        '<div class="settings-hint">These pushes go to each person\'s own <b>tracking</b> topic (shown in <b>Users &amp; topics</b>). Money and Kiné notifications are a <b>separate</b> topic, managed in Home &rarr; You &rarr; Notifications.</div>'
     ));
 
     // ---- Device controls (forced mode / pause) ----
@@ -1130,7 +1556,7 @@ function renderSettingsMenu() {
     // ---- Users + ntfy topics (admin) ----
     if (isAdmin) {
         parts.push(settingsSection('users', '👥 Users & topics',
-            '<div class="settings-hint">Give each person their <b>topic name</b>. In the ntfy app they tap <b>Subscribe to topic</b> and paste just that — <b>not</b> the link (the app only accepts letters, digits, - and _).</div>' +
+            '<div class="settings-hint">Give each person their <b>topic name</b>. In the ntfy app they tap <b>Subscribe to topic</b> and paste just that — <b>not</b> the link (the app only accepts letters, digits, - and _). This is their <b>tracking</b> topic: W.A.Y activity only. Home has a second topic per person for money, Kiné and chat.</div>' +
             renderAdminUsers()
         ));
     }
@@ -1471,9 +1897,17 @@ function renderAdminUsers() {
     html += adminUsers.map(function(u) {
         const topic = u.ntfyTopic || '';
         const link = topic ? (serverRoot + '/' + topic) : '';
+        // Which database answered. The topic lives in the identity database
+        // (home-db users.way_topic); way-db's own column is only a fallback for
+        // a standalone deployment. Saying which one is in force is what stops
+        // this screen from again advertising a topic that receives nothing.
+        const source = u.topicSource === 'identity'
+            ? '<span style="font-size:9px;color:#4ade80;">identity channel</span>'
+            : '<span style="font-size:9px;color:#fbbf24;">way-db copy (no Home account?)</span>';
         return '<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;margin-top:6px;">' +
             '<div class="settings-row"><span style="flex:1;">' + (u.emoji || '📍') + ' ' + escapeHtml(u.username) + '</span>' +
                 '<button class="toggle-pill" onclick="regenTopic(' + u.id + ')">Generate</button></div>' +
+            '<div style="margin:2px 0;">' + source + '</div>' +
             '<div class="mono" style="font-size:10px;color:#38bdf8;word-break:break-all;margin:4px 0;">' + escapeHtml(topic || '(no topic)') + '</div>' +
             '<div style="display:flex;gap:6px;">' +
                 '<button class="toggle-pill" onclick="copyText(\'' + escapeHtml(topic) + '\', this)">Copy topic</button>' +
@@ -1605,24 +2039,19 @@ function handleNewPing(raw) {
     if (!raw.guarding && shouldDrawPoint(ping)) devicePings[devId].push(ping);
     maybeAddStationaryDot(devId, ping);
 
-    updateMarker(devId, ping);
-    redrawAllTracks();
+    // Nothing is drawn here. The ping is now IN devicePings, and the playback
+    // loop picks it up when its cursor reaches it -- that is the whole point of
+    // the delay, and why this no longer rebuilds every track on every arrival.
 
     if (!selectedDevice) selectSpeedoDevice(devId);
     if (selectedDevice === devId) updateSpeedoHUD();
     updateTogetherAndETA();
 
-    if (followDeviceId === devId) {
-        const target = L.latLng(ping.latitude, ping.longitude);
-        ignoreZoomEvent = true;
-        if (!map) { ignoreZoomEvent = false; return; }
-        if (map.getZoom() < userPrefs.followZoom) {
-            map.flyTo(target, userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
-        } else {
-            map.panTo(target, { animate: true, duration: CONFIG.FOLLOW_PAN_DURATION });
-        }
-        map.once('moveend', function() { ignoreZoomEvent = false; });
-    }
+    // The camera is NOT moved here any more. It used to pan to this ping on
+    // every arrival -- a 0.4s slide that finished long before the next one,
+    // which is exactly the judder. updateFollowCamera() now owns it, off the
+    // same delayed cursor the marker uses, and only moves at all once the
+    // device leaves the middle of the screen.
     renderBadges();
 }
 
@@ -1639,7 +2068,11 @@ function handleTrackPoint(raw) {
     if (!devicePings[devId]) devicePings[devId] = [];
     devicePings[devId].push(p);
     devicePings[devId].sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
-    redrawAllTracks();
+    // This one can land BEFORE the cursor, which shifts every commit index, so
+    // the trail is rebuilt (the loop re-commits it in one frame) instead of
+    // being appended to. Late points are rare -- the exit guard -- so the
+    // rebuild is cheap, and it is the only correct answer.
+    resetTrail(devId);
 }
 
 function shiftDay(delta) {
@@ -1952,18 +2385,16 @@ function goHome() {
     if (!map) return;
     const f = userPrefs.homeFence ? GEOFENCES.find(function(g) { return g.name === userPrefs.homeFence; }) : null;
     const center = f ? [f.lat, f.lng] : CONFIG.MAP_DEFAULT_CENTER;
-    ignoreZoomEvent = true;
+    ignoreMapEvents();
     map.flyTo(center, CONFIG.MAP_DEFAULT_ZOOM, { duration: CONFIG.FOLLOW_FLY_DURATION });
-    map.once('moveend', function() { ignoreZoomEvent = false; });
 }
 
 function applyHomeView() {
     if (!map || !userPrefs.homeFence) return;
     const f = GEOFENCES.find(function(g) { return g.name === userPrefs.homeFence; });
     if (f) {
-        ignoreZoomEvent = true;
+        ignoreMapEvents(0);
         map.setView([f.lat, f.lng], CONFIG.MAP_DEFAULT_ZOOM);
-        ignoreZoomEvent = false;
     }
 }
 
@@ -1972,7 +2403,7 @@ function resetToday() {
         devicePings[devId] = [];
         todayDist[devId] = 0;
     });
-    clearTracks();
+    redrawAllTracks();   // empties every trail state, ready for the new day
     clearAllStationaryDots();
     renderBadges();
     if (selectedDevice) updateSpeedoHUD();
@@ -2004,6 +2435,7 @@ async function boot() {
     connectWebSocket();
     applyHomeView();
     scheduleMidnightReset();
+    startPlaybackLoop();
 
 }
 

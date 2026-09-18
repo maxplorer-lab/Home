@@ -1,15 +1,18 @@
 {
-  "name": "Home",
-  "short_name": "Home",
-  "description": "One app for the whole household — finance, funds, tracking & chat",
   "id": "/",
+  "name": "Home — the family super app",
+  "short_name": "Home",
+  "description": "One app for the whole household — budget, Kiné, meals, shopping, live tracking and chat, with a single login.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#111827",
   "theme_color": "#16a34a",
   "categories": ["finance", "productivity", "lifestyle"],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icons/icon-192.png",
@@ -29,5 +32,11 @@
       "type": "image/png",
       "purpose": "maskable"
     }
+  ],
+  "shortcuts": [
+    { "name": "Budget", "short_name": "Budget", "url": "/budget" },
+    { "name": "Meal plan", "short_name": "Laoka", "url": "/laoka/" },
+    { "name": "Live map", "short_name": "Map", "url": "/way/" },
+    { "name": "Chat", "short_name": "Chat", "url": "/chat" }
   ]
 }

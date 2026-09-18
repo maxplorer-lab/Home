@@ -9,6 +9,8 @@ import {
   listNtfyChannels,
   setNtfyTopic,
   clearNtfyTopic,
+  setWayTopic,
+  clearWayTopic,
   adoptWayTopics,
   getHomeSetting,
   setHomeSetting,
@@ -21,7 +23,7 @@ settings.use('*', requireAuth)
 function errMessage(code: string): string {
   switch (code) {
     case 'bad_server': return 'Server URL must start with http:// or https://'
-    case 'no_channel': return 'You have no notification channel yet — generate one first.'
+    case 'no_channel': return 'You have no channel on that side yet — generate one first.'
     case 'no_server': return 'Set the ntfy server URL first (an admin can do it below).'
     case 'bad_person': return 'That person no longer exists.'
     default: return code ? decodeURIComponent(code) : 'Something went wrong.'
@@ -48,6 +50,99 @@ const Btn = ({ children, tone = 'plain' }: { children?: any; tone?: 'plain' | 'p
   return <button type="submit" class={`px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${cls}`}>{children}</button>
 }
 
+/**
+ * One notification channel, complete: its topic, what lands in it, and every
+ * action that changes it.
+ *
+ * Both channels render through this on purpose. They are the same kind of
+ * thing — a topic on a phone — and the failure mode of two hand-written cards
+ * is that one of them ends up rotatable but not switchable off, or impossible
+ * to test. A person cannot tell which of the two they are looking at anyway
+ * unless the wording says so, which is what the title and blurb are for.
+ */
+const ChannelCard = ({ channel, title, blurb, id, topic, extra }: {
+  channel: 'feed' | 'tracking'
+  title: string
+  blurb: string
+  id: string
+  topic: string | null
+  extra?: any
+}) => (
+  <Card title={title} className="mb-4">
+    <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{blurb}</p>
+    {topic ? (
+      <div class="flex gap-2 mb-3">
+        <input
+          type="text"
+          readonly
+          value={topic}
+          id={id}
+          class="flex-1 min-w-0 bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-mono"
+        />
+        <button
+          type="button"
+          onclick={`copyTopic('${id}')`}
+          class="px-3 py-2.5 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-xs font-semibold"
+        >
+          Copy
+        </button>
+      </div>
+    ) : (
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+        No {channel === 'feed' ? 'feed' : 'tracking'} topic yet. Generate one, then subscribe to it in the ntfy app
+        on your phone.
+      </p>
+    )}
+
+    <div class="flex flex-wrap gap-2">
+      <form method="post" action="/settings/channel">
+        <input type="hidden" name="channel" value={channel} />
+        <input type="hidden" name="action" value="rotate" />
+        <Btn tone="primary">{topic ? '🎲 New topic' : '🎲 Generate topic'}</Btn>
+      </form>
+      <form method="post" action="/settings/notifications/test">
+        <input type="hidden" name="channel" value={channel} />
+        <Btn>Send a test</Btn>
+      </form>
+      {topic && (
+        <form method="post" action="/settings/channel">
+          <input type="hidden" name="channel" value={channel} />
+          <input type="hidden" name="action" value="off" />
+          <Btn tone="danger">Turn off</Btn>
+        </form>
+      )}
+    </div>
+    {extra ? <div class="mt-3">{extra}</div> : null}
+  </Card>
+)
+
+/** One person's channel in the admin list. Labelled, because "which of the two
+ *  is this?" is the exact question the second channel exists to raise. */
+const ChannelRow = (userId: string, channel: 'feed' | 'tracking', badge: string, topic: string | null) => (
+  <div class="flex flex-wrap items-center gap-2 mt-1">
+    <span class="text-[11px] w-4 text-center" title={channel === 'feed' ? 'money & chat' : 'W.A.Y tracking'}>{badge}</span>
+    <span class="flex-1 min-w-0 font-mono text-[11px] text-gray-500 dark:text-gray-400 truncate">
+      {topic || 'no topic'}
+    </span>
+    <form method="post" action={`/settings/channel/${userId}`}>
+      <input type="hidden" name="channel" value={channel} />
+      <input type="hidden" name="action" value="rotate" />
+      <button type="submit" class="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-[11px] font-semibold">
+        🎲
+      </button>
+    </form>
+    {topic && (
+      <form method="post" action={`/settings/channel/${userId}`}>
+        <input type="hidden" name="channel" value={channel} />
+        <input type="hidden" name="action" value="off" />
+        <button type="submit" class="px-2 py-1 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-[11px] font-semibold">
+          ✕
+        </button>
+      </form>
+    )}
+  </div>
+)
+
 // ─── GET /settings ─────────────────────────────────────────
 settings.get('/', async (c) => {
   const user = c.get('user')
@@ -59,7 +154,8 @@ settings.get('/', async (c) => {
   const server = await ntfyServer(c.env)
   const channels = await listNtfyChannels(c.env.HOME_DB)
   const mine = channels.find((ch) => ch.id === home?.id) ?? null
-  const withChannel = channels.filter((ch) => (ch.ntfy_topic || '').trim()).length
+  const withFeed = channels.filter((ch) => (ch.ntfy_topic || '').trim()).length
+  const withTracking = channels.filter((ch) => (ch.way_topic || '').trim()).length
   const legacyServer = (await getHomeSetting(c.env.HOME_DB, 'ntfy_server')) || ''
 
   return c.html(
@@ -96,111 +192,96 @@ settings.get('/', async (c) => {
               </a>
             </div>
           </Card>
+
+          {/* ── Install to the home screen (PWA) ──
+              Chrome/Brave on Android install it from the manifest; this card
+              only makes it discoverable, and the button appears only when the
+              browser actually says the app is installable
+              (`beforeinstallprompt`), so it can never promise something the
+              platform will refuse. */}
+          <Card title="📲 Install on your phone" className="mb-4">
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              Add Home to your home screen and it opens full screen with its own icon —
+              no browser bars, and the shell still loads on a weak connection.
+            </p>
+            <div id="install-app-card">
+              <button id="install-app" class="px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white text-sm font-semibold">
+                Install Home
+              </button>
+            </div>
+            <p id="install-manual" class="text-[11px] text-gray-400 dark:text-gray-500">
+              Or use your browser menu: ⋮ → “Install app” / “Add to Home screen”.
+            </p>
+            <p id="install-ios" class="hidden text-[11px] text-gray-400 dark:text-gray-500">
+              On iPhone / iPad: Share → “Add to Home Screen”.
+            </p>
+            <p id="install-done" class="hidden text-[11px] text-green-600 dark:text-green-400">
+              ✓ Installed — open it from your home screen.
+            </p>
+          </Card>
         </Section>
 
-        {/* ── NOTIFICATIONS (the unified ntfy channel) ──────── */}
+        {/* ── NOTIFICATIONS (two channels: the feed, and tracking) ── */}
         <Section
           title="Notifications"
-          subtitle="Every module pushes to YOUR channel, so one ntfy topic on your phone covers the whole app."
+          subtitle="Two topics per person: one for what the household spends, one for where people are. Subscribe to both on your phone."
         >
-          <Card title="🔔 Your channel" className="mb-4">
-            {mine?.ntfy_topic ? (
-              <>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                  Subscribe to this topic in the ntfy app on your phone. It is yours alone.
-                </p>
-                <div class="flex gap-2 mb-3">
-                  <input
-                    type="text"
-                    readonly
-                    value={mine.ntfy_topic}
-                    id="my-topic"
-                    class="flex-1 min-w-0 bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2.5 text-xs font-mono"
-                  />
-                  <button
-                    type="button"
-                    onclick="copyTopic()"
-                    class="px-3 py-2.5 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-xs font-semibold"
-                  >
-                    Copy
-                  </button>
-                </div>
-                <p class="text-[11px] text-gray-400 dark:text-gray-500 mb-3">
-                  Server: <span class="font-mono">{server || '— not set —'}</span>
-                </p>
-              </>
-            ) : (
-              <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
-                You have no channel yet. Generate one to start receiving notifications from every module.
-              </p>
-            )}
+          {ChannelCard({
+            channel: 'feed',
+            title: '💬 Money & chat feed',
+            blurb: 'Sompitra pushes here: expenses, income and Kiné, in exactly the wording the chat shows — including the ones you recorded yourself. Nothing filters this one.',
+            id: 'my-topic',
+            topic: mine?.ntfy_topic ?? null,
+          })}
 
-            <div class="flex flex-wrap gap-2">
-              <form method="post" action="/settings/channel">
-                <input type="hidden" name="action" value="rotate" />
-                <Btn tone="primary">{mine?.ntfy_topic ? '🎲 New channel' : '🎲 Generate my channel'}</Btn>
-              </form>
-              <form method="post" action="/settings/notifications/test">
-                <Btn>Send a test</Btn>
-              </form>
-              {mine?.ntfy_topic && (
-                <form method="post" action="/settings/channel">
-                  <input type="hidden" name="action" value="off" />
-                  <Btn tone="danger">Turn off</Btn>
-                </form>
-              )}
-            </div>
-            <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-3">
-              Making a new channel stops the old one immediately — remember to update the topic on your phone.
-            </p>
-            <script
-              dangerouslySetInnerHTML={{
-                __html: `
-                  function copyTopic() {
-                    var el = document.getElementById('my-topic');
-                    if (!el) return;
-                    el.select();
-                    try { navigator.clipboard.writeText(el.value); } catch (e) { document.execCommand('copy'); }
-                  }
-                `,
-              }}
-            />
-          </Card>
+          {ChannelCard({
+            channel: 'tracking',
+            title: '📍 W.A.Y tracking',
+            blurb: 'Arrivals, departures, movement and chat messages. W.A.Y alone decides which of those reach you: who you follow, and which activities, in its own notification grid. Nobody is notified about their own events, and quiet hours apply only here.',
+            id: 'my-way-topic',
+            topic: mine?.way_topic ?? null,
+            extra: <a href="/way/" class="text-[11px] text-green-600 dark:text-green-400 font-semibold">Open W.A.Y's notification grid →</a>,
+          })}
+
+          <p class="text-[11px] text-gray-400 dark:text-gray-500 mb-4">
+            Server: <span class="font-mono">{server || '— not set —'}</span> · making a new topic stops the old one
+            immediately, so remember to update your phone.
+          </p>
+
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `
+                function copyTopic(id) {
+                  var el = document.getElementById(id);
+                  if (!el) return;
+                  el.select();
+                  try { navigator.clipboard.writeText(el.value); } catch (e) { document.execCommand('copy'); }
+                }
+              `,
+            }}
+          />
 
           {isAdmin ? (
             <Card title="🏠 Everyone in the household" className="mb-4">
               <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
-                {withChannel} of {channels.length} {channels.length === 1 ? 'person has' : 'people have'} a channel.
+                {withFeed} of {channels.length} {channels.length === 1 ? 'person has' : 'people have'} a feed topic,{' '}
+                {withTracking} a tracking one.
               </p>
               <div class="space-y-2 mb-4">
                 {channels.map((ch) => (
-                  <div class="flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-gray-50 dark:bg-gray-900/40">
-                    <span class="flex-1 min-w-0 text-sm font-semibold truncate">{ch.display_name || ch.username}</span>
-                    <span class="font-mono text-[11px] text-gray-500 dark:text-gray-400 truncate max-w-[45%]">
-                      {ch.ntfy_topic || 'no channel'}
-                    </span>
-                    <form method="post" action={`/settings/channel/${ch.id}`} class="flex gap-1.5">
-                      <input type="hidden" name="action" value="rotate" />
-                      <button type="submit" class="px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-[11px] font-semibold">
-                        🎲
-                      </button>
-                    </form>
-                    {ch.ntfy_topic && (
-                      <form method="post" action={`/settings/channel/${ch.id}`}>
-                        <input type="hidden" name="action" value="off" />
-                        <button type="submit" class="px-2 py-1 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-[11px] font-semibold">
-                          ✕
-                        </button>
-                      </form>
-                    )}
+                  <div class="p-2.5 rounded-xl bg-gray-50 dark:bg-gray-900/40">
+                    <div class="text-sm font-semibold truncate mb-1.5">{ch.display_name || ch.username}</div>
+                    {ChannelRow(ch.id, 'feed', '💬', ch.ntfy_topic)}
+                    {ChannelRow(ch.id, 'tracking', '📍', ch.way_topic)}
                   </div>
                 ))}
               </div>
               <form method="post" action="/settings/adopt-way" class="mb-2">
-                <Btn>Adopt channels from W.A.Y</Btn>
+                <Btn>Adopt W.A.Y's tracking topics</Btn>
               </form>
               <p class="text-[11px] text-gray-400 dark:text-gray-500">
-                Copies the topics that already exist in W.A.Y, so a phone that is already following one keeps working.
+                Promotes the topics that already exist in W.A.Y into the tracking channel, so a phone that is
+                already following one keeps working. It never overwrites a channel someone has already been given.
               </p>
             </Card>
           ) : null}
@@ -276,6 +357,50 @@ settings.get('/', async (c) => {
           </Card>
         </Section>
       </div>
+
+      {/* The install card's behaviour. Kept as one small script here rather
+          than in the shared chrome: only this page has the card, and the
+          chrome must stay free of page-specific JS. */}
+      <script dangerouslySetInnerHTML={{ __html: `
+        (function () {
+          var card = document.getElementById('install-app-card');
+          var btn = document.getElementById('install-app');
+          var manual = document.getElementById('install-manual');
+          var ios = document.getElementById('install-ios');
+          var done = document.getElementById('install-done');
+          if (!card || !btn) return;
+
+          var installed = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+          var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          function show(el) { if (el) el.classList.remove('hidden'); }
+          function hide(el) { if (el) el.classList.add('hidden'); }
+
+          if (installed) { hide(manual); hide(ios); show(done); return; }
+          if (isIOS) { hide(manual); show(ios); }
+
+          var deferred = null;
+          window.addEventListener('beforeinstallprompt', function (e) {
+            e.preventDefault();
+            deferred = e;
+            hide(manual); hide(ios);
+            card.classList.add('available');   // CSS: display:block
+          });
+          window.addEventListener('appinstalled', function () {
+            deferred = null;
+            card.classList.remove('available');
+            hide(manual); hide(ios);
+            show(done);
+          });
+          btn.addEventListener('click', function () {
+            if (!deferred) return;
+            var p = deferred;
+            deferred = null;
+            p.prompt();
+            p.userChoice.then(function () { card.classList.remove('available'); });
+          });
+        })();
+      `}} />
     </Layout>
   )
 })
@@ -301,12 +426,56 @@ settings.post('/notifications/test', async (c) => {
   const user = c.get('user')
   const home = await findHomeUserByName(c.env.HOME_DB, user.username)
   if (!home) return c.redirect('/settings?err=bad_person')
+  const body = await c.req.parseBody()
+  const channel = channelOf(body)
   const channels = await listNtfyChannels(c.env.HOME_DB)
   const mine = channels.find((ch) => ch.id === home.id)
-  if (!mine?.ntfy_topic) return c.redirect('/settings?err=no_channel')
-  const sent = await pushNtfyTo(c.env, mine.ntfy_topic, 'Home test', `${user.display_name || user.username} · test notification`, 'green')
-  return c.redirect(sent ? '/settings?ok=Test sent to your channel' : '/settings?err=no_server')
+  const topic = channel === 'tracking' ? mine?.way_topic : mine?.ntfy_topic
+  if (!topic) return c.redirect('/settings?err=no_channel')
+  const who = user.display_name || user.username
+  // The test says WHICH channel answered. Two topics on one phone means "a test
+  // arrived" is no longer enough information to diagnose anything.
+  const sent = channel === 'tracking'
+    ? await pushNtfyTo(c.env, topic, 'Home test', `${who} · tracking channel`, 'blue')
+    : await pushNtfyTo(c.env, topic, 'Home test', `${who} · money & chat feed`, 'green')
+  return c.redirect(sent
+    ? `/settings?ok=${encodeURIComponent(channel === 'tracking' ? 'Test sent to your tracking topic' : 'Test sent to your feed topic')}`
+    : '/settings?err=no_server')
 })
+
+/** Which of the two channels a form meant. Defaults to the feed, which is what
+ *  every form sent before there were two. */
+function channelOf(body: Record<string, unknown>): 'feed' | 'tracking' {
+  return String(body.channel || 'feed') === 'tracking' ? 'tracking' : 'feed'
+}
+
+/**
+ * Rotate/clear one channel for one person. Shared by the self-service route
+ * and the admin one so the two can never disagree about what "off" means.
+ *
+ * Returns false when there is no such person, because the writes are plain
+ * UPDATEs: without this, a POST naming an id that does not exist would answer
+ * "updated" having changed nothing at all. The admin list happens to post
+ * home-db ids (the buttons are rendered from those rows), so a mismatch here
+ * means a stale page or a hand-made request — both worth reporting.
+ */
+async function applyChannelAction(
+  env: Env,
+  userId: string,
+  channel: 'feed' | 'tracking',
+  action: string
+): Promise<boolean> {
+  const exists = await env.HOME_DB.prepare('SELECT id FROM users WHERE id = ?').bind(userId).first<{ id: string }>()
+  if (!exists) return false
+  if (channel === 'tracking') {
+    if (action === 'off') await clearWayTopic(env, userId)
+    else await setWayTopic(env, userId)
+    return true
+  }
+  if (action === 'off') await clearNtfyTopic(env.HOME_DB, userId)
+  else await setNtfyTopic(env.HOME_DB, userId)
+  return true
+}
 
 // ─── POST /settings/channel (my own channel) ───────────────
 settings.post('/channel', async (c) => {
@@ -314,13 +483,13 @@ settings.post('/channel', async (c) => {
   const home = await findHomeUserByName(c.env.HOME_DB, user.username)
   if (!home) return c.redirect('/settings?err=bad_person')
   const body = await c.req.parseBody()
-  const action = String(body.action || 'rotate')
-  if (action === 'off') await clearNtfyTopic(c.env.HOME_DB, home.id)
-  else await setNtfyTopic(c.env.HOME_DB, home.id)
+  const channel = channelOf(body)
+  const changed = await applyChannelAction(c.env, home.id, channel, String(body.action || 'rotate'))
+  if (!changed) return c.redirect('/settings?err=bad_person')
   // The FleetDO caches channels, so tell it to re-read them or a rotation
   // looks like it silently failed for W.A.Y activity (Sompitra reads live).
   await reloadWayNotifications(c.env)
-  return c.redirect('/settings?ok=Notification channel updated')
+  return c.redirect(`/settings?ok=${encodeURIComponent(channel === 'tracking' ? 'Tracking topic updated' : 'Feed topic updated')}`)
 })
 
 // ─── POST /settings/channel/:id (admin, anyone) ────────────
@@ -328,11 +497,11 @@ settings.post('/channel/:id', async (c) => {
   const user = c.get('user')
   if (user.is_admin !== 1) return c.redirect('/settings')
   const body = await c.req.parseBody()
-  const action = String(body.action || 'rotate')
-  if (action === 'off') await clearNtfyTopic(c.env.HOME_DB, c.req.param('id'))
-  else await setNtfyTopic(c.env.HOME_DB, c.req.param('id'))
+  const channel = channelOf(body)
+  const changed = await applyChannelAction(c.env, c.req.param('id'), channel, String(body.action || 'rotate'))
+  if (!changed) return c.redirect('/settings?err=bad_person')
   await reloadWayNotifications(c.env)
-  return c.redirect('/settings?ok=Channel updated')
+  return c.redirect(`/settings?ok=${encodeURIComponent(channel === 'tracking' ? 'Tracking topic updated' : 'Feed topic updated')}`)
 })
 
 // ─── POST /settings/adopt-way (admin) ─────────────────────
@@ -341,7 +510,7 @@ settings.post('/adopt-way', async (c) => {
   if (user.is_admin !== 1) return c.redirect('/settings')
   const adopted = await adoptWayTopics(c.env)
   await reloadWayNotifications(c.env)
-  return c.redirect(`/settings?ok=${encodeURIComponent(adopted === 1 ? 'Adopted 1 channel from W.A.Y' : `Adopted ${adopted} channels from W.A.Y`)}`)
+  return c.redirect(`/settings?ok=${encodeURIComponent(adopted === 1 ? 'Adopted 1 tracking topic from W.A.Y' : `Adopted ${adopted} tracking topics from W.A.Y`)}`)
 })
 
 export default settings

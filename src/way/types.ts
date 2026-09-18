@@ -10,10 +10,12 @@
 export interface Env {
   WAY_DB: D1Database;
   FLEET_DO: DurableObjectNamespace;
-  // The Home identity database. W.A.Y reads it for ONE thing: each person's
-  // notification channel (users.ntfy_topic) and the household ntfy server
-  // (home_settings.ntfy_server). The channel belongs to the person, not to
-  // this module — see migrations-home/0002 and src/identity.ts.
+  // The Home identity database. W.A.Y reads it for TWO things: each person's
+  // TRACKING channel (users.way_topic — W.A.Y activity is the only thing it
+  // pushes) and the household ntfy server (home_settings.ntfy_server). The
+  // channel belongs to the person, not to this module — see
+  // migrations-home/0002 and 0004, and src/identity.ts. Money and Kiné go to
+  // the OTHER channel (users.ntfy_topic) from Sompitra, not from here.
   HOME_DB: D1Database;
   // Secret, NOT in wrangler.jsonc: set it in the Cloudflare dashboard
   // (Worker -> Settings -> Variables and Secrets), because deployment is via
@@ -45,7 +47,10 @@ export interface UserRow {
   color: string | null;
   follow_zoom: number;
   home_fence: string | null;
-  ntfy_topic: string | null; // this user's ntfy.sh "inbox" topic (random)
+  // This user's TRACKING topic. The authority is home-db users.way_topic; this
+  // column is kept in step with it because the standalone Worker still reads
+  // it as a fallback (see src/identity.ts setWayTopic).
+  ntfy_topic: string | null;
   quiet_start: number;       // quiet-hours window, household tz (hours 0-23)
   quiet_end: number;
   created_at: string;

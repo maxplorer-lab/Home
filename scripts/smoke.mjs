@@ -209,19 +209,34 @@ log('\n9. WAY basemap stays where the user put it')
 }
 
 // ─── 10. unified settings & per-person channels ──────────────────
-log('\n10. Unified settings + one notification channel per person')
+log('\n10. Unified settings + two notification channels per person')
 {
   const page = await body(await req('/settings'))
   for (const section of ['You', 'Notifications', 'Sompitra', 'W.A.Y', 'Laoka']) {
     check(`/settings has the ${section} section`, page.includes(`>${section}<`), 'section heading missing')
   }
-  // The channel block is personal: either this person has a channel (show it)
-  // or they are offered one. Both are correct — a blank block is not.
-  check(
-    '/settings shows this person\'s channel or offers one',
-    page.includes('Your channel') && (page.includes('Generate my channel') || page.includes('New channel')),
-    'no channel block'
-  )
+  // Both channels are personal: each either shows this person's topic or offers
+  // to make one. Two blocks, never one — a person who can only see the feed
+  // cannot subscribe to the activity one, and vice versa.
+  // Titles are compared as they appear in the HTML — JSX escapes the "&" in
+  // the feed card's title, and a check that misses that reads as a missing card.
+  for (const [title, id, empty] of [
+    ['💬 Money &amp; chat feed', 'my-topic', 'No feed topic yet'],
+    ['📍 W.A.Y tracking', 'my-way-topic', 'No tracking topic yet'],
+  ]) {
+    // Either this person has that topic (the input is rendered) or they are
+    // offered one — a blank card is not acceptable, because it hides which of
+    // the two channels they are missing.
+    check(
+      `/settings offers the ${title} channel`,
+      page.includes(title) && (page.includes(`id="${id}"`) || page.includes(empty)) && /🎲 (Generate|New) topic/.test(page),
+      'no channel block'
+    )
+  }
+  check('and each channel can be tested, rotated and turned off on its own',
+    (page.match(/name="channel" value="feed"/g) || []).length >= 3 &&
+    (page.match(/name="channel" value="tracking"/g) || []).length >= 3,
+    'the two cards do not offer the same actions')
 
   // Every channel write is authenticated and self-scoped.
   const anonPost = await fetch(`${BASE}/settings/channel`, {
@@ -233,13 +248,16 @@ log('\n10. Unified settings + one notification channel per person')
   check('POST /settings/channel anonymous → /login', anonPost.status === 302 && anonLoc.includes('/login'), `${anonPost.status} → ${anonLoc || '(none)'}`)
 }
 
-// ─── 11. ONE channel, both senders ───────────────────────────────
-log('\n11. WAY and Sompitra resolve the SAME notification channel')
+// ─── 11. TWO channels per person ─────────────────────────────────
+log('\n11. Two channels per person: the feed, and tracking')
 {
-  // Sompitra reads home-db live; W.A.Y's FleetDO resolves the same home-db
-  // channels at cache-load time (this endpoint reports exactly what it would
-  // push to). If the DO ever loses its HOME_DB binding or its lookup breaks,
-  // WAY activity notifications would silently go to a different topic.
+  // Each person follows TWO topics and each sender must use ITS OWN: Sompitra
+  // fans money out to every feed channel including the recorder's, while W.A.Y
+  // routes activity to the recipient's tracking channel and never to the person
+  // who triggered it (src/way/do/FleetDO.ts). Collapse the two onto one topic
+  // and the second rule becomes impossible to obey — which is exactly the state
+  // this app was in, with W.A.Y's own admin screen still advertising its old
+  // way-db topic while the DO published to home-db.
   const res = await req('/way/api/debug/notify')
   const okStatus = res.status === 200
   check('WAY debug-notify answers (DO can read home-db)', okStatus, `status ${res.status}`)
@@ -252,18 +270,46 @@ log('\n11. WAY and Sompitra resolve the SAME notification channel')
       'unexpected shape'
     )
 
-    // The cross-check that matters: whatever /settings shows as THIS person's
-    // channel must be the exact topic WAY would push theirs to. A mismatch
-    // means the two senders have drifted onto different channels — which is
-    // the bug this whole change exists to remove.
-    const settingsHtml = await body(await req('/settings'))
-    const tag = settingsHtml.match(/<input[^>]*id="my-topic"[^>]*>/)?.[0] ?? ''
-    const mine = (tag.match(/value="([^"]*)"/)?.[1] ?? '').trim()
+    const html = await body(await req('/settings'))
+    const topicOf = (id) => {
+      const tag = html.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] ?? ''
+      return (tag.match(/value="([^"]*)"/)?.[1] ?? '').trim()
+    }
+    const feed = topicOf('my-topic')
+    const tracking = topicOf('my-way-topic')
     const wayUser = (d?.users ?? []).find((u) => String(u.username).toLowerCase() === USER.toLowerCase())
-    if (mine) {
-      check('WAY pushes to the SAME channel /settings shows', wayUser?.topic === mine, `settings=${mine} way=${wayUser?.topic ?? 'none'}`)
+
+    // The cross-check that matters: whatever /settings calls this person's
+    // TRACKING topic must be the exact topic the DO would publish their events
+    // to, and it must not be the money channel.
+    if (tracking) {
+      check('WAY pushes to the TRACKING topic /settings shows',
+        wayUser?.trackingTopic === tracking, `settings=${tracking} way=${wayUser?.trackingTopic ?? 'none'}`)
+      if (feed) {
+        check('the two channels are different topics',
+          feed !== tracking, `both are ${feed} — the split has been undone`)
+      }
     } else {
-      check('a person with no channel is null in WAY too', (wayUser?.topic ?? null) === null, `way=${wayUser?.topic}`)
+      check('a person with no tracking topic is null in WAY too',
+        (wayUser?.trackingTopic ?? null) === null, `way=${wayUser?.trackingTopic}`)
+    }
+
+    // W.A.Y's OWN screen, which is where a phone actually gets its topic from.
+    // It reads identity now; reading its own stale copy is how it once handed
+    // out a topic that received nothing.
+    const wayUsers = await req('/way/api/users')
+    if (wayUsers.status === 200) {
+      let list = null
+      try { list = JSON.parse(await body(wayUsers)) } catch (e) {}
+      const mine = (Array.isArray(list) ? list : []).find((u) => String(u.username).toLowerCase() === USER.toLowerCase())
+      check("WAY's Users & topics screen shows the SAME tracking topic",
+        mine && mine.ntfyTopic === (tracking || null),
+        `screen=${mine?.ntfyTopic ?? '(missing)'} settings=${tracking || '(none)'}`)
+      check('and says which side answered, so a dead topic cannot look live',
+        !!mine && (mine.topicSource === 'identity' || mine.topicSource === 'way-db'),
+        `topicSource=${mine?.topicSource}`)
+    } else {
+      bad("WAY's Users & topics screen answers", `status ${wayUsers.status}`)
     }
   }
 }
@@ -553,6 +599,396 @@ log('\n13. Laoka shopping list → one itemized Sompitra expense (no CSV hop)')
         `expected "${priced.length} items" in the details panel`)
     }
   }
+}
+
+// ─── 14. A template can be forgotten ─────────────────────────────
+log('\n14. Laoka: discarding the template (the way back out of "this is the template")')
+{
+  // A saved-but-unconfirmed plan is only a proposal, so the household has to be
+  // able to walk away from it — including the prices already typed into the
+  // list it produced. The route is destructive by nature, so the checks below
+  // are deliberately the ones that need no fixture: they prove it is routed,
+  // that it looks weeks up, and that it is gated. The two that DO need a
+  // fixture skip out loud rather than passing quietly.
+
+  const ghost = await req('/laoka/api/weeks/999999/plan', { method: 'DELETE' })
+  const ghostBody = await body(ghost)
+  // 404 (no such week) rather than 400 (a missing guard) is the difference
+  // between the route existing and being dispatched to the right handler.
+  check('discarding demands a week that exists', ghost.status === 404 && /no such week/i.test(ghostBody),
+    `${ghost.status} ${ghostBody.slice(0, 80)}`)
+
+  const anon = await fetch(`${BASE}/laoka/api/weeks/1/plan`, { method: 'DELETE', redirect: 'manual' })
+  const anonTo = anon.headers.get('location') || ''
+  check('missing a template is session-gated like every other write',
+    anon.status === 401 || (anon.status === 302 && anonTo.includes('/login')),
+    `${anon.status} → ${anonTo || '(no redirect, and not a 401)'}`)
+
+  const laokaJs = await body(await req('/laoka/app.js'))
+  // Without this the server could be perfect and the button still absent: the
+  // card is drawn client-side from exactly this string.
+  check('the button is wired to the endpoint, not to a local repaint',
+    laokaJs.includes("'/api/weeks/' + state.week.week.id + '/plan'") && laokaJs.includes('Discard the template'),
+    'app.js does not call DELETE /api/weeks/:id/plan')
+
+  let boot = null
+  try { boot = JSON.parse(await body(await req('/laoka/api/bootstrap'))) } catch (e) {}
+  const weeks = boot?.weeks || []
+
+  const empty = []
+  const settled = []
+  for (const w of weeks) {
+    if (w.status === 'archived') continue
+    // bootstrap hands these rows over as they come out of D1 (snake_case),
+    // unlike the state payload, which is camelCase.
+    if (w.confirmed_at) settled.push(w)
+    try {
+      const st = JSON.parse(await body(await req(`/laoka/api/state?week=${w.id}`)))
+      if (!st.planId) empty.push(w)
+    } catch (e) {}
+  }
+
+  if (!empty.length) {
+    // Not a failure: a household mid-week has a plan in every open week. The
+    // destructive half was proven by hand against a throwaway week; this suite
+    // will start asserting it here the next time a week is open and empty.
+    log('  \x1b[90m– skipped: every open week has a plan, and this suite will not wipe a real one.\x1b[0m')
+    log('  \x1b[90m  When changing this route, run it by hand against a throwaway week\x1b[0m')
+  } else {
+    const w = empty[0]
+    const res = await req(`/laoka/api/weeks/${w.id}/plan`, { method: 'DELETE' })
+    let st = null
+    try { st = JSON.parse(await body(res)) } catch (e) {}
+    check('forgetting an empty week leaves it open, not broken',
+      res.status === 200 && st?.ok === true && st.planId === null && (st.days || []).length === 0,
+      `${res.status} planId=${st?.planId} days=${(st?.days || []).length}`)
+    // Every line left must be Pantry. A plan line surviving here would mean the
+    // list outlived the plan that asked for it, which is the whole bug class the
+    // sync exists to prevent.
+    check('and every line it kept is a Pantry line',
+      (st?.shopping || []).every((l) => l.origin === 'pantry'),
+      `origins ${JSON.stringify([...new Set((st?.shopping || []).map((l) => l.origin))])}`)
+  }
+
+  if (!settled.length) {
+    log('  \x1b[90m– skipped: no confirmed week to refuse\x1b[0m')
+  } else {
+    const res = await req(`/laoka/api/weeks/${settled[0].id}/plan`, { method: 'DELETE' })
+    const text = await body(res)
+    check('a settled week refuses to be forgotten',
+      res.status === 409 && /confirmed/i.test(text), `${res.status} ${text.slice(0, 80)}`)
+  }
+}
+
+// ─── 15. the map is drawn on a playback clock (visual only) ──────
+log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
+{
+  // The rendering rewrite is only trustworthy if the things around it did NOT
+  // move, so this section asserts both halves against the SERVED page (not the
+  // repo): the loop exists, the ping path no longer redraws, and every style
+  // value that decides how a track looks is still exactly what it was.
+  const way = await body(await req('/way/index.html'))
+
+  // Pull one function body out by brace balance, so a check can talk about
+  // what a function does instead of pattern-matching the whole file.
+  const fnBody = (src, name) => {
+    const at = src.indexOf(`function ${name}(`)
+    if (at === -1) return null
+    const open = src.indexOf('{', at)
+    if (open === -1) return null
+    let depth = 0
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open, i + 1) }
+    }
+    return null
+  }
+
+  check('the playback loop is in the page that is actually served',
+    way.includes('startPlaybackLoop()') && way.includes('PLAYBACK_LAG_SECONDS') && way.includes('function playbackTick('),
+    'the served /way/index.html has no playback loop')
+
+  const ping = fnBody(way, 'handleNewPing')
+  check('a new ping no longer rebuilds the map',
+    !!ping && !/redrawAllTracks|updateMarker\(|panTo\(/.test(ping),
+    ping ? 'handleNewPing still redraws or pans' : 'handleNewPing is not in the page')
+
+  const cam = fnBody(way, 'updateFollowCamera')
+  const zone = fnBody(way, 'followDeadZonePx')
+  check('the camera is the only thing that moves the map',
+    !!cam && cam.includes('panBy(') && !!zone && zone.includes('FOLLOW_DEAD_ZONE_SCREEN_FRACTION') &&
+    (way.match(/map\.panBy\(/g) || []).length === 1 &&
+    // The per-ping pan is the bug this replaced: it must not come back anywhere.
+    !/map\.panTo\(/.test(way),
+    'the camera should be one panBy() from updateFollowCamera, off a screen-fraction box, and panTo() should be gone')
+
+  // Styling is FROZEN by this feature: the same numbers must still decide what
+  // a track looks like, or "visual only" stopped being true.
+  const frozen = [
+    "TRACK_GAP_SECONDS: 90",
+    "TRACK_WEIGHT_DRIVING: 3.5",
+    "TRACK_OPACITY_DRIVING: 0.9",
+    "TRACK_WEIGHT_WALKING: 2.5",
+    "TRACK_OPACITY_WALKING: 0.85",
+    "WALK_TRACK_DASH_ARRAY: '6, 6'",
+    "{ maxKmh: 10,       color: '#f1c40f' }",
+    "{ maxKmh: 40,       color: '#2ecc71' }",
+    "{ maxKmh: 70,       color: '#38bdf8' }",
+    "{ maxKmh: Infinity, color: '#ef4444' }",
+    "STATIONARY_DOT_CLUSTER_RADIUS_M: 20",
+    "STATIONARY_DOT_RADIUS_PX: 5",
+    "STATIONARY_DOT_COLOR: '#2ecc71'"
+  ]
+  const changed = frozen.filter((line) => !way.includes(line))
+  check('every track style value is untouched (colour, dash, weights, dot)',
+    changed.length === 0, `changed or missing: ${changed.join(' | ')}`)
+
+  const commit = fnBody(way, 'commitTrail')
+  const tail = fnBody(way, 'drawTail')
+  check('the append-only path keeps the SAME break rules as the old loop',
+    !!commit && commit.includes('TRACK_GAP_SECONDS') && commit.includes('isDriving !== st.runDriving') &&
+    !!tail && tail.includes('TRACK_GAP_SECONDS') && tail.includes('pos.next.is_driving'),
+    'the streaming trail no longer breaks on a gap + a mode change')
+
+  // The Trips summary is a DIFFERENT data path on purpose, and it must stay one:
+  // it is the household's own numbers, read from the database.
+  const legs = fnBody(way, 'computeLegsForDay')
+  check('the Trips summary still sums the complete ping list, not the playback buffer',
+    !!legs && !/markerPositions|playbackClock|trailFor|drawnIdx/.test(legs),
+    'computeLegsForDay reaches into the playback state')
+
+  const totals = fnBody(way, 'loadMonthlyTotals')
+  const historyOf = fnBody(way, 'fetchHistoryFor')
+  check('monthly driven/walked still comes out of the database',
+    !!totals && totals.includes('fetchHistoryFor(') && !!historyOf && historyOf.includes('/way/api/history') &&
+    way.includes('(through yesterday)'),
+    'the monthly totals no longer read /way/api/history')
+}
+
+// ─── 16. installable on Android + readable on both shapes ───────
+log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
+{
+  // Installation is refused outright when the manifest or an icon is wrong, so
+  // this section reads the SERVED bytes. It exists because the brand kit once
+  // shipped `pwa-maskable-512.png` as a byte-for-byte copy of `icon-512.png`:
+  // the manifest said "maskable", Android masked it to a circle, and the house
+  // lost its corners (44px of the mark, measured). A duplicate is invisible in
+  // any HTML check — only the bytes catch it.
+  const { createHash } = await import('node:crypto')
+  const sha = (b) => createHash('sha1').update(Buffer.from(b)).digest('hex')
+  const pngSize = (b) => {
+    const buf = Buffer.from(b)
+    if (buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47) return null
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+  }
+
+  const manRes = await req('/manifest.webmanifest')
+  const manBody = await body(manRes)
+  check('the manifest is served AS a manifest',
+    manRes.status === 200 && /manifest\+json/.test(manRes.headers.get('content-type') || ''),
+    `${manRes.status} ${manRes.headers.get('content-type')}`)
+  let man = null
+  try { man = JSON.parse(manBody) } catch (e) {}
+  check('the manifest is valid JSON with a name', !!man && !!man.name && !!man.short_name, manBody.slice(0, 60))
+
+  // Everything Chrome for Android requires before it will offer "Install app".
+  check('the manifest carries the fields an install needs',
+    man?.start_url === '/' && man?.scope === '/' && man?.display === 'standalone' && !!man?.theme_color,
+    `start_url=${man?.start_url} scope=${man?.scope} display=${man?.display} theme=${man?.theme_color}`)
+
+  const icons = man?.icons || []
+  const has = (size, purpose) => icons.some((i) => i.sizes === size && (i.purpose || 'any').split(' ').includes(purpose))
+  check('it declares an any 192, an any 512 and a maskable 512',
+    has('192x192', 'any') && has('512x512', 'any') && has('512x512', 'maskable'),
+    icons.map((i) => `${i.sizes}/${i.purpose || 'any'}`).join(' ') || '(no icons)')
+
+  // Each declared icon must exist AND be the size it advertises — a wrong-size
+  // icon is rejected silently, and the manifest then has no usable icon at all.
+  const fetched = []
+  for (const icon of icons) {
+    const r = await req(icon.src)
+    const bytes = Buffer.from(await r.arrayBuffer())
+    const dim = pngSize(bytes)
+    const want = icon.sizes.split('x')
+    check(`icon ${icon.src} is a ${icon.sizes} PNG`,
+      r.status === 200 && /image\/png/.test(r.headers.get('content-type') || '') &&
+      dim && dim.w === Number(want[0]) && dim.h === Number(want[1]),
+      `${r.status} ${dim ? `${dim.w}x${dim.h}` : 'not a PNG'}`)
+    if (dim) fetched.push({ src: icon.src, purpose: icon.purpose || 'any', hash: sha(bytes) })
+  }
+
+  // The regression guard: a "maskable" that is the same file as the plain icon
+  // is not a maskable, it is a mislabel that Android crops.
+  const anyHashes = new Set(fetched.filter((f) => f.purpose.split(' ').includes('any')).map((f) => f.hash))
+  const maskables = fetched.filter((f) => f.purpose.split(' ').includes('maskable'))
+  check('the maskable icon is its own artwork, not a copy of the plain one',
+    maskables.length > 0 && maskables.every((m) => !anyHashes.has(m.hash)),
+    'the maskable icon is byte-identical to an any icon — Android would clip the mark')
+
+  const appleRef = await req('/icons/apple-touch-icon.png')
+  const apple = pngSize(await appleRef.arrayBuffer())
+  check('apple-touch-icon is a square PNG (iOS would letterbox a rectangle)',
+    appleRef.status === 200 && !!apple && apple.w === apple.h && apple.w >= 180,
+    apple ? `${apple.w}x${apple.h}` : `status ${appleRef.status}`)
+
+  const swRes = await req('/sw.js')
+  const sw = await body(swRes)
+  check('the service worker is served and actually handles fetches',
+    swRes.status === 200 && /javascript/.test(swRes.headers.get('content-type') || '') &&
+    /addEventListener\(\s*'fetch'/.test(sw),
+    `${swRes.status} ${swRes.headers.get('content-type')}`)
+
+  // ── The chrome on every page, in both shapes ──
+  // `md:` classes ARE the desktop/mobile split: the bar hides itself from md up
+  // and the header nav appears, so a page missing either one breaks a shape.
+  const CHROME_PAGES = ['/', '/budget', '/chat', '/way/', '/laoka/', '/settings']
+  for (const p of CHROME_PAGES) {
+    const html = await body(await req(p))
+    const bar = tabBarHtml(html)
+    if (!bar) { bad(`${p}: tab bar present`, 'no <nav id="home-tabbar">'); continue }
+
+    // Split the bar into anchors and read each one as a whole tab.
+    const tabs = bar.split('<a href=').slice(1).map((c) => '<a href=' + c).map((a) => ({
+      href: (a.match(/href="([^"]+)"/) || [])[1],
+      active: a.includes('aria-current="page"'),
+      color: ((a.match(/background-color:(#[0-9a-fA-F]{6})/) || [])[1] || '').toLowerCase(),
+      width: (a.match(/width:(\d+)px/) || [])[1],
+      weight: a.includes('font-semibold') ? 'semibold' : 'medium',
+      // Every `--tab:#hex` in the anchor: the pill (which carries the icon)
+      // and the label. The colour arrives as a custom property, not a literal
+      // `color:` — that is what lets dark mode lift the tint (see `.tab-tint`),
+      // so reading the variable is exactly what "keeps its colour" means.
+      tints: [...a.matchAll(/--tab:(#[0-9a-fA-F]{6})/g)].map((m) => m[1].toLowerCase()),
+    }))
+    const nav = (html.match(/<nav id="home-nav" class="([^"]*)"/) || [])[1] || ''
+
+    check(`${p}: the bottom bar is for phones, the header nav for desktop`,
+      /md:hidden/.test((bar.match(/^<nav[^>]*>/) || [''])[0]) && /hidden/.test(nav) && /md:flex/.test(nav),
+      `bar="${(bar.match(/^<nav[^>]*>/) || [''])[0].slice(0, 60)}" nav="${nav}"`)
+
+    const navHrefs = [...html.matchAll(/<nav id="home-nav"[\s\S]*?<\/nav>/g)]
+      .flatMap((m) => [...m[0].matchAll(/href="([^"]+)"/g)].map((h) => h[1]))
+    check(`${p}: both shapes carry the same six tabs`,
+      tabs.length === 6 && navHrefs.length === 6 && tabs.every((t, i) => t.href === navHrefs[i]),
+      `bar ${tabs.map((t) => t.href).join(',')} vs nav ${navHrefs.join(',')}`)
+
+    // A tab keeps its OWN colour whether or not it is the one you are on — the
+    // colours are how the modules stay recognisable at a glance.
+    const colours = tabs.map((t) => t.color)
+    check(`${p}: every tab carries its own colour (inactive ones included)`,
+      colours.every((c) => /^#[0-9a-f]{6}$/.test(c)) && new Set(colours).size === 6,
+      `colours ${colours.join(' ')}`)
+
+    // …and not only as a background: BOTH the icon's wrapper and the label
+    // carry the tab's own tint, on every tab, whether or not you are on it.
+    // This is the property that stops an inactive tab collapsing back to grey.
+    check(`${p}: every tab's icon AND label carry its own colour`,
+      tabs.every((t) => t.tints.length >= 2 && t.tints.every((c) => c === t.color)),
+      tabs.map((t) => `${t.href}=>${t.tints.join('/') || '(none)'} (want ${t.color})`).join(' '))
+
+    check(`${p}: no inactive tab falls back to grey`,
+      !/text-gray-[45]00/.test(bar) && !/color:#(6b7280|9ca3af)/.test(bar),
+      'the tab bar still greys an inactive tab (text utility or literal grey)')
+
+    // The desktop nav is the same rule at md+: same six tabs, same six colours.
+    const navBlock = (html.match(/<nav id="home-nav"[\s\S]*?<\/nav>/) || [''])[0]
+    const navTints = navBlock.split('<a href=').slice(1)
+      .map((a) => [...a.matchAll(/--tab:(#[0-9a-fA-F]{6})/g)].map((m) => m[1].toLowerCase()))
+    check(`${p}: the desktop nav keeps the same colours as the bottom bar`,
+      navTints.length === 6 && navTints.every((cs, i) => cs.length >= 1 && cs.every((c) => c === tabs[i].color)),
+      navTints.map((cs, i) => `${tabs[i]?.href}=>${cs.join('/') || '(none)'}`).join(' '))
+
+    // …and being ON one is shown by shape and weight, not by being the only
+    // coloured tab: one 26px bar, a bold label, and a theme colour to match.
+    const active = tabs.filter((t) => t.active)
+    check(`${p}: exactly one tab is marked active, by a bar + a bold label`,
+      active.length === 1 && active[0].width === '26' && active[0].weight === 'semibold' &&
+      tabs.filter((t) => !t.active).every((t) => t.width === '0' && t.weight === 'medium'),
+      `active ${active.map((t) => t.href).join(',') || '(none)'} width=${active.map((t) => t.width).join(',')}`)
+
+    const theme = (html.match(/<meta name="theme-color" content="([^"]+)"/) || [])[1]
+    check(`${p}: the browser/status bar matches the module you are in`,
+      !!theme && !!active[0] && theme.toLowerCase() === active[0].color,
+      `theme-color=${theme} vs active tab ${active[0]?.color}`)
+
+    check(`${p}: it declares the manifest, the touch icon and PWA viewport`,
+      /<link rel="manifest" href="\/manifest\.webmanifest"/.test(html) &&
+      /<link rel="apple-touch-icon"/.test(html) && /viewport-fit=cover/.test(html),
+      'a page that misses these installs differently (or not at all)')
+  }
+
+  // The You tab is where installation is discoverable, and its button must stay
+  // wired to the browser's own prompt (it cannot fire in this test).
+  const you = await body(await req('/settings'))
+  check('the You tab offers to install, wired to the real prompt',
+    /id="install-app-card"/.test(you) && you.includes('beforeinstallprompt'),
+    'no install card, or it is not wired to beforeinstallprompt')
+}
+
+// ─── 17. Laoka inside the shell: the list must scroll and clear the ribbon ──
+log('\n17. Laoka as a tab: scrolling, the sticky nav, and the export ribbon')
+{
+  // These three are all "the embed rewrote the app's own layout" bugs, and every
+  // one of them is invisible to a screenshot of the top of the page:
+  //
+  //   * the old embed set `overflow-x: hidden` on html/body. On the ROOT element
+  //     that is a documented way to stop the document being the viewport
+  //     scroller, which loses MOUSE-WHEEL scrolling of the whole page. It was
+  //     hiding a symptom (the six nav buttons overflowed a phone-width frame and
+  //     were clipped, so History and Settings were unreachable). The right fix is
+  //     to let the nav wrap and never touch html/body overflow at all.
+  //   * `#view { padding-bottom: 16px !important }` out-specifies the app's own
+  //     `body.with-totals .view` rule, so the last rows of the shopping list end
+  //     up permanently UNDER the fixed totals/export ribbon.
+  //
+  // So this section asserts the invariants, not the pixels.
+  const laoka = await body(await req('/laoka/index.html'))
+  const embedRaw = (laoka.match(/if \(window\.self !== window\.top\)[\s\S]*?<\\\/style>'\)/) || [''])[0]
+  // The block's prose explains WHY there is no root overflow rule, so the
+  // comments have to go before searching it — otherwise the explanation is read
+  // as the bug it warns about.
+  const embed = embedRaw.replace(/\/\*[\s\S]*?\*\//g, '')
+  check('the Laoka module document still detects the Home embed',
+    embed.length > 0 && /home-embed/.test(embed),
+    'no embed block — the app would draw its own header and bottom nav inside the shell')
+
+  check('the embed never sets overflow on html/body (that is what kills wheel scrolling)',
+    !/html, body\s*\{[^}]*overflow/.test(embed) && !/overflow-x:\s*hidden/.test(embed),
+    'a root overflow rule is back in the Laoka embed — the page will stop scrolling with the mouse wheel')
+
+  check('Laoka\'s own nav wraps, so no tab is clipped off a phone-width frame',
+    /#topnav \.inner\s*\{[^}]*flex-wrap:\s*wrap/.test(embed),
+    'the nav does not wrap: History and Settings fall off the right edge and cannot be reached')
+
+  // The two paddings have to disagree on purpose: 16px for the pages the shell
+  // already ends, and room for the ribbon on the shopping list.
+  const plainPad = (embed.match(/'#view \{ padding-bottom: calc\((\d+)px/) || [])[1]
+  const totalsPad = (embed.match(/'body\.with-totals #view \{ padding-bottom: calc\((\d+)px/) || [])[1]
+  check('the shopping list reserves room for the fixed totals/export ribbon',
+    Number(totalsPad) >= 80 && Number(plainPad) < Number(totalsPad),
+    `view padding-bottom ${plainPad}px, with-totals ${totalsPad}px — the last rows will sit under the ribbon`)
+
+  // Inside the shell there is no Laoka bottom nav, so the ribbon belongs at the
+  // frame's edge instead of floating one nav-height above it.
+  check('the ribbon sits at the frame edge, not one dead nav-height above it',
+    /\.totals \{ bottom: 0 !important; \}/.test(embed),
+    'the totals bar still floats above a bottom nav this app no longer draws')
+
+  // The Sompitra tab icon: a receipt (a slip with a torn edge and three rule
+  // lines), not the wallet-ish card it used to be — at 24px a card says nothing
+  // about expenses. Four subpaths (body + 3 rules) is the fingerprint, and it
+  // also guards the WINDING: the body runs clockwise and the rules must run
+  // counter-clockwise or they vanish into the fill instead of punching holes.
+  const home = await body(await req('/'))
+  const budgetTab = tabBarHtml(home).split('<a href=').slice(1).map((a) => '<a href=' + a)
+    .find((a) => a.startsWith('<a href="/budget"')) || ''
+  const moneyPath = (budgetTab.match(/<path d="([^"]+)"/) || [])[1] || ''
+  check('the Sompitra tab icon is the receipt (body + 3 rule lines)',
+    moneyPath.split('M').length - 1 === 4 && moneyPath.includes('18.6'),
+    `money icon has ${moneyPath.split('M').length - 1} subpaths — expected the receipt's 4 (body + 3 rules)`)
+  check('the Sompitra tab icon is no longer the old wallet/card',
+    !moneyPath.includes('M17 10.5a1.5'),
+    'the wallet path is back on the Sompitra tab')
 }
 
 // ─── summary ─────────────────────────────────────────────────────

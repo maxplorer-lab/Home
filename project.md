@@ -39,9 +39,38 @@ You** — defined **once** in `src/views/app-chrome.tsx` (`HomeHeader`,
 (Sompitra pages) and `src/views/shell.tsx` (the WAY / Laoka / Chat tabs).
 Each module keeps its own palette and its own internal controls, but never
 its own brand bar or its own navigation bar — those belong to Home.
-Tab icons are the real assets (`/icon-64.png`, `/way/icon-512.png`,
+Tab icons are the real assets (`/icon-64.png`, `/way/icon-64.png`,
 `/laoka/icon.svg`) plus inline SVG for the shell-native tabs — never emoji,
 which render as blurry colour glyphs and cannot inherit the active tint.
+Sompitra's is a **receipt** (a slip with a torn bottom edge and three rule
+lines), not the wallet-ish card it started as: at 24px a card reads as "a
+card" and says nothing about expenses, while a receipt is legible at 20px with
+no colour at all and cannot be confused with the house / bubble / pot / pin /
+person around it. Its three rule lines are **holes punched by winding** — the
+body runs clockwise, each rule counter-clockwise, per the nonzero fill rule;
+reverse either and the lines silently drown in the fill.
+
+**Two shapes, one list, one colour rule.** Below 768px the navigation is the
+bottom bar; from 768px up the *same* six tabs are laid out horizontally in the
+header (`HomeNav`) and the bar is hidden — a phone bar pinned to the bottom of
+a 1280px window is the biggest "this is a phone page" tell. Both shapes map
+over `HOME_TABS`, so a tab cannot exist in one and not the other (`npm run
+smoke` asserts both carry the same six). Each tab wears **its own colour
+whether or not it is active** — green Home, teal Sompitra, violet Chat, orange
+Laoka, sky WAY, slate You — because the six modules are meant to be readable
+by colour alone; selection is carried by the 26px marker above the icon, a
+10%-tint pill and a bold label, i.e. shape and weight, never hue.
+
+The tint travels as the `--tab` custom property rather than a literal `color:`
+for one reason: **contrast**. On the dark bar the raw tints measure 1.9:1
+(slate You) and 2.6:1 (violet Chat) at label size, so `html.dark .tab-tint`
+lifts them toward white with `color-mix()` (measured 4.7–7.5:1 after the lift,
+5.3+1 at full opacity). On white they are used as-is and the inactive dim is
+deliberately *not* applied — those brand hexes are already at their ceiling
+(2.9–7.6:1), and dimming them further is exactly the "inactive tabs fade out"
+look the colour rule exists to prevent. `<meta theme-color>` follows the active
+tab, so the browser chrome and an installed app's status bar match the module
+you are in.
 
 * **Sompitra pages and Chat** render directly in the shell document. Chat
   passes `fullBleed` so the message list stretches between header and tab bar
@@ -56,6 +85,21 @@ which render as blurry colour glyphs and cannot inherit the active tint.
   the map — they are the module's only internal navigation; Laoka keeps its
   week selector and tab pills. Visited standalone the modules keep their
   complete original UI.
+
+  **The embed must not touch the module's scroll container.** Laoka's embed
+  block deliberately sets *no* `overflow` on `html`/`body`: an `overflow-x:
+  hidden` on the root element is a documented way to stop the document being
+  the viewport scroller, which loses **mouse-wheel scrolling of the whole
+  page** — and it was only ever there to hide a symptom (six nav buttons
+  overflowing a phone-width frame, clipping History and Settings). The real
+  fixes are the ones in that block: the nav **wraps**, nothing in the app is
+  wider than a phone, the nav stays **sticky** under the 46px header (the
+  shell owns the bottom nav, so this row is the only way between Laoka's six
+  tabs), the fixed totals/export ribbon moves to the frame's edge, and
+  `body.with-totals #view` reserves room for it — at the embed's own
+  specificity, or the plain 16px rule wins and the last rows of the shopping
+  list sit permanently under the ribbon. `npm run smoke` section 17 asserts
+  all five.
 * **There is exactly one chat — and it is WAY's own.** The Chat tab (`/chat`)
   is a ModuleShell embedding `/chat/index.html` — **its own document**, the
   family chat and nothing else. The code inside it IS WAY's original chat
@@ -101,6 +145,28 @@ which render as blurry colour glyphs and cannot inherit the active tint.
     record.
 * Sompitra (budget/kine/debts/sales) is one tab with its own desktop sub-nav;
   `/settings` is the You tab; `/admin` stays a Sompitra-style page.
+
+## Installable (PWA)
+
+Home installs from Chrome/Brave on Android and then behaves like an app:
+`public/manifest.webmanifest` (standalone, `start_url`/`scope` `/`, shortcuts
+into Budget, Laoka, the map and the chat), a **real** maskable icon, and
+`public/sw.js`. Registration happens in both hosts, so every tab serves the
+same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
+
+* **A maskable icon must not be a copy of the plain one.** Android crops a
+  maskable icon to the platform's shape; the brand kit's
+  `pwa-maskable-512.png` was a byte-for-byte duplicate of `icon-512.png`, which
+  clipped 111px of the mark once the circle was applied. It is regenerated
+  with the mark inside the safe circle. `npm run smoke` compares the *served
+  hashes*, because a duplicate is invisible to any HTML-level check.
+* **The service worker caches static assets only — never HTML, never an API
+  response.** Every page here is server-rendered for ONE signed-in person on a
+  possibly shared device, so a cached `/budget` or `/way/index.html` would hand
+  one person another person's page the moment the network blinked.
+* **Installation is offered, never promised:** the You tab shows *Install Home*
+  only when the browser fires `beforeinstallprompt`, with an iOS hint and a
+  browser-menu fallback line for everything else.
 
 ## Identity engine (`src/identity.ts`)
 
@@ -158,13 +224,15 @@ Four D1 databases, three of them the pre-existing production ones (unchanged
 schemas, untouched data):
 
 * `home-db` — new; schema in `migrations-home/` (0001: users, sessions,
-  attempts; 0002: per-person ntfy channels + household `home_settings`;
-  0003: `laoka_imports`, the Laoka→Sompitra hand-off ledger).
-  It holds identity AND notification identity, because a phone follows one
-  ntfy topic — a channel belongs to a person, not to an app. It also holds
-  the only record of a fact that belongs to **two** modules at once, which is
-  why the shopping-list hand-off ledger lives here rather than in either
-  module's database (see below).
+  attempts; 0002: the first per-person ntfy channel + household
+  `home_settings`; 0003: `laoka_imports`, the Laoka→Sompitra hand-off ledger;
+  0004: the SECOND channel, `users.way_topic`).
+  It holds identity AND notification identity — a channel belongs to a person,
+  not to an app — and there are **two** of them, because the two halves of the
+  app are filtered differently (see "Notifications" below). It also holds the
+  only record of a fact that belongs to **two** modules at once, which is why
+  the shopping-list hand-off ledger lives here rather than in either module's
+  database (see below).
 * `sompitra-db` — migrations in `migrations-sompitra/`.
 * `way-db` — migrations in `migrations-way/`.
 * `laoka` — migrations in `migrations-laoka/`.
@@ -173,28 +241,48 @@ Durable Objects: `FLEET_DO` (W.A.Y live fleet + chat) and `LOBBY` (Laoka
 metadata-only fan-out). Cron `0 21 * * *` flushes the FleetDO into way-db —
 **that cron is the "today" boundary for W.A.Y; never move it to UTC midnight.**
 
-## Notifications (one channel per person)
+## Notifications (two channels per person)
 
 Before the merge each app had its own idea of "where notifications go":
 Sompitra pushed to a single household topic, W.A.Y owned a topic per person.
-The merged app has **one channel per person**, owned by `home-db`
-(`users.ntfy_topic`), and every module pushes to it:
+The merged app has **two channels per person**, both owned by `home-db`,
+because the two halves are filtered in opposite ways:
 
-* **Two publishers, one channel set.** Sompitra pushes through
-  `src/lib/notify.ts` (which takes the whole `Env` and fans an event out to
-  every active person's channel). W.A.Y has its own ntfy publisher inside the
-  FleetDO, so its `getNotifyConfig()` reads the same home-db channels — and
-  because the DO caches them, every channel/server write in `/settings` calls
-  `reloadWayNotifications(env)`. `GET /way/api/debug/notify` reports exactly
-  which topics W.A.Y resolved, which is how a drift between the two senders
-  gets caught. Both facts are asserted by `npm run smoke`.
+| Column | Channel | Delivered to | Decided by |
+| --- | --- | --- | --- |
+| `users.ntfy_topic` | 💬 the **feed** — expenses, income, Kiné, in the chat's wording | every active person, **including whoever recorded it** | nothing: Sompitra's rule is "any activity goes out" |
+| `users.way_topic` | 📍 the **tracking** channel — chat, entry, exit, stationary, moving, approach | each recipient who ticked that activity for that person | W.A.Y's grid (`way-db.notification_subs`), never the person whose action it was, plus their quiet hours |
+
+One topic could not do both jobs. "You are not notified about your own
+arrival" is incompatible with "the whole household sees every expense, mine
+included", and a household wants to silence location noise at night without
+going deaf to the budget. Splitting them is also what makes W.A.Y's grid mean
+what it says: a grid that gated bank notifications too would be a surprise.
+
+* **Two publishers, two addresses.** Sompitra pushes through
+  `src/lib/notify.ts` (whole `Env`, fans out to every feed channel). W.A.Y
+  publishes from inside the FleetDO, whose `getNotifyConfig()` resolves each
+  recipient's **tracking** channel from home-db. Both read the same identity
+  database — that is what keeps one phone = one pair of topics no matter which
+  module publishes.
+* **The DO caches them**, so every channel or server write in `/settings`
+  calls `reloadWayNotifications(env)`; a rotation that skipped it would look
+  like a silent failure for W.A.Y activity only. `GET /way/api/debug/notify`
+  reports the exact tracking topic per person and the server in force, and
+  `/way/api/users` (W.A.Y's own admin screen, where a phone actually copies
+  its topic from) now answers from identity too — reporting its own stale copy
+  is precisely how it once handed out a topic that received nothing.
 * The ntfy **server** is household-level (`home_settings.ntfy_server`), with
   a fallback read of Sompitra's legacy `app_settings.ntfy_server` so a deploy
   that has not moved it keeps working.
-* W.A.Y's existing topics are **adopted** into home-db (case-insensitive
-  username match) rather than abandoned — the phone is still following them.
-* A person with no channel is skipped; the whole push no-ops without a
-  server. Notifications are best-effort and never break a user action.
+* W.A.Y's existing topics are **adopted into `way_topic`** (case-insensitive
+  username match) rather than abandoned — the phone in the field is still
+  following them — and every tracking write is **mirrored back into `way-db`**
+  so the standalone Worker, if it serves again, publishes to the topic the
+  phone is really following rather than to the one it replaced.
+* A person with no channel on a side is skipped there; the whole push no-ops
+  without a server. Notifications are best-effort and never break a user
+action.
 
 All of this is managed in one place: **`/settings`**, organised by who a
 setting belongs to (You / the household / a module) rather than by app.
@@ -266,6 +354,114 @@ itemized list. The suite deliberately does not create a week that was never
 sent — that would put money in the household's budget behind their back; it
 reports the write half as **skipped** until a week has been sent once.
 
+## Forgetting a template
+
+A Laoka week runs through three stages, and only the last one is history:
+
+| Stage | How you know | Can it be thrown away? |
+| --- | --- | --- |
+| **Draft** | a wishlist (`is_selected = 0`) | yes — `DELETE /api/weeks/:id/candidates` |
+| **Template** | `status = 'active'`, `confirmed_at IS NULL` | yes — `DELETE /api/weeks/:id/plan` |
+| **Settled** | `confirmed_at` set | no — swap single days, or archive |
+
+The template is the stage a household actually shops from, so it has to be
+abandonable: rolling again only *replaces* the plan, and the prices already
+typed into the list it produced would stay behind attached to a week nobody
+wants. `DELETE /api/weeks/:id/plan` (the **🗑 Discard the template** button on
+Laoka's Plan tab) therefore:
+
+* deletes **every** plan the week owns — a leftover draft included, or it would
+  reappear as a wishlist the moment the week was looked at again;
+* puts the week back to `planning` and clears `exported_at` and `generation`,
+  both of which described the plan that no longer exists;
+* re-runs `syncShoppingLines()`, which with no selected plan keeps exactly the
+  Pantry lines (and the prices typed on them) and drops every plan line — the
+  same function that keeps the list honest when a single day is swapped;
+* refuses a **confirmed** or **archived** week with 409. That guard is the whole
+  safety story: `confirmed_at` is the boundary between a proposal and history,
+  so the client never has to guess which side of it it is on.
+
+Nothing is sent to the chat about a discarded template even when the week had
+been sent to Sompitra: the budget entry is real money that was spent, so
+discarding the plan it came from must not read as a correction to it.
+
+## The W.A.Y map is drawn on a playback clock (viewer only)
+
+The dashboard no longer redraws itself on every ping, and the map deliberately
+trails live by 25 s. Nothing that W.A.Y *does* changed — this is the one place
+where that has to be said explicitly, because the code that changed is the code
+that decides what a track looks like.
+
+**Why it was rebuilt.** Every ping used to (1) `map.panTo(device)` — a 0.4 s
+slide that finished long before the next one, so the world moved in steps under
+a device that never left the centre of the screen, (2) destroy and re-add every
+marker, and (3) `redrawAllTracks()`: clear **all** polylines for **all** devices
+and rebuild them from the whole point list. A 5 s ping cadence therefore looked
+like move–freeze–move, and any animation was thrown away on the next arrival.
+
+**What replaced it** (`public/way/index.html`, no server or schema change):
+
+* **A playback cursor.** A point is drawn when `Date.now() - 25 s` reaches it,
+  interpolated between its two neighbours — so the marker glides at the speed
+the server recorded instead of hopping ping to ping. This only works because
+the cursor never passes a point that has not ARRIVED (the exit guard holds pings
+and delivers them later as `track` messages), and because a trail break
+(`TRACK_GAP_SECONDS` = 90 s) is *held* rather than crawled across: there are no
+points there, so the marker waits and eases the last stretch.
+* **An append-only trail.** `commitTrail()` is the old `drawSegments()` loop
+  made resumable: identical breaks (gap / mode change), identical styles, but a
+  committed segment is never touched again, and the pair under the cursor is a
+  live "tail" that grows with it. `resetTrail()` is the rare full rebuild — a
+  fresh snapshot, the track eye switched back on, or a late `track` point that
+  slots in *before* the cursor and shifts every commit index.* **A dead-zone follow camera.** The device may roam the **middle half of the
+  screen** before the camera re-centres, along the axis it left, by the
+  minimum needed, gliding over 1.4 s instead of snapping. One glide runs at a
+  time with a 3 px minimum correction — without that, a moving device produces
+  a sub-pixel overshoot every frame and the camera re-decides forever.
+
+  Sizing this was a judgement call, and the reasoning is worth keeping:
+  a "numpad 5" ninth (a third of each axis) is only ~140 px wide on a phone at
+  follow zoom, so a device at town speed crosses it in a few seconds — the
+  camera would be moving most of the time, which is the judder this replaces —
+  and every wobble near a corner would trigger it. Half the screen
+  (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`, so the device drifts at most a quarter
+  of each axis) is the comfortable middle ground: never near an edge, road
+  ahead still visible, and measured **0–1 re-centres in 20 s** of steady 50–90
+  km/h driving where the old per-ping pan did 20. It is deliberately a SCREEN
+  fraction and not a distance — a metre-based box is a handful of pixels when
+  zoomed out, so the camera starts moving on every ping there instead, and how
+  far the eye tolerates the device drifting depends on the screen, not the
+  ground. One number to tune, like the lag.
+* **The HUD stays live.** `latestPing` (speed, cadence, battery, today's card)
+  is still the newest ping; only the *drawing* is delayed, and the header says
+  so (`map ~25s behind`) so a lagging map can never read as a dead device.
+* **The Trips summary is a different data path on purpose.** Monthly
+driven/walked totals come from `GET /way/api/history` (D1) and are summed
+  through yesterday; today's card is computed from the **complete**
+  `devicePings` list, never from the playback buffer. `devicePings` stays the
+  complete, timestamp-ordered record — the buffer and the commit state are
+  additive display state, never a truncation of it.
+
+**Invariants this rewrite is not allowed to break:** the geometry, colours
+(`SPEED_COLOR_STOPS`), walking dash, gap rule, stationary dots (colour, radius,
+20 m clustering), the glitch filter / state machine / `shouldDrawPoint`
+filters, the 21:00 flush and the **Flush now** button. `npm run smoke` section
+15 asserts the served page still carries every one of those values and that the
+ping path no longer redraws; the equivalence itself was verified by running the
+OLD segmentation against the same committed points and diffing layer by layer
+(same order, same styles, same coordinates).
+
+**Debug recipe** (no data written): in the dashboard console, feed synthetic
+pings through the real handler — `handleNewPing({deviceId:'MaxX', timestamp:new
+Date().toISOString(), latitude, longitude, speed, is_driving:true, ...})` — then
+watch `markerPositions`, `trailFor('MaxX').drawnIdx` and `followCam`. Calling
+`playbackPosition([...])` directly unit-tests the cursor's edge rules in
+isolation. Two Leaflet details worth knowing: `latLngToContainerPoint` reports a
+STALE pane position during an animated pan, so measure offsets from `followCam`
+(pure metres) instead; and `ignoreMapEvents()` is a deadline, not a flag, because
+a `flyTo` fires `zoomstart` twice and a one-shot flag let the second one cancel
+the follow it had just started.
+
 ## Invariants worth defending
 
 * Module databases and session mechanisms stay native — no shared sessions
@@ -286,6 +482,13 @@ reports the write half as **skipped** until a week has been sent once.
   with emoji icons, no dark-mode toggle and no `.pb-safe`. `npm run smoke`
   now asserts the rendered tab bar is identical on every tab, which is what
   keeps that from silently returning.
+* **W.A.Y's viewer may only change WHEN its state is drawn, never WHAT.**
+  Backend behaviour — what is tracked, dropped, written, classified or
+  flushed — is out of scope for any map/UI work, and so is every style value
+  that decides how a track looks. The playback clock and the dead-zone camera
+  are display-only: `devicePings` stays the complete ordered record the Trips
+  card sums (or the household's own numbers start disagreeing with the
+  database), and the HUD stays live while the map is behind.
 
 ## Testing locally
 
@@ -294,4 +497,8 @@ dependencies) is the end-to-end gate and `npm run check` is the type gate.
 Run both against a live dev server with `npm run verify` before deploying.
 The smoke suite covers exactly the invariants above: one login → four
 cookies, every tab/API 200, module documents gated, bad credentials
-rejected, chrome identical everywhere, `home_session`-only self-repair.
+rejected, chrome identical everywhere, `home_session`-only self-repair,
+and the two module-to-module hand-offs (Sompitra↔chat, Laoka→Sompitra).
+Where a check would write to the household's own data it reports **skipped**
+rather than passing quietly — a green suite must never mean "wiped the
+family's week to prove it could".

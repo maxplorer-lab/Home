@@ -40,7 +40,7 @@ expecting it to affect Home.
 
 ```bash
 npm run check          # tsc --noEmit (must pass before you claim done)
-npm run smoke          # 36 end-to-end checks against a RUNNING dev server
+npm run smoke          # end-to-end checks against a RUNNING dev server
 npm run verify         # check + smoke — what "tested locally" means here
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
@@ -58,6 +58,8 @@ Local DB setup (first time only):
 ```bash
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0001_identity.sql
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0002_notifications.sql
+npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0003_laoka_imports.sql
+npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0004_two_channels.sql
 npx wrangler d1 execute DB           --local --file=migrations-sompitra/0001_initial_schema.sql   # + 0002…0009
 npx wrangler d1 execute WAY_DB       --local --file=migrations-way/0000_baseline.sql              # + 0001…0007
 npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.sql                # + 0002…0008
@@ -118,27 +120,46 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     drifted once and the module tabs ended up with emoji icons, no dark-mode
     toggle and no `.pb-safe`. Tab-bar icons are the real assets plus inline
     SVG (`TabSvg`); no emoji in the bar (content emoji is fine).
-15. **One ntfy channel per PERSON, owned by home-db** (`users.ntfy_topic`) —
-    not one topic per app and not one per module. Before this, Sompitra pushed
-    to a single household topic and W.A.Y owned a topic per person; a phone
-    follows exactly one topic, so the channel had to become an identity fact.
-    `src/lib/notify.ts` now takes the whole `Env` (not a `D1Database`) and
-    fans every event out to the channels in home-db; the old copy in
-    Sompitra's `app_settings` is dead weight kept only for rollback. W.A.Y's
-    existing topics were adopted by `adoptWayTopics()` (admin button in
-    /settings, username-matched case-insensitively) — never delete
-    `way-db users.ntfy_topic` without migrating first, or every phone silently
-    stops receiving.
-    **Both senders must agree.** Sompitra reads home-db live, but W.A.Y's
-    FleetDO does NOT go through `src/lib/notify.ts` — it has its own ntfy
-    publisher and resolves channels in `getNotifyConfig()` (FleetDO.ts), so
-    that lookup reads home-db too (keyed for EVERY active home user). way-db's
-    `ntfy_topic` is the pre-merge fallback and applies ONLY when home-db has
-    never heard of that username — an explicit "channel off" (NULL) must stay
-    off, never silently fall back to the stale topic. Because the DO caches
-    this, every channel/server write in /settings calls
+    The nav is **two shapes from one list**: the bottom bar below `md`, the
+    same six tabs horizontally in the header from `md` up (`HomeNav`). Add a
+    tab to `HOME_TABS` and both shapes get it — never write a tab into one
+    shape only. And **every tab keeps its own colour when inactive** (the six
+    modules are meant to be read by colour); selection is the marker bar +
+    tinted pill + bold label, never "the others go grey". The tint is the
+    `--tab` custom property, not a literal `color:` — `html.dark .tab-tint`
+    lifts it toward white because the raw tints are 1.9–2.6:1 on the dark bar
+    at 10px. So: never grey an inactive tab, never hardcode a colour in place
+    of `--tab` (a literal cannot be lifted), and never dim the light mode (the
+    brand hexes are already at their contrast ceiling on white).
+15. **TWO ntfy channels per PERSON, both owned by home-db** (migrations-home
+    0002 + 0004) — not one topic per app, and no longer one topic doing two
+    jobs:
+    * `users.ntfy_topic` — the 💬 **feed**: Sompitra expenses/income/Kiné, in
+      the chat's wording, fanned out by `src/lib/notify.ts` to EVERY active
+      person including whoever recorded it. Nothing filters it.
+    * `users.way_topic` — 📍 **tracking**: W.A.Y's chat/entry/exit/stationary/
+      moving/approach, routed by the RECIPIENT's grid
+      (`way-db.notification_subs`), never to the person whose action it was,
+      and subject to their quiet hours.
+    Collapsing them back onto one topic breaks a rule either way: money must
+    reach the person who recorded it, and a location event must not.
+    **W.A.Y's DO does NOT go through `src/lib/notify.ts`** — it has its own
+    ntfy publisher and resolves each recipient in `getNotifyConfig()`
+    (FleetDO.ts), which reads `way_topic` from home-db, keyed for EVERY active
+    home user. `way-db users.ntfy_topic` is the pre-merge fallback and applies
+    ONLY when home-db has never heard of that username — an explicit "channel
+    off" (NULL) must stay off, never silently fall back to the stale topic.
+    Because the DO caches this, every channel/server write calls
     `reloadWayNotifications(env)`; without it a rotation looks like it failed
     for W.A.Y events only.
+    **A phone is given its topic by `/way/`'s Users & topics screen**, so that
+    screen answers from identity too (`/way/api/users` → `topicSource`), and
+    its generate button writes through `setWayTopic()` — which also MIRRORS the
+    value into `way-db`, because the standalone Worker is still a deployable
+    build and must publish to the topic the phone really follows. Never delete
+    either way-db copy without migrating first, or every phone silently stops
+    receiving. `adoptWayTopics()` (admin button in /settings) promotes W.A.Y's
+    topics into `way_topic` and never overwrites a channel someone already has.
 16. The household ntfy **server** lives in home-db (`home_settings`), with a
     fallback read of Sompitra's legacy `app_settings.ntfy_server`. Only an
     admin can change it, and it is written to both places on purpose.
@@ -216,6 +237,41 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     (same id, no new row) and the itemized render — and deliberately does NOT
     create an expense for a week that was never sent, reporting that half as
     **skipped** instead. To enable it locally, press Send once in Laoka.
+21. **A template can be forgotten; a settled week cannot.** The Plan tab's
+    **🗑 Discard the template** button calls `DELETE /laoka/api/weeks/:id/plan`
+    (`src/laoka/routes/weeks.js`). It deletes EVERY plan the week owns — a
+    leftover draft included — resets it to `planning`, clears `exported_at` and
+    `generation`, and re-syncs the shopping list, which keeps exactly the Pantry
+    lines (prices included) and drops every plan line. It refuses (409) a week
+    that is **confirmed** or **archived**: `weeks.confirmed_at` is the boundary
+    between a proposal and history, so the client never guesses which side it is
+    on. Don't "helpfully" allow it on a settled week — the way out of one is a
+    single-day swap or archiving. `npm run smoke` proves the routing, the
+    session gate and the client wiring, but the destructive half is
+    fixture-dependent and **skips** unless an open week is genuinely empty,
+    because the suite must never wipe a household's real plan. When touching
+    this route, run it by hand against a throwaway week (`POST /api/weeks` with
+    a free start date, then `generate` → `save` → discard, then delete the week
+    row with `wrangler d1 execute LAOKA_DB --local`), and watch the open-week
+    limit of 2 while you do.
+
+22. **W.A.Y's dashboard may only change WHEN state is drawn, never WHAT.**
+    `public/way/index.html` draws the map from a cursor that trails live by
+    `PLAYBACK_LAG_SECONDS` (25 s), commits track segments append-only
+    (`commitTrail` / `drawTail` / `resetTrail`), moves persistent markers
+    instead of rebuilding them per ping, and lets `updateFollowCamera` — the
+    ONLY caller of `map.panTo` — glide the camera when the device leaves the
+    middle half of the screen (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`; that size is
+    a judgement call — see `project.md`, a third of each axis is too small to be
+    comfortable). The old per-ping `redrawAllTracks()` +
+    `panTo` lived in `handleNewPing`; nothing there may come back. Frozen: the
+    speed ramp, walking dash, gap rule, stationary dots, `shouldDrawPoint`,
+    the state machine, `pending_sync` → `gps_pings`/`messages`, the 21:00 cron
+    and the Flush button. `devicePings` stays the COMPLETE ordered record the
+    Trips card sums — the playback buffer is additive display state — and the
+    HUD stays live (`map ~25s behind` is how the lag is disclosed). `npm run
+    smoke` section 15 asserts the served page still carries every frozen value
+    and that the ping path no longer redraws.
 
 ## Smoke test (local, after any identity change)
 
@@ -258,12 +314,22 @@ have their own separate repositories and their own history.
 | Login works but a module shows its own login screen | that module's`app.js`/head script bounces to `/login` when a fetch 401s; `src/identity.ts` repair helpers |
 | A module 404s on an `/api/…` path | `run_worker_first` in `wrangler.jsonc` — asset paths are served by the edge before the Worker |
 | Tab bar looks different on some tabs | both hosts must render `HomeTabBar` from `views/app-chrome.tsx` — a second, local tab bar is the bug |
+| The mouse wheel does not scroll a module (Laoka) | its embed block must not set `overflow` on `html`/`body` — a root `overflow-x: hidden` stops the document being the viewport scroller. `npm run smoke` section 17 fails on it |
+| A Laoka tab (History, Settings) cannot be reached in the shell | `#topnav .inner` must `flex-wrap: wrap`; the standalone bar only fits one line at md+, and the shell embeds it at any width |
+| The last rows of a Laoka shopping list sit under the export ribbon | `body.with-totals #view` must out-specify the embed's plain `#view` padding — the `!important` on the base rule is what eats it |
+| The Sompitra tab icon looks like a blank card | its receipt path relies on winding: body clockwise, the three rule lines counter-clockwise (nonzero rule). Reversed lines fill instead of punching through |
+| An inactive tab looks greyed/dead | the colour must come from `--tab` on `.tab-tint` (`CHROME_CSS`); a literal `color:` or a `text-gray-*` utility on a tab is the bug |
+| An inactive tab is unreadable in dark mode | `html.dark .tab-tint`'s `color-mix()` lift is missing — without it slate/violet measure 1.9–2.6:1 on the dark bar. It only works if the tint is `--tab` (see the rule above) |
+| A tab exists in one shape but not the other | `HOME_TABS` in `views/app-chrome.tsx` is the single list; the bottom bar and `HomeNav` both map over it |
+| The bottom bar shows on a desktop window | the `md:hidden` (bar) / `hidden md:flex` (header nav) split in `app-chrome.tsx` |
+| Chrome/Brave on Android never offers "Install app" | `public/manifest.webmanifest` + the icons it points at: each file must exist **at** the advertised size, and the maskable must not be a byte-copy of `icon-512.png` (Android then clips the mark). `npm run smoke` section 16 checks the served bytes |
 | Module still shows its own header/nav inside a tab | the module's own `window.self !== window.top` embed script — selectors drift when its UI changes |
 | Chat bubbles never render as "mine" | `currentUser` failed to load — check the `/way/api/users/me` response shape (it is NOT enveloped) |
 | A chat/`/ws` frame stops working after a WAY change | the socket carries pings AND chat; WAY ignores the chat frames, the chat page handles them — see both `ws.onmessage` handlers |
 | Only some tabs render the same icons | `HomeTabBar` / `TabIcon` in `app-chrome.tsx`; assets under `public/` |
 | Identity/login behaves oddly after a schema change | `migrations-home/0001_identity.sql` + the local D1 in `.wrangler/state` |
-| A notification never arrives | `users.ntfy_topic` in **home-db** (not the app it came from) — an empty channel is skipped silently; also check the `home_settings.ntfy_server` value |
+| A notification never arrives | the right column in **home-db** — `ntfy_topic` for money, `way_topic` for W.A.Y activity (not the app it came from). An empty channel is skipped silently; also check `home_settings.ntfy_server` |
+| A topic receives nothing | in W.A.Y, a topic nobody subscribes to can never fire: `GET /way/api/debug/notify` lists recipient counts per event type. In Sompitra, check the person's `ntfy_topic` is set — and remember a person is NOT sent their own W.A.Y events by design |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | WAY activity alerts missing from the chat | they are auto chat rows (`is_auto`/`event_type`) written by the DO, not pushes — `sender` is null in the DO and becomes "System" in D1 |
 | Sompitra events never appear in the chat | the DO's `/system-chat` allowlist (`EXTERNAL_SYSTEM_EVENTS`) and `postSystemChat` call in `src/lib/notify.ts`; the handler is best-effort by design, so failures only show in the console |
@@ -272,6 +338,10 @@ have their own separate repositories and their own history.
 | `/way/api/chat/history` is always empty, map history has no tracks | the DO **flush** is failing — almost always the missing `devices` FK parent (rule 19). `POST /way/api/flush` returns the real error |
 | Chat history looks frozen at some past day | `/api/chat/history` reads only what the flush has already written to `way-db`; the last 24h live in the DO and arrive over `/ws` |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |
+| The WAY marker is 25 s behind the device, or the map keeps re-centring | **not a bug** — the viewer draws on a delayed playback cursor and a dead-zone camera on purpose. The HUD stays live and shows `map ~25s behind`. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
+| A WAY track vanishes, or a trail stops growing | `resetTrail()` is the only thing that clears one (snapshot / track-eye / late `track` point). Check `trailFor(devId).drawnIdx` vs `devicePings[devId].length` in the console, and remember a hidden track (👁) still moves its marker |
+| The WAY camera stops following for no reason | `map.on('zoomstart')` clears the follow: our own `flyTo`s must be wrapped in `ignoreMapEvents()` (a deadline, NOT a flag — a `flyTo` fires `zoomstart` twice) |
+| A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker |
 
 ### What is actually served
 

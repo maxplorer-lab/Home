@@ -26,6 +26,7 @@ import {
   GeofenceInput,
 } from "../db/queries";
 import { buildCsv, buildKml } from "../lib/export";
+import { findHomeUserByName, listNtfyChannels, setWayTopic } from "../../identity";
 import {
   NOTIFY_EVENT_TYPES, NotifyEventType, generateNtfyTopic,
   NTFY_URL_SETTING_KEY, DEFAULT_NTFY_URL, normalizeNtfyServer,
@@ -119,6 +120,35 @@ function parseGeofenceFields(body: unknown): GeofenceFields | null {
     radiusM: typeof b.radiusM === "number" && b.radiusM > 0 ? b.radiusM : 50,
     exitRadiusM: typeof b.exitRadiusM === "number" && b.exitRadiusM > 0 ? b.exitRadiusM : null,
   };
+}
+
+/**
+ * Every active person's TRACKING topic, keyed by lower-cased username.
+ *
+ * Best-effort on purpose: a standalone W.A.Y deployment has no identity
+ * database bound at all, and its admin screen must still list users. A person
+ * the identity database has never heard of is therefore served from way-db's
+ * own copy, which is exactly the fallback the FleetDO uses when routing.
+ */
+async function homeTrackingTopics(env: Env): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  try {
+    for (const ch of await listNtfyChannels(env.HOME_DB)) {
+      out.set(ch.username.toLowerCase(), ch.way_topic || null);
+    }
+  } catch {
+    // No HOME_DB (standalone W.A.Y): the caller falls back to way-db.
+  }
+  return out;
+}
+
+/** The home account for a username, or null when there is none to be found. */
+async function homeUser(env: Env, username: string): Promise<{ id: string } | null> {
+  try {
+    return await findHomeUserByName(env.HOME_DB, username);
+  } catch {
+    return null;
+  }
 }
 
 export async function handleDashboardApi(request: Request, env: Env, pathname: string): Promise<Response> {
@@ -249,14 +279,28 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
   }
 
   // ---- Users (admin): list + ntfy topic management ----
+  //
+  // The topic shown here is the TRACKING channel -- the one W.A.Y's own events
+  // are routed to -- and it is answered from the identity database, because
+  // that is where it lives (home-db users.way_topic; see migrations-home/0004).
+  // way-db's copy of the column is only a fallback for a standalone
+  // deployment. Reading the copy here is exactly how this screen once told an
+  // admin to subscribe to a topic that received nothing: the DO had already
+  // moved to the home-db channel while this page kept advertising the old one.
   if (pathname === "/api/users" && request.method === "GET") {
     if (!isAdmin) return jsonError("Admin only", 403);
     const users = await getUsers(env.WAY_DB);
+    const channels = await homeTrackingTopics(env);
     return jsonSuccess(
-      users.map((u) => ({
-        id: u.id, username: u.username, emoji: u.emoji, color: u.color,
-        role: u.role, ntfyTopic: u.ntfy_topic,
-      }))
+      users.map((u) => {
+        const known = channels.has(u.username.toLowerCase());
+        return {
+          id: u.id, username: u.username, emoji: u.emoji, color: u.color,
+          role: u.role,
+          ntfyTopic: known ? channels.get(u.username.toLowerCase()) ?? null : u.ntfy_topic,
+          topicSource: known ? "identity" : "way-db",
+        };
+      })
     );
   }
   if (pathname.startsWith("/api/users/") && pathname.endsWith("/topic") && request.method === "POST") {
@@ -268,8 +312,17 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     if (!target) return jsonError("User not found", 404);
     // Regenerating invalidates the old topic immediately -- the user must be
     // given the new one, since their ntfy app is still following the old.
-    const topic = generateNtfyTopic();
-    await updateUserTopic(env.WAY_DB, targetId, topic);
+    // Rotating through the identity engine (when this person has a home
+    // account) keeps the two copies -- and therefore the phone -- in step;
+    // a standalone deployment with no identity database falls back to its own.
+    let topic: string;
+    const home = await homeUser(env, target.username);
+    if (home) {
+      topic = await setWayTopic(env, home.id);
+    } else {
+      topic = generateNtfyTopic();
+      await updateUserTopic(env.WAY_DB, targetId, topic);
+    }
     await reloadNotifications(env);
     return jsonSuccess({ id: targetId, username: target.username, ntfyTopic: topic });
   }

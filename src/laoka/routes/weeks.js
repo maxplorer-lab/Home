@@ -178,6 +178,44 @@ export default [
       return ok(await stateFor(ctx.env, fresh));
     }
   },
+
+  // Forgets the saved plan entirely — the way back out of "this is the
+  // template".
+  //
+  // A template is only a proposal: it is unconfirmed, so nothing about it is
+  // settled and throwing it away must leave no trace behind. The week row stays
+  // (its start date is the slot the plan occupies, and re-opening it must return
+  // the same week rather than a second one) but goes back to 'planning' with no
+  // plan at all, so the list it produced is rebuilt from nothing but Pantry.
+  {
+    method: 'DELETE',
+    pattern: '/api/weeks/:id/plan',
+    handler: async function (ctx) {
+      const weekId = toInt(ctx.params.id);
+      const week = await getWeekById(ctx.env, weekId);
+      if (!week) return fail(404, 'no such week');
+      if (week.status === 'archived') return fail(409, 'that week is archived, so it is history. Start a later week instead.');
+      if (week.confirmed_at) {
+        return fail(409, 'that week is confirmed, so it is settled. Archive it, or swap single days instead.');
+      }
+
+      // Every plan goes, not just the selected one. A leftover draft belongs to
+      // the same proposal and would otherwise reappear as a wishlist the moment
+      // the week is looked at again.
+      await ctx.env.DB.prepare('DELETE FROM plans WHERE week_id = ?1').bind(weekId).run();
+      // exported_at described a file that came from this plan, and generation
+      // only ever named wishlists drawn from it. Both are forgotten with it.
+      await ctx.env.DB.prepare("UPDATE weeks SET status = 'planning', exported_at = NULL, generation = 0 WHERE id = ?1")
+        .bind(weekId).run();
+      // With no selected plan this keeps exactly the Pantry lines — and the
+      // prices typed on them — while every line the plan owned disappears.
+      await syncShoppingLines(ctx.env, weekId);
+      await touchWeek(ctx.env, weekId);
+      const fresh = await getWeekById(ctx.env, weekId);
+      notifyAsync(ctx, { weekId: weekId, updatedAt: fresh.updated_at, kind: 'lines' });
+      return ok(await stateFor(ctx.env, fresh));
+    }
+  },
   {
     method: 'PATCH',
     pattern: '/api/weeks/:id',

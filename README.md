@@ -22,6 +22,21 @@ same FleetDO as the map, so history, replies and reactions are one stream.
 WAY itself has no chat any more. Visited standalone (outside the shell), the
 modules keep their original UI.
 
+The navigation is **one list with two shapes**: the phone tab bar below 768px,
+and the same six tabs laid out horizontally in the header from 768px up (a
+phone bar pinned to the bottom of a desktop window is the biggest "this is a
+phone page" tell). The icons are the modules' own marks, and Sompitra's is a
+receipt — the one shape that still says *expenses* at 20px with no colour
+behind it. Every tab keeps **its own colour whether or not it is the
+one you are on** — green Home, teal Sompitra, violet Chat, orange Laoka, sky
+WAY, slate You — and being *on* a tab is shown by a marker bar, a tinted pill
+and a bold label, never by draining the colour out of the other five. Both
+shapes come from one list, so a tab cannot exist in one and not the other. On
+Android (Chrome/Brave) it installs as a real app: a proper manifest, a
+spec-correct maskable icon and a service worker that caches static assets
+only — never a page or an API response, because this is a household app on
+possibly shared devices.
+
 That one chat is also **where the app reports activity**, so the household
 does not have to watch each module to know what happened. WAY's arrivals and
 departures were always system rows in it; now Sompitra's money events appear
@@ -69,6 +84,18 @@ The itemized list is the same shape the CSV imported into, so Sompitra
 renders it as items with a total rather than a paragraph of text. The CSV
 download is still there for anyone who wants the file.
 
+## A planned week can be forgotten
+
+Until it is confirmed, a week is a **proposal** — so an unwanted one has to be
+walkable-away-from rather than merely replaceable. In Laoka's **Plan** tab, the
+"This is the template" card ends with **🗑 Discard the template**: it forgets the
+saved plan, every price typed into the list it produced, and the pending draft,
+leaving the week open and empty so a fresh plan can be drawn for it. **Pantry
+items stay on the list** (with their prices) because they are on every list by
+design, and anything already sent to Sompitra **stays in the budget** — money
+recorded is not un-recorded by re-planning. A **confirmed** week refuses: it is
+settled, and the way out of a settled week is single-day swaps or archiving.
+
 ## Settings & notifications
 
 **`/settings`** is the one settings surface, organised by who a setting
@@ -76,14 +103,42 @@ belongs to: **you** (name, password), **notifications**, then a section per
 module. Module panels are still being folded in; the W.A.Y and Laoka sections
 link into their own UIs until then.
 
-Notifications are **one ntfy channel per person**, owned by `home-db` — not
-a topic per app. Every module (Sompitra's transactions and Kiné events,
-W.A.Y's tracking) pushes to the channel of every household member, so one
-topic on your phone covers the whole app. An admin sets the household ntfy
-server and can manage or regenerate anyone's channel; each person can see,
-copy, rotate or turn off their own. W.A.Y's existing topics were **adopted**
-(not replaced), so a phone already following one keeps working — the
-**Adopt channels from W.A.Y** button re-runs that for anyone added later.
+Notifications are **two ntfy topics per person**, both owned by `home-db` —
+not a topic per app, and not one topic doing two jobs:
+
+| Topic | Carries | Who decides what arrives |
+| --- | --- | --- |
+| 💬 **Money & chat feed** | Sompitra expenses, income and Kiné — in the same wording the chat shows | Nobody. Every active person gets every event, **including the one they recorded themselves** |
+| 📍 **W.A.Y tracking** | Arrivals, departures, movement, chat messages | W.A.Y's own notification grid: who you follow, and which activities. **Nobody is notified about their own events**, and quiet hours apply only here |
+
+So on your phone, one subscription is the household's money and the other is
+where people are — you can mute tracking at night without also going deaf to
+the budget, and vice versa. An admin sets the household ntfy server once, and
+can generate, rotate or turn off either topic for anyone; each person can see,
+copy, test and rotate their own in **You → Notifications**.
+
+W.A.Y's existing topics were **adopted** into the tracking channel (never
+overwriting a topic someone already follows), so a phone in the field keeps
+working — **Adopt W.A.Y's tracking topics** re-runs that for anyone added
+later. The topics are also mirrored back into `way-db`, so the standalone
+W.A.Y Worker, if it ever serves again, publishes to the topic the phone is
+actually following.
+
+## The W.A.Y map
+
+The map is drawn on a **playback clock** rather than ping by ping: the marker
+trails live by ~25 s and glides between positions instead of hopping to each
+one, and the camera lets the device roam the **middle half of the screen**
+before it re-centres (smoothly, along whichever axis it left) — so the map sits
+still most of the time instead of chasing every step. What W.A.Y records is
+unaffected — the same points, the same classifications, the same colours, dash
+and stationary dots, the same **Flush now**. The HUD is live while the map is
+behind, and says so (`map ~25s behind`), and the Trips summary keeps reading the
+database, so "driven this month" is unchanged.
+
+The trade the lag buys: motion you can actually watch. The cost: a just-arrived
+position reaches the map half a minute later. If that ever needs to be
+different, it is one number (`PLAYBACK_LAG_SECONDS`) — not a design change.
 
 ## One login, how it works
 
@@ -115,7 +170,7 @@ Test before you deploy (the server must be running):
 
 ```bash
 npm run check                                  # tsc --noEmit
-npm run smoke                                  # 36 end-to-end checks
+npm run smoke                                  # end-to-end checks, exit 0 = green
 BASE_URL=http://127.0.0.1:8793 npm run smoke   # non-default port
 npm run verify                                 # both, in order
 npm run deploy:dry-run                         # builds + resolves bindings
@@ -125,8 +180,12 @@ npm run deploy:dry-run                         # builds + resolves bindings
 session cookies are minted, every tab and module API answers 200, the
 module documents are session-gated, bad credentials are rejected without
 setting a cookie, the tab bar is identical (real icons, no emoji) on every
-tab, and a jar holding only `home_session` self-repairs on all three
-modules. It exits non-zero on any regression.
+tab, each tab keeps its own colour whether or not it is active, both shapes
+carry the same six tabs, a jar holding only `home_session` self-repairs on all
+three modules, and the install assets are genuinely installable (manifest
+fields, icon sizes that match the files, a maskable icon that is not a copy of
+the plain one, a service worker that handles fetches). It exits non-zero on any
+regression.
 
 Secrets live in `.dev.vars` (never committed): `AUTH_PEPPER` (required,
 ≥16 chars) and `SESSION_SECRET` (signs W.A.Y tokens). First run: open
@@ -140,6 +199,8 @@ Secrets live in `.dev.vars` (never committed): `AUTH_PEPPER` (required,
 wrangler d1 create home-db     # paste the id into wrangler.jsonc (HOME_DB)
 wrangler d1 execute home-db    --remote --file=migrations-home/0001_identity.sql
 wrangler d1 execute home-db    --remote --file=migrations-home/0002_notifications.sql
+wrangler d1 execute home-db    --remote --file=migrations-home/0003_laoka_imports.sql
+wrangler d1 execute home-db    --remote --file=migrations-home/0004_two_channels.sql
 wrangler secret put AUTH_PEPPER      # NEW — required, ≥16 random chars
 wrangler secret put SESSION_SECRET   # reuse the old W.A.Y value
 npm run deploy

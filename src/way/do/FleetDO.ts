@@ -136,6 +136,8 @@ const EXTERNAL_SYSTEM_EVENTS = ["expense", "income", "kine"];
 interface NotifyUser {
   id: number;
   username: string;
+  /** The TRACKING channel (home-db users.way_topic, way-db as fallback) —
+   *  never the money feed, which Sompitra pushes to on its own. */
   topic: string | null;
   quietStart: number;
   quietEnd: number;
@@ -376,7 +378,9 @@ export class FleetDO extends DurableObject<Env> {
             // especially at cutover. GET /way/api/debug/notify answers it.
             // v3 = accepts /system-chat (Sompitra's activity in the chat).
             // v4 = splits that into expense/income so they read differently.
-            build: "notify-v4-expense-income",
+            // v5 = tracking events publish to the TRACKING channel
+            //      (home-db users.way_topic), not the money feed.
+            build: "notify-v5-two-channels",
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
             // "does the RUNNING instance know about income yet?" without
@@ -389,8 +393,12 @@ export class FleetDO extends DurableObject<Env> {
             serverSource: cfg.server.source,
             serverFromEnv: this.env.NTFY_URL ?? null,
             cacheWasLoaded: this.notifyCache !== null,
+            // The TRACKING topic each person's events would be published to
+            // (home-db users.way_topic). Named in full because "topic" stopped
+            // being unambiguous the day there were two of them.
             users: cfg.users.map((u) => ({
-              id: u.id, username: u.username, topic: u.topic, quiet: `${u.quietStart}-${u.quietEnd}`,
+              id: u.id, username: u.username,
+              trackingTopic: u.topic, quiet: `${u.quietStart}-${u.quietEnd}`,
             })),
             subsCount: cfg.subs.length,
             subs: cfg.subs,
@@ -1089,36 +1097,40 @@ export class FleetDO extends DurableObject<Env> {
   private async getNotifyConfig() {
     if (this.notifyCache) return this.notifyCache;
     const { results: users } = await this.env.WAY_DB
-      .prepare("SELECT id, username, ntfy_topic, quiet_start, quiet_end FROM users")
-      .all<{ id: number; username: string; ntfy_topic: string | null; quiet_start: number | null; quiet_end: number | null }>();
+      .prepare("SELECT id, username, ntfy_topic AS legacy_topic, quiet_start, quiet_end FROM users")
+      .all<{ id: number; username: string; legacy_topic: string | null; quiet_start: number | null; quiet_end: number | null }>();
     const { results: subs } = await this.env.WAY_DB
       .prepare("SELECT subscriber_id, source_id, event_type FROM notification_subs")
       .all<{ subscriber_id: number; source_id: number; event_type: string }>();
 
-    // The CHANNEL belongs to the person and lives in home-db
-    // (users.ntfy_topic) — see migrations-home/0002. way-db's own column is
-    // the pre-merge copy and is now only a FALLBACK, so a deployment that has
-    // not adopted the channels yet still notifies. Reading home-db here is
-    // what keeps one phone = one topic: without it, WAY activity would keep
-    // going to way-db's stale topic while Sompitra used the new one.
+    // The TRACKING channel belongs to the person and lives in home-db
+    // (users.way_topic) — see migrations-home/0002 and 0004. W.A.Y decides
+    // WHICH events go into it (the recipient grid below, minus the person whose
+    // action it was); identity owns the address, so one phone follows one topic
+    // no matter which module publishes. way-db's own column is the pre-merge
+    // copy and is now only a FALLBACK, so a deployment that has not adopted the
+    // channels yet still notifies. Reading home-db here is what keeps the two
+    // halves apart: without it, tracking events would keep landing in the FEED
+    // channel and the person could not switch one off without the other.
+    //
     // Keyed for EVERY active home user, including those with no channel: a
-    // person who TURNED THEIR CHANNEL OFF must stay off, so the way-db
-    // fallback below is only for people home-db has never heard of (i.e. the
-    // migration has not run), never for an explicit "no channel".
+    // person who TURNED THEIR CHANNEL OFF must stay off, so the way-db fallback
+    // below is only for people home-db has never heard of (i.e. the migration
+    // has not run), never for an explicit "no channel".
     const homeChannels = new Map<string, string | null>();
     let homeServerUrl: string | null = null;
     try {
       const { results: channels } = await this.env.HOME_DB
-        .prepare("SELECT lower(username) AS u, ntfy_topic FROM users WHERE is_active = 1")
-        .all<{ u: string; ntfy_topic: string | null }>();
-      for (const row of channels ?? []) homeChannels.set(row.u, row.ntfy_topic || null);
+        .prepare("SELECT lower(username) AS u, way_topic FROM users WHERE is_active = 1")
+        .all<{ u: string; way_topic: string | null }>();
+      for (const row of channels ?? []) homeChannels.set(row.u, row.way_topic || null);
       const setting = await this.env.HOME_DB
         .prepare("SELECT value FROM home_settings WHERE key = ?")
         .bind(NTFY_SERVER_HOME_KEY)
         .first<{ value: string }>();
       homeServerUrl = setting?.value ? normalizeNtfyServer(setting.value) : null;
     } catch {
-      // No home-db yet (or migration 0002 not applied): fall back to way-db.
+      // No home-db yet (or migration 0004 not applied): fall back to way-db.
       homeServerUrl = null;
     }
 
@@ -1150,7 +1162,7 @@ export class FleetDO extends DurableObject<Env> {
         id: u.id, username: u.username,
         topic: homeChannels.has(u.username.toLowerCase())
           ? homeChannels.get(u.username.toLowerCase()) ?? null
-          : u.ntfy_topic,
+          : u.legacy_topic,
         quietStart: u.quiet_start ?? 22, quietEnd: u.quiet_end ?? 6,
       })),
       subs: subs.map((s) => ({ subscriberId: s.subscriber_id, sourceId: s.source_id, eventType: s.event_type })),

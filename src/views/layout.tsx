@@ -2,7 +2,7 @@
 import type { FC } from 'hono/jsx'
 import { PressFeedbackStyle, PressFeedbackScript } from './feedback'
 // The one app chrome (header + tab bar) — shared with the module shells.
-import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS } from './app-chrome'
+import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, tabColorFor } from './app-chrome'
 
 interface LayoutProps {
   title?: string
@@ -21,8 +21,13 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
     <html lang="en" class="h-full">
       <head>
         <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-        <meta name="theme-color" content="#16a34a" />
+        {/* No maximum-scale / user-scalable=no: pinch-zoom is an accessibility
+            feature, and blocking it is also what Lighthouse flags on Android.
+            The layout is responsive, so zooming cannot break it. */}
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+        {/* Tinted per tab, so the browser chrome (and an installed app's status
+            bar) matches the module you are actually in. */}
+        <meta name="theme-color" content={tabColorFor(activeTab)} />
         <title>{title} – Home</title>
         {/* PWA */}
         <link rel="manifest" href="/manifest.webmanifest" />
@@ -52,12 +57,12 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
       <body class="min-h-full flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
 
         {/* ── App Header — THE one chrome (app-chrome.tsx) ── */}
-        <HomeHeader displayName={user?.display_name ?? null} />
+        <HomeHeader displayName={user?.display_name ?? null} active={activeTab} />
 
         {/* ── Sub-nav (desktop / tablet): Money section pages ── */}
         {user && moneyTabs.includes(activeTab as string) && (
           <nav class="hidden sm:block sticky top-12 z-40 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
-            <div class="max-w-5xl mx-auto px-2 flex gap-1 py-1">
+            <div class={`${SHELL_WIDTH} mx-auto px-2 flex gap-1 py-1`}>
               {[
                 { href: '/budget', label: 'Budget', tab: 'budget' },
                 { href: '/kine',   label: 'Kiné',   tab: 'kine'   },
@@ -75,7 +80,7 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
         {/* ── Main Content ── */}
         <main class={fullBleed
           ? 'flex-1 min-h-0 flex flex-col px-3 pt-3 pb-2 sm:px-4 sm:pt-4 sm:pb-3'
-          : 'max-w-5xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-6 fade-in flex-1'}>
+          : `${SHELL_WIDTH} mx-auto w-full px-3 sm:px-4 lg:px-6 py-4 sm:py-6 fade-in flex-1`}>
           {children}
         </main>
 
