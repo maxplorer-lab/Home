@@ -54,7 +54,7 @@
   // identity database. Create home-db with:
   //   wrangler d1 create home-db    → then paste its database_id here.
   "d1_databases": [
-    { "binding": "HOME_DB", "database_name": "home-db", "database_id": "00000000-0000-0000-0000-000000000000" },
+    { "binding": "HOME_DB", "database_name": "home-db", "database_id": "fd140c5d-ce90-40eb-a35d-5fc265e4cdf8" },
     { "binding": "DB", "database_name": "sompitra-db", "database_id": "701cd942-a736-442c-bd00-265061101494" },
     { "binding": "WAY_DB", "database_name": "way-db", "database_id": "e098df3d-585b-4804-923b-65d0ae74c820" },
     { "binding": "LAOKA_DB", "database_name": "laoka", "database_id": "24acf3ed-531d-4117-ac7c-f9c7aa1c02c5" }
