@@ -128,11 +128,12 @@ consistency and the repair path — prefer it over hand-rolled curl.
 
 ## Troubleshooting map
 
-Not a git repository yet — `D:\Freebuff\Home` has NO `.git`, so there is
-nothing to `git diff`, `git log`, or `git checkout` to undo a change. Read
-the files before editing, keep edits surgical, and consider `git init`
-before any large refactor. (The three standalone sources under
-`../Sompitra`, `../W.A.Y`, `../Laoka` do have their own git history.)
+`D:\Freebuff\Home` is its own git repository (initialised `master`,
+baseline commit "Checkpoint the merged Home super app under version
+control"). Use `git diff` / `git status` freely — but note that no remote
+is configured, so nothing is pushed anywhere. The three standalone sources
+under `../Sompitra`, `../W.A.Y`, `../Laoka` have their own separate
+repositories and their own history.
 
 | Symptom | Look at |
 | --- | --- |
@@ -143,16 +144,13 @@ before any large refactor. (The three standalone sources under
 | Map/speedometer crashes in the Chat tab | a `map`-touching function in `public/way/index.html` lost its `CHAT_MODE` guard |
 | Only some tabs render the same icons | `HomeTabBar` / `TabIcon` in `app-chrome.tsx`; assets under `public/` |
 | Identity/login behaves oddly after a schema change | `migrations-home/0001_identity.sql` + the local D1 in `.wrangler/state` |
-| Nothing seems to happen when editing a module UI | you may be editing a NOT-served copy — see below |
+| Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |
 
-### Paths that are NOT served (classic false-lead)
+### What is actually served
 
-The assets binding is `./public` only. These two directories sit in the
-project root and are **dead**:
-
-* `dashboard/` — an older copy of W.A.Y's original frontend. The version
-  that actually ships is `public/way/index.html`. Editing `dashboard/`
-  changes nothing.
-* `sql/` — empty leftover directory.
-
-Never debug WAY's UI from `dashboard/`.
+The assets binding is `./public` **only** (`wrangler.jsonc`). W.A.Y's live
+document is `public/way/index.html`; Laoka's is `public/laoka/index.html`.
+The root `dashboard/` (an older copy of W.A.Y's frontend) and the empty
+`sql/` were deleted for exactly this reason — they were never served, and
+editing them for a "fix that did nothing" was a real false lead. Don't
+reintroduce a second copy of a served file anywhere in the root.

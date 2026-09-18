@@ -9,8 +9,9 @@
 // KEEP IT PURE: no I/O, no clock reads, no D1/DO access, no notifications.
 // Everything it needs is passed in and everything it decides is returned.
 // That property is what makes the tracking engine testable and changeable at
-// all -- see docs/EXTENDING.md, "Adding tests", and docs/ARCHITECTURE.md,
-// "The tracking engine" for how the stages fit together.
+// all. (The standalone W.A.Y project's docs/EXTENDING.md and
+// docs/ARCHITECTURE.md, under ../W.A.Y, explain how the stages fit together —
+// they were not carried into the merged app.)
 //
 // All constants and logic below are a 1:1 port of the Python original --
 // see fleet_tracker.py for the reasoning behind each guard/threshold.

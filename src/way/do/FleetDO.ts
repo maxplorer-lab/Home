@@ -737,7 +737,7 @@ export class FleetDO extends DurableObject<Env> {
    * storing those would bury the real journeys in noise).
    *
    * This MUST stay in step with the dashboard's shouldDrawPoint()
-   * (dashboard/index.html), which applies the identical rule when it rebuilds
+   * (public/way/index.html), which applies the identical rule when it rebuilds
    * today's track from the snapshot. When it was narrower than the frontend
    * (driving only), a walked track drew live, then vanished on refresh --
    * because it had never been written to pending_sync in the first place.

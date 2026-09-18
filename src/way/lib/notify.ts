@@ -21,8 +21,7 @@
 
 /** The notification kinds a user can subscribe to, in grid display order.
  * Adding one here also requires EVENT_TAGS below, a NOTIF_LABELS entry in
- * dashboard/index.html, and a call to FleetDO.notifyEvent -- see
- * docs/EXTENDING.md. */
+ * public/way/index.html, and a call to FleetDO.notifyEvent. */
 export type NotifyEventType = "entry" | "exit" | "chat" | "stationary" | "moving" | "approach";
 
 export const NOTIFY_EVENT_TYPES: NotifyEventType[] = ["entry", "exit", "chat", "stationary", "moving", "approach"];

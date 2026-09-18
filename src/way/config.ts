@@ -5,9 +5,9 @@
 // fleet_tracker.py.
 //
 // These are the tracking tunables only. Constants for persistence and
-// notification policy live at the top of src/do/FleetDO.ts, and frontend-only
-// constants in CONFIG in dashboard/index.html. See docs/EXTENDING.md,
-// "Tune the tracking behaviour".
+// notification policy live at the top of src/way/do/FleetDO.ts, and
+// frontend-only constants in CONFIG in public/way/index.html (the document
+// the Worker actually serves).
 
 export const WAY_CONFIG = {
   // ---- Geofence entry/exit guards ----
