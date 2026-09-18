@@ -16,10 +16,11 @@ by an admin.
 Each module keeps its own database and its own palette. Inside Home they run
 as **chromeless tabs under one shared chrome** — one header with the Home
 brand mark, one bottom tab bar (Home · Sompitra · Chat · Laoka · WAY · You),
-WeChat-style. **Chat is WAY's own chat engine**, popped out of the dashboard
-(`?view=chat`) — the same realtime room the map tab uses, so history,
-reactions and unread badges are identical everywhere. Visited standalone
-(outside the shell), the modules keep their original UI.
+WeChat-style. **Chat is WAY's own chat engine**, moved out of the dashboard
+into its own page (`/chat/`) — it shares the same realtime socket and the
+same FleetDO as the map, so history, replies and reactions are one stream.
+WAY itself has no chat any more. Visited standalone (outside the shell), the
+modules keep their original UI.
 
 ## One login, how it works
 

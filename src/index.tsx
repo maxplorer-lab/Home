@@ -107,14 +107,24 @@ async function withRepair(
 }
 
 // ══ The Chat tab ═══════════════════════════════════════════════
-// W.A.Y's own chat drawer popped out of the dashboard (?view=chat skips
-// the map/HUD and mounts the drawer full-screen). It is the original
-// realtime engine over /ws — Sompitra's re-implementation is retired.
+// The family chat is its OWN document under /chat/ — it is not a view of
+// W.A.Y any more. The code is W.A.Y's original chat engine (same /ws socket,
+// same FleetDO, same reply/reaction rendering), moved out of WAY's dashboard
+// so the only chat in the product lives in one place.
 app.get('/chat', async (c) => {
   const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
   return c.html(<ModuleShell kind="chat" displayName={user.display_name || user.username} />)
 })
+// The chat document itself. run_worker_first sends it through the Worker so
+// it is only ever served to a live Home session (like WAY's and Laoka's).
+for (const p of ['/chat/', '/chat/index.html']) {
+  app.get(p, async (c) => {
+    const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+    if (!user) return c.redirect('/login')
+    return c.env.ASSETS.fetch(new Request(new URL('/chat/index.html', c.req.url), { headers: c.req.raw.headers }))
+  })
+}
 
 // ══ W.A.Y under /way ═════════════════════════════════════════════
 

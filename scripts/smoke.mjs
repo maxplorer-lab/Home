@@ -145,7 +145,7 @@ for (const p of ['/', '/chat', '/way/', '/laoka/']) {
 log('\n6. Anonymous access is gated')
 const anon = new Map(jar)          // park the real jar
 jar.clear()
-for (const p of ['/way/', '/laoka/', '/way/index.html', '/laoka/index.html']) {
+for (const p of ['/way/', '/laoka/', '/chat/', '/way/index.html', '/laoka/index.html', '/chat/index.html']) {
   const r = await req(p)
   const loc = r.headers.get('location') || ''
   check(`${p} anonymous → /login`, r.status === 302 && loc.includes('/login'), `${r.status} → ${loc || '(no location)'}`)

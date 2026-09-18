@@ -29,7 +29,7 @@ interface ShellProps {
 const MODULES: Record<ModuleKind, { label: string; badge: Badge; src: string }> = {
   way:   { label: 'WAY',   badge: { img: '/way/icon-512.png',   label: 'WAY'   }, src: '/way/index.html' },
   laoka: { label: 'Laoka', badge: { img: '/laoka/icon.svg',     label: 'Laoka' }, src: '/laoka/index.html' },
-  chat:  { label: 'Chat',  badge: { svg: 'chat',                label: 'Chat'  }, src: '/way/index.html?view=chat' },
+  chat:  { label: 'Chat',  badge: { svg: 'chat',                label: 'Chat'  }, src: '/chat/index.html' },
 }
 
 export function ModuleShell({ kind, displayName }: ShellProps) {

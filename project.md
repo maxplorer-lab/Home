@@ -37,6 +37,8 @@ toggle) and one bottom tab bar — **Home · Sompitra · Chat · Laoka · WAY ·
 You** — defined **once** in `src/views/app-chrome.tsx` (`HomeHeader`,
 `HomeTabBar`, `CHROME_CSS`) and imported by both hosts: `src/views/layout.tsx`
 (Sompitra pages) and `src/views/shell.tsx` (the WAY / Laoka / Chat tabs).
+Each module keeps its own palette and its own internal controls, but never
+its own brand bar or its own navigation bar — those belong to Home.
 Tab icons are the real assets (`/icon-64.png`, `/way/icon-512.png`,
 `/laoka/icon.svg`) plus inline SVG for the shell-native tabs — never emoji,
 which render as blurry colour glyphs and cannot inherit the active tint.
@@ -55,13 +57,15 @@ which render as blurry colour glyphs and cannot inherit the active tint.
   week selector and tab pills. Visited standalone the modules keep their
   complete original UI.
 * **There is exactly one chat — and it is WAY's own.** The Chat tab (`/chat`)
-  is a ModuleShell embedding `/way/index.html?view=chat`: a **chat mode** of
-  WAY's document that skips the map/Leaflet HUD entirely (`CHAT_MODE` guard
-  in every map-touching function) and mounts the original chat drawer
-  full-screen. Sompitra's old WebSocket chat re-implementation was deleted
-  (`src/routes/chat.tsx`, `src/lib/way.ts`) — same stream, but the one that
-  powers the dashboard. In the WAY tab and standalone, WAY's Chat pill keeps
-  its unread badge; tapping it opens the Home Chat tab.
+  is a ModuleShell embedding `/chat/index.html` — **its own document**, the
+  family chat and nothing else. The code inside it IS WAY's original chat
+  engine (message bubbles, replies, reactions, system messages), moved out
+  of WAY's dashboard rather than re-written: same `/ws` socket, same
+  FleetDO, so history/replies/reactions stay one stream. WAY no longer has
+  any chat — no pill, no modal, no CSS, no JS, no `?view=chat` mode — and
+  Sompitra's old WebSocket chat re-implementation was deleted earlier
+  (`src/routes/chat.tsx`, `src/lib/way.ts`). There is exactly one chat in
+  the product and it has one home.
 * Sompitra (budget/kine/debts/sales) is one tab with its own desktop sub-nav;
   `/settings` is the You tab; `/admin` stays a Sompitra-style page.
 

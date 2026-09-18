@@ -24,7 +24,8 @@ src/
   views/layout.tsx     Sompitra page chrome + Card/StatCard/Btn
   views/shell.tsx      module tab host (iframe around WAY / Laoka / Chat)
 public/
-  way/               W.A.Y PWA shell + assets (namespaced)
+  way/               W.A.Y PWA shell + assets (namespaced) — NO chat code
+  chat/              the family chat document (its own page, WAY's engine)
   laoka/             Laoka SPA (namespaced: /laoka-ws, /laoka/api/…)
 scripts/smoke.mjs    `npm run smoke` — dependency-free end-to-end checks
 migrations-home/     home-db schema (the ONLY db Home owns)
@@ -90,12 +91,18 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     WAY/Laoka embed chrome-hiding lives in each module's own head script
     (`window.self !== window.top`). If a module UI changes, check its embed
     script still matches its selectors.
-11. Chat lives in WAY's document, not Sompitra's: `/chat` is a ModuleShell
-    around `/way/index.html?view=chat`. Any function in WAY's dashboard that
-    touches `map` must stay `CHAT_MODE`-guarded (see `const map = CHAT_MODE ?
-    null : L.map(...)`); Sompitra's old chat route is deleted on purpose.
+11. Chat is its OWN page: `/chat` is a ModuleShell around
+    `/chat/index.html`. That document is W.A.Y's original chat engine moved
+    out of WAY (same `/ws` socket, same FleetDO, same render/reply/reaction
+    code) — WAY has no chat markup, CSS or JS left, and both Sompitra's old
+    chat route and WAY's `?view=chat` mode are deleted on purpose. The chat
+    document is in `run_worker_first` and session-gated like the others.
     The shell host body is forced dark (`bg-[#0a0a0c]`) for the chat tab so
     the iframe's transparent edges never show a light seam.
+    `/way/api/users/me` answers with the payload ITSELF (no `{success,data}`
+    envelope) — both WAY and the chat page read the fields directly; a
+    `r.success` check silently leaves `currentUser` null and every bubble
+    renders as someone else's.
 12. Don't rename the D1 binding `DB` (Sompitra) — Laoka's standalone code
     reads `env.DB` and the adapter remaps it to `LAOKA_DB` explicitly.
 13. **One chrome, one place**: the header and the tab bar are ONLY defined in
@@ -141,7 +148,8 @@ repositories and their own history.
 | A module 404s on an `/api/…` path | `run_worker_first` in `wrangler.jsonc` — asset paths are served by the edge before the Worker |
 | Tab bar looks different on some tabs | both hosts must render `HomeTabBar` from `views/app-chrome.tsx` — a second, local tab bar is the bug |
 | Module still shows its own header/nav inside a tab | the module's own `window.self !== window.top` embed script — selectors drift when its UI changes |
-| Map/speedometer crashes in the Chat tab | a `map`-touching function in `public/way/index.html` lost its `CHAT_MODE` guard |
+| Chat bubbles never render as "mine" | `currentUser` failed to load — check the `/way/api/users/me` response shape (it is NOT enveloped) |
+| A chat/`/ws` frame stops working after a WAY change | the socket carries pings AND chat; WAY ignores the chat frames, the chat page handles them — see both `ws.onmessage` handlers |
 | Only some tabs render the same icons | `HomeTabBar` / `TabIcon` in `app-chrome.tsx`; assets under `public/` |
 | Identity/login behaves oddly after a schema change | `migrations-home/0001_identity.sql` + the local D1 in `.wrangler/state` |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |

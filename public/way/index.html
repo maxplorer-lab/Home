@@ -9,37 +9,24 @@
 <meta name="apple-mobile-web-app-title" content="WAY">
 <meta name="theme-color" content="#0a0a0c">
 <script>
-  // ── Standalone / embed / chat-mode detection (before first paint) ──
-  var CHAT_MODE = false;
-  try { CHAT_MODE = new URLSearchParams(location.search).get('view') === 'chat'; } catch (e) {}
-
+  // ── Standalone / embed detection (before first paint) ──
   // Home embed mode: running as a tab inside the Home super app (iframe =
   // embed): the shell owns the brand and the tab bar, so WAY drops its own
-  // header bar — but KEEPS its view pills (Map / Trips / Chat / Settings)
+  // header bar — but KEEPS its view pills (Map / Trips / Settings)
   // re-floated over the map, since they are the module's only internal
-  // navigation. The Chat pill still exists so its unread badge stays
-  // visible; tapping it opens the one Home chat. Standalone visits
-  // (window.self === window.top) keep the complete original UI.
-  if (!CHAT_MODE && window.self !== window.top) {
+  // navigation. Standalone visits (window.self === window.top) keep the
+  // complete original UI.
+  //
+  // Chat is NOT part of this document any more. It used to have a ?view=chat
+  // mode here; it now lives as its own page (/chat/) with its own copy of
+  // the same rendering code, so WAY has no chat markup, no chat CSS and no
+  // chat JS at all.
+  if (window.self !== window.top) {
     document.documentElement.className += ' home-embed';
     document.write('<style>' +
       '.home-embed #header { display: block !important; position: absolute; top: 8px; right: 8px; left: auto; width: auto; height: auto; background: transparent; border: none; backdrop-filter: none; padding: 0; pointer-events: none; }' +
       '.home-embed #header .brand { display: none; }' +
       '.home-embed #header .nav-btns { pointer-events: auto; background: rgba(10,10,14,0.78); border: 1px solid rgba(255,255,255,0.14); backdrop-filter: blur(8px); box-shadow: 0 2px 10px rgba(0,0,0,0.25); }' +
-    '<\/style>');
-  }
-
-  // Chat mode (?view=chat): this document IS the family chat — popped out
-  // of the dashboard for the Home Chat tab. The map, HUD and header are
-  // skipped entirely (no Leaflet init at all); the chat drawer fills the
-  // frame. The shell provides the chrome around it.
-  if (CHAT_MODE) {
-    document.documentElement.className += ' chat-mode';
-    document.write('<style>' +
-      '.chat-mode #header, .chat-mode #map, .chat-mode #speedo-container, .chat-mode #badge-strip { display: none !important; }' +
-      '.chat-mode #app { background: #0a0a0c; }' +
-      '.chat-mode #modal-chat { display: flex !important; position: fixed; inset: 0; background: #0a0a0c; backdrop-filter: none; padding: 10px; overflow: hidden; }' +
-      '.chat-mode .chat-drawer { max-width: 640px; height: 100%; }' +
     '<\/style>');
   }
 </script>
@@ -74,15 +61,11 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
     padding: 5px 10px; border-radius: 8px; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 4px; position: relative;
 }
 .nav-btn.active { background: rgba(255, 255, 255, 0.12); color: #fff; border: 1px solid rgba(255, 255, 255, 0.15); }
-.badge-unread { background: #ef4444; color: #fff; font-size: 9px; font-weight: 800; border-radius: 9999px; padding: 1px 5px; margin-left: 2px; }
 
 /* ---- Speedometer HUD ---- */
 #speedo-container { position: absolute; top: 12px; left: 12px; z-index: 1002; display: flex; flex-direction: column; gap: 6px; width: 150px; user-select: none; }
-.device-pills { display: flex; gap: 4px; background: rgba(10, 10, 14, 0.9); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px; padding: 3px; }
-.dev-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 4px 6px; border-radius: 8px; border: none; background: transparent; color: #9ca3af; font-size: 11px; font-weight: 700; cursor: pointer; transition: all 0.15s; }
-.dev-btn.active { background: rgba(255, 255, 255, 0.15); color: #fff; border: 1px solid rgba(255, 255, 255, 0.2); }
-.dev-btn.followed { border: 1px solid #38bdf8; box-shadow: 0 0 0 1px #38bdf8 inset; }
-.dev-btn .follow-marker { font-size: 9px; margin-left: 2px; filter: drop-shadow(0 0 2px #38bdf8); }
+/* The per-device name pills that used to sit above the HUD are gone: the
+   bottom-right badge cards (#badge-strip) are the one device switcher. */
 .hud-card { background: rgba(10, 10, 14, 0.92); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 18px; padding: 10px; box-shadow: 0 16px 36px rgba(0,0,0,0.85); display: flex; flex-direction: column; gap: 6px; }
 .hud-top { display: flex; align-items: center; justify-content: space-between; font-size: 9px; }
 .badge-live { color: #34d399; background: rgba(6, 78, 59, 0.5); border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 6px; border-radius: 6px; font-weight: 600; }
@@ -180,109 +163,6 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 .export-btn { background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; padding: 6px 12px; border-radius: 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
 .export-row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
-/* ---- Chat ---- */
-.chat-drawer { max-width: 540px; margin: 0 auto; width: 100%; height: 100%; display: flex; flex-direction: column; }
-.chat-msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 4px 16px 4px; }
-.chat-msg { max-width: 82%; padding: 6px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4; word-break: break-word; background: rgba(60,60,80,0.95); box-shadow: 0 2px 8px rgba(0,0,0,0.4); color: #eee; align-self: flex-start; border-bottom-left-radius: 4px; }
-.chat-msg.mine { align-self: flex-end; border-bottom-left-radius: 14px; border-bottom-right-radius: 4px; }
-.chat-msg .sender { font-size: 10px; font-weight: 700; opacity: 0.8; margin-bottom: 2px; display: block; }
-.chat-msg .time { font-size: 9px; opacity: 0.6; margin-top: 2px; display: block; text-align: right; }
-
-/* ---- Chat replies ---- */
-/* Bubbles are position:relative so the reply button can sit in the corner. */
-.chat-msg { position: relative; }
-.chat-reply-btn {
-    position: absolute; top: 1px; right: 4px; background: none; border: none;
-    color: inherit; opacity: 0; cursor: pointer; font-size: 12px; line-height: 1;
-    padding: 3px 4px; border-radius: 6px; transition: opacity 0.12s;
-}
-.chat-msg:hover .chat-reply-btn { opacity: 0.75; }
-.chat-reply-btn:active { opacity: 1; transform: scale(1.15); }
-/* Touch devices never hover, so the affordance has to be visible by default. */
-@media (hover: none) { .chat-reply-btn { opacity: 0.5; } }
-/* The quoted original, shown at the top of a reply bubble. */
-.chat-quote {
-    display: block; border-left: 3px solid rgba(255,255,255,0.5); background: rgba(0,0,0,0.2);
-    border-radius: 3px; padding: 3px 8px; margin: 0 0 5px 0; font-size: 11px;
-    cursor: pointer; overflow: hidden;
-}
-.chat-quote .q-sender { font-weight: 700; opacity: 0.9; }
-.chat-quote .q-text { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; }
-.chat-msg.mine .chat-quote { border-left-color: rgba(255,255,255,0.75); }
-/* Brief highlight when jumping to a quoted message. */
-.chat-msg.flash { animation: wayFlash 1.2s ease-out; }
-@keyframes wayFlash {
-    0% { box-shadow: 0 0 0 3px rgba(56,189,248,0.95); }
-    100% { box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
-}
-/* ---- Chat reactions (👍🤣💖) ---- */
-/* Second corner button (the reply button owns right:4px), same hover
-   behaviour. Hidden until hover; half-visible on touch devices. */
-.chat-react-btn {
-    position: absolute; top: 1px; right: 24px; background: none; border: none;
-    color: inherit; opacity: 0; cursor: pointer; font-size: 12px; line-height: 1;
-    padding: 3px 4px; border-radius: 6px; transition: opacity 0.12s;
-}
-.chat-msg:hover .chat-react-btn { opacity: 0.75; }
-.chat-react-btn:active { opacity: 1; transform: scale(1.15); }
-@media (hover: none) { .chat-react-btn { opacity: 0.5; } }
-/* The three-emoji strip. display:none keeps it closed until the ☺+ button
-   adds .open -- without this rule it renders permanently inline in the
-   bubble, which is exactly the bug that shipped first. */
-.chat-react-picker {
-    position: absolute; top: 20px; right: 4px; display: none; gap: 2px;
-    background: rgba(30,30,45,0.97); border: 1px solid rgba(255,255,255,0.18);
-    border-radius: 9999px; padding: 3px 5px; z-index: 5;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
-}
-/* Received bubbles sit at the container's LEFT edge and are often narrow:
-   a right-anchored picker would extend leftward past the window and clip
-   its first emoji. Anchor it to the bubble's left instead, growing into
-   the open space. Own (right-aligned) bubbles keep the right anchor. */
-.chat-msg:not(.mine) .chat-react-picker { right: auto; left: 4px; }
-.chat-react-picker.open { display: flex; }
-.chat-react-picker button {
-    background: none; border: none; font-size: 15px; line-height: 1;
-    cursor: pointer; padding: 3px 4px; border-radius: 9999px;
-}
-.chat-react-picker button:hover { background: rgba(255,255,255,0.12); }
-.chat-react-picker button:active { transform: scale(1.2); }
-/* Pill row under a bubble: a SIBLING element appended right after the
-   bubble, so the bubble's own layout never shifts. One pill per emoji;
-   the user's own reaction gets the highlighted ring. */
-.chat-react-row {
-    display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 0 8px;
-    justify-content: flex-start; align-self: flex-start;
-    position: relative; z-index: 1; max-width: 100%;
-}
-.chat-msg.mine + .chat-react-row { justify-content: flex-end; align-self: flex-end; margin: -4px 8px 0 0; }
-.chat-react-pill {
-    display: inline-flex; align-items: center; gap: 3px;
-    background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.35);
-    color: #e2e8f0; border-radius: 9999px; padding: 1px 7px; font-size: 11px; cursor: pointer;
-}
-.chat-react-pill.mine { background: rgba(56,189,248,0.25); border-color: rgba(56,189,248,0.8); box-shadow: 0 0 0 1px rgba(56,189,248,0.45); }
-.chat-react-pill:active { transform: scale(0.92); }
-/* "Replying to ..." strip above the composer; hidden unless replying. */
-.chat-reply-bar {
-    display: none; align-items: center; gap: 8px; padding: 6px 10px; margin-top: 6px;
-    border-left: 3px solid #38bdf8; background: rgba(56,189,248,0.12); border-radius: 6px; font-size: 11px;
-}
-.chat-reply-bar.open { display: flex; }
-.chat-reply-bar .rb-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.9; }
-.chat-reply-bar .rb-cancel { background: none; border: none; color: #cbd5e1; cursor: pointer; font-size: 13px; padding: 0 2px; line-height: 1; }
-.system-msg { align-self: center; text-align: center; margin: 4px 0; font-size: 11px; }
-.system-msg .timestamp { font-size: 9px; color: #9ca3af; margin-bottom: 2px; }
-.system-msg .message-row { display: flex; align-items: center; gap: 6px; }
-.system-msg .line { flex: 1; height: 1px; background: rgba(255,255,255,0.1); }
-.system-msg.entry .text { color: #34d399; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.25); padding: 4px 10px; border-radius: 9999px; }
-.system-msg.exit .text { color: #93a4b8; background: rgba(148,163,184,0.1); border: 1px solid rgba(148,163,184,0.22); padding: 4px 10px; border-radius: 9999px; }
-
-.chat-input-bar { display: flex; gap: 8px; padding: 10px 0 4px 0; border-top: 1px solid rgba(255,255,255,0.1); }
-.chat-input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 9px 12px; font-size: 12px; color: #fff; outline: none; font-family: inherit; }
-.chat-input:focus { border-color: #38bdf8; background: rgba(255,255,255,0.09); }
-.chat-send-btn { background: #0284c7; border: none; color: #fff; padding: 0 16px; border-radius: 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
-
 /* ---- Settings menu (forced mode / pause recording) ---- */
 .settings-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 /* Collapsible settings sections -- only one open at a time. */
@@ -335,9 +215,6 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
         <nav class="nav-btns">
             <button class="nav-btn active" id="tab-map" onclick="switchView('map')">Map</button>
             <button class="nav-btn" id="tab-trips" onclick="switchView('trips')">Trips</button>
-            <button class="nav-btn" id="tab-chat" onclick="window.top.location.href='/chat'" title="Open the Home chat">
-                <span>Chat</span><span id="chat-badge" class="badge-unread" style="display:none;">0</span>
-            </button>
             <button class="nav-btn" id="tab-settings" onclick="switchView('settings')">Settings</button>
         </nav>
     </header>
@@ -345,7 +222,6 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
     <div id="map"></div>
 
     <div id="speedo-container">
-        <div class="device-pills" id="device-pills"></div>
         <div class="hud-card">
             <div class="hud-top">
                 <span class="badge-live" id="hud-freshness">Live</span>
@@ -398,24 +274,6 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
                 <button class="export-btn" onclick="exportCurrentDay('kml')">KML</button>
                 <button class="export-btn" onclick="exportCurrentDay('csv')">CSV</button>
             </div>
-        </div>
-    </div>
-
-    <div class="overlay-modal" id="modal-chat">
-        <div class="chat-drawer">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:6px;">
-                <span style="font-weight:700; font-size:13px;">Chat</span>
-                <button class="nav-btn" onclick="switchView('map')">Close</button>
-            </div>
-            <div class="chat-msgs" id="chat-messages"></div>
-            <div class="chat-reply-bar" id="chat-reply-bar">
-                <span class="rb-text" id="chat-reply-text"></span>
-                <button type="button" class="rb-cancel" onclick="cancelReply()" title="Cancel reply">✕</button>
-            </div>
-            <form class="chat-input-bar" onsubmit="event.preventDefault(); sendChatMessage();">
-                <input type="text" id="chat-input" class="chat-input" placeholder="Type a message..." maxlength="200" enterkeyhint="send" autocomplete="off">
-                <button type="submit" class="chat-send-btn">Send</button>
-            </form>
         </div>
     </div>
 
@@ -539,11 +397,6 @@ const CONFIG = {
 // can verify the browser tab is actually running the latest dashboard.
 const WAY_BUILD = '2026-09-17.1-superapp';
 
-// Chat reactions (👍🤣💖). Must match REACTION_EMOJIS in FleetDO.ts -- the
-// server validates against its own copy, so a mismatched client just gets a
-// silent ignore.
-const REACTIONS = ['👍', '🤣', '💖'];
-
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
 function nairobiDateStr() {
@@ -595,9 +448,6 @@ let tipLayers = {};
 let geofenceCircleLayers = [];
 let editingGeofence = null;
 let reviewLegLayer = null;
-let renderedMessageIds = new Set();
-let chatOpen = false;
-let chatUnread = 0;
 let currentTab = 'map';
 let selectedDateStr = nairobiDateStr();
 
@@ -663,38 +513,6 @@ function toPing(deviceId, raw) {
         leg_id: (raw.leg_id !== undefined && raw.leg_id !== null) ? raw.leg_id : ((raw.legId !== undefined && raw.legId !== null) ? raw.legId : null)
     };
 }
-function toChat(raw) {
-    // Reaction columns are JSON TEXT in the DO/D1 rows (snapshot) but real
-    // objects on live broadcast frames -- normalize both to objects here so
-    // renderers never see a string where a map belongs.
-    function parseMaybeJson(v) {
-        if (!v) return null;
-        if (typeof v === 'object') return v;
-        try { return JSON.parse(v); } catch (e) { return null; }
-    }
-    return {
-        id: String(raw.id),
-        sender: raw.sender,
-        message: raw.message,
-        is_auto: !!(raw.is_auto !== undefined ? raw.is_auto : raw.isAuto),
-        event_type: (raw.event_type !== undefined ? raw.event_type : raw.eventType) || null,
-        gps_timestamp: raw.gps_timestamp || null,
-        created_at: raw.created_at || raw.createdAt,
-        // Reply linkage. History rows (D1) are snake_case, live broadcasts
-        // (DO) are camelCase -- accept both, as with everything else here.
-        reply_to_id: (raw.reply_to_id !== undefined ? raw.reply_to_id : raw.replyToId) || null,
-        reply_to_sender: (raw.reply_to_sender !== undefined ? raw.reply_to_sender : raw.replyToSender) || null,
-        reply_to_snippet: (raw.reply_to_snippet !== undefined ? raw.reply_to_snippet : raw.replyToSnippet) || null,
-        // Chat reactions (👍🤣💖). Snapshot rows (D1/DO rows) are snake_case,
-        // live frames camelCase; accept both. Null/absent = no reactions.
-        // Counts are the display truth; reaction_users only tells THIS user
-        // whether they already reacted ("mine" styling + toggle target).
-        reactions: parseMaybeJson(raw.reactions),
-        reaction_users: parseMaybeJson(raw.reaction_users !== undefined ? raw.reaction_users : raw.reactionUsers),
-        reaction_updated_at: raw.reaction_updated_at || raw.reactionUpdatedAt || null
-    };
-}
-
 function toggleAuthMode() {
     authMode = authMode === 'login' ? 'signup' : 'login';
     document.getElementById('auth-title').textContent = authMode === 'login' ? 'Sign in to WAY' : 'Create an account';
@@ -772,11 +590,11 @@ async function loadDevicesAndGeofences() {
     return true;
 }
 
-const map = CHAT_MODE ? null : L.map('map', { center: CONFIG.MAP_DEFAULT_CENTER, zoom: CONFIG.MAP_DEFAULT_ZOOM, zoomControl: true });
+const map = L.map('map', { center: CONFIG.MAP_DEFAULT_CENTER, zoom: CONFIG.MAP_DEFAULT_ZOOM, zoomControl: true });
 let currentLayer = 'lite', tileLayer = null;
 
 function setLayer(key) {
-    if (CHAT_MODE) return; // no map to re-layer in chat mode
+    if (!map) return; // defensive: the map exists on this page
     if (key === currentLayer && tileLayer) { document.getElementById('layer-menu').classList.remove('open'); return; }
     if (tileLayer) map.removeLayer(tileLayer);
     const isLite = key === 'lite';
@@ -799,7 +617,7 @@ setLayer('lite');
 function toggleLayerMenu() { document.getElementById('layer-menu').classList.toggle('open'); }
 
 function drawGeofenceCircles() {
-    if (CHAT_MODE || !map) return; // no map in the popped-out chat
+    if (!map) return;
     geofenceCircleLayers.forEach(function(l) { map.removeLayer(l); });
     geofenceCircleLayers = [];
     GEOFENCES.forEach(function(f) {
@@ -812,77 +630,55 @@ function drawGeofenceCircles() {
     });
 }
 
-if (!CHAT_MODE && map) {
-  map.on('click', function() { if (chatOpen) closeChat(); });
+if (map) {
   map.on('dragstart zoomstart', function() {
     if (ignoreZoomEvent) { ignoreZoomEvent = false; return; }
     if (followDeviceId) {
         followDeviceId = null;
         localStorage.removeItem('follow_device');
         updateSpeedoHUD();
-        renderDevicePills();
         renderBadges();
     }
   });
 }
 
 function switchView(tab) {
-    // Chat mode (the popped-out family chat): the drawer is the whole view;
-    // any other pill returns to the full WAY dashboard tab.
-    if (CHAT_MODE && tab !== 'chat') {
-        window.top.location.href = '/way/';
-        return;
-    }
-    // Embedded in the Home shell: the ONE chat lives in the Home Chat tab.
-    if (tab === 'chat' && document.documentElement.classList.contains('home-embed')) {
-        window.top.location.href = '/chat';
-        return;
-    }
+    // Chat is its own page now (the Home Chat tab) -- WAY has no chat view.
+    // Nothing calls this with 'chat' any more; the guard is here so a stray
+    // call can never reach a view this page no longer has.
+    if (tab === 'chat') { window.top.location.href = '/chat'; return; }
     currentTab = tab;
-    // Leaving the chat drops any armed reply -- coming back much later to a
-    // stale "Replying to ..." bar would send a quote the person never meant.
-    if (tab !== 'chat') cancelReply();
     document.querySelectorAll('.nav-btn').forEach(function(b) { b.classList.remove('active'); });
     const btn = document.getElementById('tab-' + tab);
     if (btn) btn.classList.add('active');
     document.getElementById('modal-trips').classList.toggle('open', tab === 'trips');
-    document.getElementById('modal-chat').classList.toggle('open', tab === 'chat');
     document.getElementById('modal-settings').classList.toggle('open', tab === 'settings');
-    chatOpen = (tab === 'chat');
 
     if (tab === 'trips') {
         loadTripsForDate(selectedDateStr);
         loadMonthlyTotals();
     }
-    if (tab === 'chat') {
-        chatUnread = 0;
-        document.getElementById('chat-badge').style.display = 'none';
-        const box = document.getElementById('chat-messages');
-        box.scrollTop = box.scrollHeight;
-        document.getElementById('chat-input').focus();
-    }
     if (tab === 'settings') {
         renderSettingsMenu();
     }
 }
-function closeChat() { switchView('map'); }
 
 function clearDeviceTrack(deviceId) {
-    if (CHAT_MODE || !map) return;
+    if (!map) return;
     (trackLayersByDevice[deviceId] || []).forEach(function(l) { map.removeLayer(l); });
     trackLayersByDevice[deviceId] = [];
 }
 function clearTracks() { Object.keys(trackLayersByDevice).forEach(clearDeviceTrack); }
 
 function clearStationaryDots(deviceId) {
-    if (CHAT_MODE || !map) return;
+    if (!map) return;
     (stationaryDotLayersByDevice[deviceId] || []).forEach(function(d) { map.removeLayer(d.layer); });
     stationaryDotLayersByDevice[deviceId] = [];
 }
 function clearAllStationaryDots() { Object.keys(stationaryDotLayersByDevice).forEach(clearStationaryDots); }
 
 function maybeAddStationaryDot(devId, ping) {
-    if (CHAT_MODE || !map || !ping.is_stationary || ping.is_inside_geofence) return;
+    if (!map || !ping.is_stationary || ping.is_inside_geofence) return;
     if (!stationaryDotLayersByDevice[devId]) stationaryDotLayersByDevice[devId] = [];
     const dots = stationaryDotLayersByDevice[devId];
     const tooClose = dots.some(function(d) { return distanceMeters(d.lat, d.lng, ping.latitude, ping.longitude) <= CONFIG.STATIONARY_DOT_CLUSTER_RADIUS_M; });
@@ -895,7 +691,7 @@ function maybeAddStationaryDot(devId, ping) {
 }
 
 function drawSegments(deviceId, points) {
-    if (CHAT_MODE || !map || points.length < 2) return;
+    if (!map || points.length < 2) return;
     const fallbackColor = DEVICE_COLORS[deviceId] || CONFIG.DEFAULT_DEVICE_COLOR;
     if (!trackLayersByDevice[deviceId]) trackLayersByDevice[deviceId] = [];
 
@@ -940,7 +736,7 @@ function drawSegments(deviceId, points) {
 }
 
 function redrawAllTracks() {
-    if (CHAT_MODE || !map) return; // no map in the popped-out chat
+    if (!map) return;
     clearTracks();
     for (const devId of DEVICES) {
         if (trackVisible[devId] === false) continue;
@@ -950,7 +746,7 @@ function redrawAllTracks() {
 }
 
 function updateMarker(devId, ping) {
-    if (CHAT_MODE || !map) return; // no map in the popped-out chat
+    if (!map) return;
     if (markerLayers[devId]) map.removeLayer(markerLayers[devId]);
     const emoji = EMOJI_MAP[devId] || CONFIG.DEFAULT_DEVICE_EMOJI;
     const icon = L.divIcon({
@@ -965,7 +761,7 @@ function updateMarker(devId, ping) {
 }
 
 function updateTip(devId, ping) {
-    if (CHAT_MODE || !map) return;
+    if (!map) return;
     if (tipLayers[devId]) { map.removeLayer(tipLayers[devId]); delete tipLayers[devId]; }
     if (ping.is_inside_geofence) return;
     let colorClass;
@@ -976,20 +772,8 @@ function updateTip(devId, ping) {
     tipLayers[devId] = L.marker([ping.latitude, ping.longitude], { icon: tipIcon, interactive: false, zIndexOffset: 1000 }).addTo(map);
 }
 
-function renderDevicePills() {
-    const c = document.getElementById('device-pills');
-    c.innerHTML = DEVICES.map(function(d) {
-        const isFollowed = d === followDeviceId;
-        return '<button class="dev-btn ' + (d === selectedDevice ? 'active' : '') + (isFollowed ? ' followed' : '') + '" onclick="selectSpeedoDevice(\'' + d + '\')">' +
-            '<span>' + (EMOJI_MAP[d] || '📍') + '</span><span>' + d + '</span>' +
-            (isFollowed ? '<span class="follow-marker" title="Following">📍</span>' : '') +
-            '</button>';
-    }).join('');
-}
-
 function selectSpeedoDevice(devId) {
     selectedDevice = devId;
-    renderDevicePills();
     updateSpeedoHUD();
 }
 
@@ -997,9 +781,9 @@ function followDevice(devId) {
     selectSpeedoDevice(devId);
     followDeviceId = devId;
     localStorage.setItem('follow_device', devId);
-    renderDevicePills();
+    renderBadges();
     const p = latestPing[devId];
-    if (p && !CHAT_MODE && map) {
+    if (p && map) {
         ignoreZoomEvent = true;
         map.flyTo([p.latitude, p.longitude], userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
         map.once('moveend', function() { ignoreZoomEvent = false; });
@@ -1515,7 +1299,6 @@ async function saveProfile() {
             DEVICE_COLORS[currentUser.username] = color || CONFIG.DEFAULT_DEVICE_COLOR;
             if (latestPing[currentUser.username]) updateMarker(currentUser.username, latestPing[currentUser.username]);
             renderBadges();
-            renderDevicePills();
         }
         setMsg('profile-msg', 'Saved.');
     } else {
@@ -1755,11 +1538,12 @@ function connectWebSocket() {
         let data;
         try { data = JSON.parse(evt.data); } catch (e) { return; }
 
+        // Chat frames ('chat' / 'chatReactions') also arrive on this socket;
+        // the chat page (/chat/) handles them. WAY has no chat view left, so
+        // they are ignored here.
         if (data.type === 'snapshot') handleSnapshot(data);
         else if (data.type === 'position') handleNewPing(data);
         else if (data.type === 'track') handleTrackPoint(data);
-        else if (data.type === 'chat') handleNewMessage(toChat(data), true);
-        else if (data.type === 'chatReactions') handleChatReactions(data);
         else if (data.type === 'deviceControlState') {
             deviceControlState[data.deviceId] = { forcedMode: data.forcedMode, recordingPaused: data.recordingPaused };
             renderBadges();
@@ -1800,7 +1584,6 @@ function handleSnapshot(data) {
     if (!selectedDevice && DEVICES.length) selectSpeedoDevice(DEVICES[0]);
     else updateSpeedoHUD();
 
-    (data.chat || []).forEach(function(m) { handleNewMessage(toChat(m), false); });
 }
 
 function handleNewPing(raw) {
@@ -1832,7 +1615,7 @@ function handleNewPing(raw) {
     if (followDeviceId === devId) {
         const target = L.latLng(ping.latitude, ping.longitude);
         ignoreZoomEvent = true;
-        if (CHAT_MODE || !map) { ignoreZoomEvent = false; return; }
+        if (!map) { ignoreZoomEvent = false; return; }
         if (map.getZoom() < userPrefs.followZoom) {
             map.flyTo(target, userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
         } else {
@@ -1857,222 +1640,6 @@ function handleTrackPoint(raw) {
     devicePings[devId].push(p);
     devicePings[devId].sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
     redrawAllTracks();
-}
-
-function handleNewMessage(msg, isLive) {
-    if (renderedMessageIds.has(msg.id)) return;
-    const container = document.getElementById('chat-messages');
-    let div;
-    // Reaction pill row (human messages only) -- created in the branch below
-    // but appended to the container AFTER the bubble, because the bubble is
-    // still detached when the branch runs.
-    let reactRow = null;
-
-    if (msg.is_auto && (msg.event_type === 'arrived' || msg.event_type === 'left')) {
-        const isExit = msg.event_type === 'left';
-        div = document.createElement('div');
-        div.className = 'system-msg' + (isExit ? ' exit' : ' entry');
-        div.dataset.id = msg.id;
-        const icon = isExit ? CONFIG.EXIT_ICON : CONFIG.ENTRY_ICON;
-        div.innerHTML =
-            '<div class="timestamp">' + formatTime(msg.gps_timestamp || msg.created_at) + '</div>' +
-            '<div class="message-row"><span class="line"></span><span class="text">' + icon + ' ' + escapeHtml(msg.message) + '</span><span class="line"></span></div>';
-    } else {
-        div = document.createElement('div');
-        const isMine = currentUser && msg.sender === currentUser.username;
-        div.className = 'chat-msg' + (isMine ? ' mine' : '');
-        if (isMine && currentUser.color) {
-            div.style.background = currentUser.color;
-            div.style.boxShadow = '0 2px 8px ' + currentUser.color + '4d';
-        }
-        div.dataset.id = msg.id;
-        div.innerHTML = '<span class="sender">' + escapeHtml(msg.sender || 'System') + '</span>' + escapeHtml(msg.message) + '<span class="time">' + formatTime(msg.gps_timestamp || msg.created_at) + '</span>';
-
-        // Reply support, human messages only (replying to "arrived at Home"
-        // would be odd, and system bubbles are centred rows, not bubbles).
-        if (msg.reply_to_id) {
-            const q = document.createElement('span');
-            q.className = 'chat-quote';
-            q.innerHTML = '<span class="q-sender">' + escapeHtml(msg.reply_to_sender || 'System') + '</span>' +
-                '<span class="q-text">' + escapeHtml(msg.reply_to_snippet || '') + '</span>';
-            // Only offer the jump when the original is actually on screen.
-            // Messages render in order, so if it was going to be there it
-            // already is -- and an old reply's target is usually a different
-            // day's history, or a D1 row whose id doesn't match the DO's UUID.
-            const already = document.querySelector('#chat-messages [data-id="' + msg.reply_to_id + '"]');
-            if (already) {
-                q.title = 'Go to the quoted message';
-                q.style.cursor = 'pointer';
-                q.onclick = function() { scrollToMessage(msg.reply_to_id); };
-            } else {
-                q.style.cursor = 'default';
-            }
-            div.insertBefore(q, div.firstChild);
-        }
-        const replyBtn = document.createElement('button');
-        replyBtn.type = 'button';
-        replyBtn.className = 'chat-reply-btn';
-        replyBtn.textContent = '↩';
-        replyBtn.title = 'Reply';
-        // Assigned as a property, not an inline onclick: message text can
-        // contain quotes and would break out of an HTML attribute.
-        replyBtn.onclick = function() { startReply(msg); };
-        div.appendChild(replyBtn);
-
-        // Chat reactions: a picker button in the bubble's corner (same pattern
-        // as the reply button) and a pill row rendered as a SIBLING under the
-        // bubble -- a sibling so the bubble's own layout never shifts. The
-        // pill row is looked up by data attribute on broadcast, so it updates
-        // without re-rendering the bubble itself.
-        const reactBtn = document.createElement('button');
-        reactBtn.type = 'button';
-        reactBtn.className = 'chat-react-btn';
-        reactBtn.textContent = '☺+';
-        reactBtn.title = 'React';
-        reactBtn.onclick = function(e) { e.stopPropagation(); togglePicker(picker); };
-        div.appendChild(reactBtn);
-        const picker = document.createElement('div');
-        picker.className = 'chat-react-picker';
-        REACTIONS.forEach(function(em) {
-            const eb = document.createElement('button');
-            eb.type = 'button';
-            eb.textContent = em;
-            eb.onclick = function(e) {
-                e.stopPropagation();
-                closeAllPickers();
-                // Only the message id and the emoji travel; identity and
-                // counts are stamped server-side, exactly like chat text.
-                sendWs({ type: 'chat-react', id: msg.id, emoji: em });
-            };
-            picker.appendChild(eb);
-        });
-        div.appendChild(picker);
-
-        reactRow = document.createElement('div');
-        reactRow.className = 'chat-react-row';
-        reactRow.dataset.reactFor = msg.id;
-        renderReactionRow(reactRow, msg.reactions, msg.reaction_users);
-    }
-
-    container.appendChild(div);
-    // Immediately after the bubble in the DOM, so .chat-msg.mine +
-    // .chat-react-row right-aligns it for own messages.
-    if (reactRow) container.appendChild(reactRow);
-    renderedMessageIds.add(msg.id);
-    container.scrollTop = container.scrollHeight;
-
-    const isMine2 = currentUser && msg.sender === currentUser.username;
-
-    if (isLive && !isMine2 && !chatOpen) {
-        chatUnread++;
-        const badgeEl = document.getElementById('chat-badge');
-        badgeEl.textContent = chatUnread;
-        badgeEl.style.display = 'inline-block';
-    }
-}
-
-// ---- Chat replies ---------------------------------------------------------
-// Only the target's ID is sent to the server; the quoted sender/snippet shown
-// in the bubble come back from the DO, which resolves them from its own
-// scrollback. So a reply's quote can never be forged from the browser.
-let replyTarget = null; // { id, sender, snippet }
-
-function startReply(msg) {
-    replyTarget = { id: msg.id, sender: msg.sender || 'System', snippet: msg.message || '' };
-    const bar = document.getElementById('chat-reply-bar');
-    const text = document.getElementById('chat-reply-text');
-    if (text) {
-        text.innerHTML = 'Replying to <b>' + escapeHtml(replyTarget.sender) + '</b>: ' + escapeHtml(replyTarget.snippet);
-    }
-    if (bar) bar.classList.add('open');
-    const input = document.getElementById('chat-input');
-    if (input) input.focus();
-}
-
-function cancelReply() {
-    replyTarget = null;
-    const bar = document.getElementById('chat-reply-bar');
-    if (bar) bar.classList.remove('open');
-}
-
-/** Jump to a quoted message and flash it. Silently does nothing when the
- * original is no longer rendered (e.g. it aged out of the DO's scrollback,
- * or the quote was carried in from a different day's history). */
-function scrollToMessage(id) {
-    if (!id) return;
-    const container = document.getElementById('chat-messages');
-    const target = container ? container.querySelector('[data-id="' + id + '"]') : null;
-    if (!target) return;
-    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    target.classList.remove('flash');
-    // Force a reflow so re-clicking the same quote replays the animation.
-    void target.offsetWidth;
-    target.classList.add('flash');
-    setTimeout(function() { target.classList.remove('flash'); }, 1300);
-}
-
-// ---- Chat reactions (👍🤣💖) -------------------------------------------
-// Same trust model as replies: the browser sends only the message id and the
-// emoji; who reacted and the counts come back stamped by the DO, so nothing
-// here can be forged. State lives server-side -- the client just re-renders
-// the pill row from each 'chatReactions' broadcast.
-
-/** Open/close one picker; only one is ever open. */
-function togglePicker(picker) {
-    const wasOpen = picker.classList.contains('open');
-    closeAllPickers();
-    if (!wasOpen) picker.classList.add('open');
-}
-function closeAllPickers() {
-    document.querySelectorAll('.chat-react-picker.open').forEach(function(p) { p.classList.remove('open'); });
-}
-// Any click outside a picker closes it (pickers stopPropagation on their own
-// buttons, so this only fires for clicks elsewhere in the document).
-document.addEventListener('click', function() { closeAllPickers(); });
-
-/** Render (or re-render) one message's pill row from maps of
- *  emoji -> count and username -> emoji. Called on initial render and on
- *  every 'chatReactions' broadcast for that message. */
-function renderReactionRow(row, reactions, reactionUsers) {
-    row.innerHTML = '';
-    if (!reactions) return;
-    const myName = currentUser ? currentUser.username : null;
-    Object.keys(reactions).forEach(function(em) {
-        const count = reactions[em];
-        if (!count) return;
-        const mine = !!(reactionUsers && myName && reactionUsers[myName] === em);
-        const pill = document.createElement('button');
-        pill.type = 'button';
-        pill.className = 'chat-react-pill' + (mine ? ' mine' : '');
-        pill.textContent = em + ' ' + count;
-        pill.title = mine ? 'Tap to remove your reaction' : 'Tap to react ' + em;
-        // A pill tap is the same toggle as picking from the picker.
-        pill.onclick = function(e) {
-            e.stopPropagation();
-            sendWs({ type: 'chat-react', id: row.dataset.reactFor, emoji: em });
-        };
-        row.appendChild(pill);
-    });
-}
-
-/** A reaction toggle landed (from this client or anyone else's): update the
- *  pill row in place. No bubble re-render -- the message content never
- *  changes, only the row under it. */
-function handleChatReactions(data) {
-    const row = document.querySelector('[data-react-for="' + data.id + '"]');
-    if (!row) return;
-    renderReactionRow(row, data.reactions, data.reactionUsers);
-}
-
-function sendChatMessage() {
-    const input = document.getElementById('chat-input');
-    const text = input.value.trim();
-    if (!text) return;
-    const payload = { type: 'chat', message: text };
-    if (replyTarget) payload.replyToId = replyTarget.id;
-    input.value = '';
-    cancelReply();
-    sendWs(payload);
 }
 
 function shiftDay(delta) {
@@ -2149,7 +1716,7 @@ function computeLegsForDay(pings) {
 let reviewDayLayers = [];
 
 function clearReviewDay() {
-    if (CHAT_MODE || !map) return;
+    if (!map) return;
     reviewDayLayers.forEach(function(l) { map.removeLayer(l); });
     reviewDayLayers = [];
 }
@@ -2382,7 +1949,7 @@ async function loadCurrentUser() {
 }
 
 function goHome() {
-    if (CHAT_MODE || !map) return; // no map in the popped-out chat
+    if (!map) return;
     const f = userPrefs.homeFence ? GEOFENCES.find(function(g) { return g.name === userPrefs.homeFence; }) : null;
     const center = f ? [f.lat, f.lng] : CONFIG.MAP_DEFAULT_CENTER;
     ignoreZoomEvent = true;
@@ -2391,7 +1958,7 @@ function goHome() {
 }
 
 function applyHomeView() {
-    if (CHAT_MODE || !map || !userPrefs.homeFence) return;
+    if (!map || !userPrefs.homeFence) return;
     const f = GEOFENCES.find(function(g) { return g.name === userPrefs.homeFence; });
     if (f) {
         ignoreZoomEvent = true;
@@ -2431,15 +1998,6 @@ async function boot() {
     // reload too, where currentUser is otherwise only set by submit.
     await loadCurrentUser();
 
-    // Fresh chat session for whoever is now logged in: rendered ids,
-    // unread count and any bubbles from the previous session are cleared
-    // so the snapshot below re-renders under the CURRENT user ("mine"
-    // styling and attribution). boot() runs after every successful login.
-    renderedMessageIds.clear();
-    chatUnread = 0;
-    document.getElementById('chat-badge').style.display = 'none';
-    document.getElementById('chat-messages').innerHTML = '';
-
     drawGeofenceCircles();
     document.getElementById('trips-date-input').value = selectedDateStr;
 
@@ -2447,9 +2005,6 @@ async function boot() {
     applyHomeView();
     scheduleMidnightReset();
 
-    // In chat mode the drawer IS the view: run its open logic (marks read,
-    // scrolls to newest, focuses the input) once the snapshot arrives.
-    if (CHAT_MODE) switchView('chat');
 }
 
 boot();
