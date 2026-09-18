@@ -210,12 +210,21 @@ consistency and the repair path — prefer it over hand-rolled curl.
 
 ## Troubleshooting map
 
-`D:\Freebuff\Home` is its own git repository (initialised `master`,
-baseline commit "Checkpoint the merged Home super app under version
-control"). Use `git diff` / `git status` freely — but note that no remote
-is configured, so nothing is pushed anywhere. The three standalone sources
-under `../Sompitra`, `../W.A.Y`, `../Laoka` have their own separate
-repositories and their own history.
+`D:\Freebuff\Home` is its own git repository — branch **`main`**, matching
+the three module repos. Use `git diff` / `git status` freely. `origin` is
+`git@github.com:maxplorer-lab/Home.git`, which is still **empty: nothing has
+been pushed**, and no upstream is set yet, so the first `git push -u origin
+main` is what creates it.
+
+History was rewritten once, before that first push, to purge a module name
+that was never part of this app — a stray name in one comment, left over
+from the module Laoka replaced — from every commit *and* from the old
+objects. So the commit SHAs predating this note are not the ones anyone
+will find in the repo now. Don't cite a Home SHA in a doc without checking
+it still resolves; prefer file paths and commit *subjects*.
+
+The three standalone sources under `../Sompitra`, `../W.A.Y`, `../Laoka`
+have their own separate repositories and their own history.
 
 | Symptom | Look at |
 | --- | --- |
