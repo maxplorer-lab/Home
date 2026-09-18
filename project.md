@@ -273,8 +273,20 @@ what it says: a grid that gated bank notifications too would be a surprise.
   its topic from) now answers from identity too — reporting its own stale copy
   is precisely how it once handed out a topic that received nothing.
 * The ntfy **server** is household-level (`home_settings.ntfy_server`), with
-  a fallback read of Sompitra's legacy `app_settings.ntfy_server` so a deploy
-  that has not moved it keeps working.
+  a fallback read of Sompitra's legacy `app_settings.ntfy_server`, and then of
+  the deployment's own `NTFY_URL` — the same chain W.A.Y's DO has always run
+  (setting → env → default). The order matters: without the last step a
+  deployment that never wrote the setting pushes tracking events and silently
+  drops money ones, which reads as a bug in the money path rather than a
+  missing value. `npm run smoke` compares the server each half reports, so the
+  two can no longer disagree unnoticed.
+* **A push reports what the server said.** `pushTo` returns `{ok, detail}`
+  instead of discarding the response, so **Send a test** answers with ntfy's
+  own status (`ntfy accepted it (200)`, `ntfy refused it (401): invalid access
+  token`, `could not reach …`) rather than "Test sent". The one time a person
+  presses that button is the time nothing is arriving, and a green tick over a
+  refused push is the least useful answer the app could give. The household's
+  money fan-out logs the same detail per channel when a push is refused.
 * W.A.Y's existing topics are **adopted into `way_topic`** (case-insensitive
   username match) rather than abandoned — the phone in the field is still
   following them — and every tracking write is **mirrored back into `way-db`**
@@ -283,6 +295,16 @@ what it says: a grid that gated bank notifications too would be a surprise.
 * A person with no channel on a side is skipped there; the whole push no-ops
   without a server. Notifications are best-effort and never break a user
 action.
+
+### The three ways a notification disappears without a trace
+
+Each is silent by design, and each is now named somewhere on screen:
+
+| It vanishes because | Named by |
+| --- | --- |
+| the recipient has no channel on that side | the household card in `/settings`, which lists both topics per person and warns when W.A.Y's grid has events for someone who has no tracking topic ("she was subscribed and heard nothing") |
+| quiet hours are running (22:00–06:00 by default, tracking side only, chat exempt) | the 📍 card in `/settings` states the window and says whether it is on **right now** |
+| W.A.Y's grid has no cell for that person × activity | `GET /way/api/debug/notify` reports per-event recipient counts and the last routing decision in words (`niri has no topic`, `cooldown (12s since last)`, `quiet hours for niri (22-6)`) |
 
 All of this is managed in one place: **`/settings`**, organised by who a
 setting belongs to (You / the household / a module) rather than by app.

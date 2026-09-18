@@ -143,15 +143,24 @@ const TAGS: Record<string, string[]> = {
 }
 
 /**
- * The ntfy server root: household-wide, so it lives in home-db. Falls back to
- * the old Sompitra-only value so notifications keep working on a deployment
- * that has not moved it yet.
+ * The ntfy server root: household-wide, so it lives in home-db. Resolution
+ * order is home-db -> Sompitra's old copy -> the deployment's NTFY_URL, so
+ * notifications keep working on a deployment that has not moved the value yet,
+ * and so both halves of the app publish to the SAME server (W.A.Y's Durable
+ * Object runs the same chain).
  */
 export async function ntfyServer(env: Env): Promise<string> {
   const fromHome = ((await getHomeSetting(env.HOME_DB, 'ntfy_server')) || '').trim()
   if (fromHome) return fromHome
   const legacy = ((await getSetting(env.DB, 'ntfy_server')) || '').trim()
-  return legacy
+  if (legacy) return legacy
+  // Nothing in either database: fall back to the deployment's own NTFY_URL, which
+  // is what W.A.Y's Durable Object has always resolved as its second layer
+  // (setting -> env -> default). Without this step a deployment that never wrote
+  // the setting pushes tracking events but silently drops money ones — two halves
+  // of one household disagreeing about whether a server exists, which reads as a
+  // bug in the money path rather than a missing setting.
+  return (env.NTFY_URL || '').trim()
 }
 
 /**
@@ -168,13 +177,14 @@ export async function ntfyServer(env: Env): Promise<string> {
  * with no title — never as an empty message with only a title, which some ntfy
  * clients render as a blank body.
  */
-export async function pushNtfy(env: Env, title: string, message: string, accent = 'green'): Promise<void> {
+export async function pushNtfy(env: Env, title: string, message: string, accent = 'green'): Promise<NtfyFanout> {
+  const none: NtfyFanout = { sent: 0, failed: [] }
   try {
     const server = await ntfyServer(env)
-    if (!server) return
+    if (!server) return none
 
     const channels = (await listNtfyChannels(env.HOME_DB)).filter((u) => (u.ntfy_topic || '').trim())
-    if (channels.length === 0) return
+    if (channels.length === 0) return none
 
     const hasBody = message.trim().length > 0
     const base = server.replace(/\/+$/, '')
@@ -182,12 +192,51 @@ export async function pushNtfy(env: Env, title: string, message: string, accent 
     if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`
 
     // Best-effort in parallel: one dead channel must not stop the others.
-    await Promise.all(
-      channels.map((u) => pushTo(base, headers, u.ntfy_topic as string, title, message, hasBody, accent))
+    const outcomes = await Promise.all(
+      channels.map(async (u) => ({
+        username: u.username,
+        result: await pushTo(base, headers, u.ntfy_topic as string, title, message, hasBody, accent),
+      }))
     )
+
+    // Reported, not thrown: a push is never allowed to break the action that
+    // triggered it. Each refusal is logged with the words the settings page
+    // uses, so `wrangler tail` answers "did the household's money events go
+    // out?" without needing anyone to reproduce it.
+    const out: NtfyFanout = { sent: 0, failed: [] }
+    for (const o of outcomes) {
+      if (o.result.ok) out.sent += 1
+      else {
+        out.failed.push({ username: o.username, detail: o.result.detail })
+        console.log(`ntfy feed push to ${o.username} refused: ${o.result.detail}`)
+      }
+    }
+    return out
   } catch {
     // ignore — notifications are best-effort
+    return none
   }
+}
+
+/**
+ * The outcome of ONE publish.
+ *
+ * ntfy answers with a status code and refuses for reasons a person can act on
+ * (401 when the server wants a token, 429 when a quota is exhausted), so the
+ * answer is carried back instead of being discarded — "the test said sent but
+ * nothing arrived" is not a diagnosable state.
+ */
+export interface NtfyPushResult {
+  ok: boolean
+  /** Plain-language outcome, safe to show in the UI. */
+  detail: string
+}
+
+/** Every person's channel, and what happened to each. Money events reach the
+ *  WHOLE household, so a partial failure is the normal shape of a problem. */
+export interface NtfyFanout {
+  sent: number
+  failed: Array<{ username: string; detail: string }>
 }
 
 /** One channel, one event. Used by the fan-out above and by the "send test"
@@ -200,7 +249,7 @@ async function pushTo(
   message: string,
   hasBody: boolean,
   accent: string
-): Promise<void> {
+): Promise<NtfyPushResult> {
   const payload: Record<string, unknown> = {
     topic,
     message: hasBody ? message : title,
@@ -208,9 +257,15 @@ async function pushTo(
   }
   if (hasBody && title.trim()) payload.title = title
   try {
-    await fetch(base, { method: 'POST', headers, body: JSON.stringify(payload) })
-  } catch {
-    // one channel failing is not an error worth surfacing
+    const res = await fetch(base, { method: 'POST', headers, body: JSON.stringify(payload) })
+    if (res.ok) return { ok: true, detail: `ntfy accepted it (${res.status})` }
+    // The body is where ntfy explains itself ("invalid access token", ...).
+    const why = (await res.text().catch(() => '')).trim().slice(0, 120)
+    return { ok: false, detail: `ntfy refused it (${res.status})${why ? `: ${why}` : ''}` }
+  } catch (e) {
+    // No response at all: wrong host, DNS, TLS, or the server is down.
+    const why = e instanceof Error ? e.message : String(e)
+    return { ok: false, detail: `could not reach ${base} (${why})` }
   }
 }
 
@@ -219,17 +274,17 @@ async function pushTo(
  * or that person has no channel, so the caller can say so plainly instead of
  * claiming a notification went out.
  */
-export async function pushNtfyTo(env: Env, topic: string, title: string, message: string, accent = 'green'): Promise<boolean> {
+export async function pushNtfyTo(env: Env, topic: string, title: string, message: string, accent = 'green'): Promise<NtfyPushResult> {
   try {
     const server = await ntfyServer(env)
     const target = (topic || '').trim()
-    if (!server || !target) return false
+    if (!target) return { ok: false, detail: 'that channel has no topic yet' }
+    if (!server) return { ok: false, detail: 'no ntfy server is set (an admin can set one)' }
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`
-    await pushTo(server.replace(/\/+$/, ''), headers, target, title, message, message.trim().length > 0, accent)
-    return true
-  } catch {
-    return false
+    return await pushTo(server.replace(/\/+$/, ''), headers, target, title, message, message.trim().length > 0, accent)
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) }
   }
 }
 

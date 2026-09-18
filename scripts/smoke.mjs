@@ -311,6 +311,46 @@ log('\n11. Two channels per person: the feed, and tracking')
     } else {
       bad("WAY's Users & topics screen answers", `status ${wayUsers.status}`)
     }
+
+    // ── Quiet hours, said out loud ──
+    // Between 22:00 and 06:00 W.A.Y drops EVERY non-chat event for that person
+    // (way-db users.quiet_start/quiet_end). That is correct, and completely
+    // invisible: a phone that goes quiet at night looks exactly like a push
+    // pipeline that broke, and nothing on any screen told the two apart. The
+    // card that owns the tracking channel has to name the window.
+    check('/settings names the quiet window that mutes tracking',
+      /Quiet hours \d{2}:00–\d{2}:00 \(household time\)/.test(html),
+      'the tracking card does not say when it goes quiet')
+
+    // ── The test button must not lie ──
+    // It used to answer "Test sent to your … topic" for ANY outcome, including a
+    // 401 from a server that wants a token and a host that does not resolve — so
+    // pressing it the one time it matters (nothing is arriving) produced a green
+    // tick and no explanation. The answer must come from the server.
+    if (feed) {
+      const t = await req('/settings/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form({ channel: 'feed' }),
+      })
+      const loc = decodeURIComponent(t.headers.get('location') || '')
+      check('the test button reports what ntfy answered, not merely that we tried',
+        /[?&]ok=Test accepted for your feed topic — ntfy accepted it \(\d+\)/.test(loc) ||
+          /[?&]err=Test NOT sent — (ntfy refused it \(\d+\)|could not reach |no ntfy server is set)/.test(loc),
+        `redirected to ${loc || '(no location)'}`)
+    }
+
+    // ── Both halves publish to the SAME server ──
+    // Sompitra resolves the server from the databases (home-db, then its own
+    // app_settings), while W.A.Y's Durable Object resolves setting -> env ->
+    // default. When the two answers differ, one half of the app notifies and the
+    // other does not, and nothing on screen says which — so the value each side
+    // reports is compared directly.
+    const shown = (html.match(/Server: <span class="font-mono">([^<]*)<\/span>/) || [])[1]?.trim()
+    const strip = (u) => String(u || '').replace(/\/+$/, '')
+    check('the feed and tracking halves publish to the same ntfy server',
+      !!shown && shown !== '— not set —' && strip(shown) === strip(d.server),
+      `settings=${shown || '(none)'} way=${d.server}`)
   }
 }
 

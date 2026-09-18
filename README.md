@@ -117,6 +117,14 @@ the budget, and vice versa. An admin sets the household ntfy server once, and
 can generate, rotate or turn off either topic for anyone; each person can see,
 copy, test and rotate their own in **You → Notifications**.
 
+When a notification does not arrive, the page says why instead of leaving you
+to guess: **Send a test** reports what the ntfy server actually answered
+(`ntfy accepted it (200)`, `ntfy refused it (401)`, `could not reach …`); the
+📍 card states your **quiet hours** and whether they are on right now (inside
+them only chat reaches you); and the admin's household card warns when W.A.Y
+has activity to send someone who has no tracking topic at all — a person who
+is subscribed on paper and hears nothing.
+
 W.A.Y's existing topics were **adopted** into the tracking channel (never
 overwriting a topic someone already follows), so a phone in the field keeps
 working — **Adopt W.A.Y's tracking topics** re-runs that for anyone added

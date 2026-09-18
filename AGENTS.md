@@ -161,14 +161,28 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     receiving. `adoptWayTopics()` (admin button in /settings) promotes W.A.Y's
     topics into `way_topic` and never overwrites a channel someone already has.
 16. The household ntfy **server** lives in home-db (`home_settings`), with a
-    fallback read of Sompitra's legacy `app_settings.ntfy_server`. Only an
-    admin can change it, and it is written to both places on purpose.
-17. `HOME_DB`'s `database_id` is still the **placeholder**
-    `00000000-0000-0000-0000-000000000000`. `wrangler deploy --dry-run` passes
-    anyway. Create `home-db` and paste the real id BEFORE `npm run deploy`,
-    otherwise the deployed Worker has a dead identity database.
-    For the full production cutover (existing deployments, real data, the
-    phones), follow **`CUTOVER.md`**.
+    fallback read of Sompitra's legacy `app_settings.ntfy_server` and then of
+    the deployment's `NTFY_URL`. Only an admin can change it, and it is written
+    to both database copies on purpose. W.A.Y's DO resolves the same chain
+    (setting → env → default), so the two halves must land on the SAME server:
+    `npm run smoke` compares the value each side reports. And **a publish must
+    report the server's answer** — `pushTo` returns `{ok, detail}` and **Send a
+    test** shows it (`ntfy accepted it (200)`, `ntfy refused it (401): …`,
+    `could not reach …`). Never reintroduce a push helper that discards the
+    response: "Test sent" over a refused push is undiagnosable, and that button
+    is only ever pressed when nothing is arriving.
+17. `HOME_DB`'s `database_id` is the **real** `home-db` id (set at cutover). A
+    placeholder passes `wrangler deploy --dry-run` and then hands the deployed
+    Worker a dead identity database, so never let one back in.
+    **Local state is keyed to that id**: change it and `wrangler dev` reads a
+    different, empty sqlite file in `.wrangler/state/v3/d1/` — the symptoms are
+    `maxx/adminpass123` answering `err=bad_credentials` and
+    `d1 execute HOME_DB --local` reporting "no such table: users". Nothing is
+    lost; the old file is still on disk. Either re-apply `migrations-home/*`
+    locally and `/bootstrap` again, or give the binding the old data (the run
+    doc records the swap, including how to prove which file a binding owns).
+    For the cutover itself (existing deployments, real data, the phones), see
+    **`CUTOVER.md`**.
 18. **The chat carries EVERY module's activity, so the chat's data path is a
     shared dependency.** WAY's geofence transitions write system rows itself
     (`handleChatMessage` with `is_auto`), and Sompitra's money events arrive
@@ -296,8 +310,15 @@ the three module repos, with `origin` =
 `git@github.com:maxplorer-lab/Home.git`. Use `git diff` / `git status`
 freely. `main` is pushed and tracks `origin/main`.
 
-**Nothing is deployed.** Home is not on Cloudflare, and the module Workers
-are still the live ones — see `CUTOVER.md` for what has to happen first.
+**Home is deployed**, at `https://home.<subdomain>.workers.dev`, alongside the
+three original Workers (`sompitra-…`, `way`, `laoka`), which are still live and
+are the rollback. It is built by the Cloudflare Git integration on `main` (the
+default `npx wrangler deploy`; `.npmrc` carries `legacy-peer-deps=true` because
+wrangler 4.x wants `@cloudflare/workers-types` v5 while this project pins v4).
+Secrets (`AUTH_PEPPER`, `SESSION_SECRET`, `SETUP_TOKEN`) go in with `wrangler
+secret put` — a deployed Worker with none is inert, never open. The phones'
+μlogger posts to `https://home.<subdomain>.workers.dev/ulogger`; **two DOs
+ingesting at once is split-brain**, so only one host may own the pings.
 
 History was rewritten once, before the first push, to purge a module name
 that was never part of this app — a stray name in one comment, left over
@@ -331,6 +352,11 @@ have their own separate repositories and their own history.
 | A notification never arrives | the right column in **home-db** — `ntfy_topic` for money, `way_topic` for W.A.Y activity (not the app it came from). An empty channel is skipped silently; also check `home_settings.ntfy_server` |
 | A topic receives nothing | in W.A.Y, a topic nobody subscribes to can never fire: `GET /way/api/debug/notify` lists recipient counts per event type. In Sompitra, check the person's `ntfy_topic` is set — and remember a person is NOT sent their own W.A.Y events by design |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
+| A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |
+| Someone is ticked in W.A.Y's grid and still receives nothing | they have no **tracking** topic: the grid says yes, the events are addressed to a topic that does not exist, and nothing else complains. `/settings`' household card warns about exactly this, and `GET /way/api/debug/notify` reports `niri has no topic` |
+| "Send a test" says sent but the phone stays quiet | it now reports ntfy's own answer: `ntfy refused it (401)` = the server wants a token (`wrangler secret put NTFY_TOKEN`), `could not reach …` = wrong URL/host, `no ntfy server is set` = neither the database value nor `NTFY_URL`. If it says **accepted** and still nothing arrives, the phone is subscribed to a different topic — compare the string on screen with the subscription |
+| Money notifications never arrive on a fresh deployment, tracking ones do | the halves resolve the server separately (`src/lib/notify.ts` vs the DO's `getNotifyConfig()`); both must end on the same value, and smoke cross-checks the one each side reports |
+| Local login breaks right after editing `HOME_DB`'s `database_id` | local D1 state is keyed to the database identity — the previous `.sqlite` is still in `.wrangler/state/v3/d1/`; either re-apply the migrations + `/bootstrap`, or give the binding the old data (rule 17, and the workspace run doc) |
 | WAY activity alerts missing from the chat | they are auto chat rows (`is_auto`/`event_type`) written by the DO, not pushes — `sender` is null in the DO and becomes "System" in D1 |
 | Sompitra events never appear in the chat | the DO's `/system-chat` allowlist (`EXTERNAL_SYSTEM_EVENTS`) and `postSystemChat` call in `src/lib/notify.ts`; the handler is best-effort by design, so failures only show in the console |
 | A system event shows as a bubble from "System" instead of a pill | the chat renderer must branch on `is_auto` alone; a new `event_type` also needs a style in `AUTO_STYLE` (unknown types fall back via `AUTO_FALLBACK`) |

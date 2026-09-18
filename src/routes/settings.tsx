@@ -4,6 +4,7 @@ import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
 import { ntfyServer, pushNtfyTo } from '../lib/notify'
 import { reloadWayNotifications } from '../way/worker'
+import { inQuietHours } from '../way/lib/notify'
 import {
   findHomeUserByName,
   listNtfyChannels,
@@ -24,10 +25,91 @@ function errMessage(code: string): string {
   switch (code) {
     case 'bad_server': return 'Server URL must start with http:// or https://'
     case 'no_channel': return 'You have no channel on that side yet — generate one first.'
-    case 'no_server': return 'Set the ntfy server URL first (an admin can do it below).'
     case 'bad_person': return 'That person no longer exists.'
-    default: return code ? decodeURIComponent(code) : 'Something went wrong.'
+    // Anything else is a message we wrote ourselves (a failed push explains
+    // itself). It is already decoded by the time it arrives, so a literal '%' in
+    // it must not be handed to decodeURIComponent — that throws, and a 500 on
+    // the very page someone opened to find out what went wrong is the worst
+    // possible answer.
+    default: return code || 'Something went wrong.'
   }
+}
+
+/**
+ * One person's quiet window, as W.A.Y holds it.
+ *
+ * Quiet hours live in way-db (`users.quiet_start` / `quiet_end`) and apply to
+ * the TRACKING channel only — which is exactly why they have to be visible on
+ * the card that owns that channel. Between those hours every non-chat event is
+ * dropped in silence, so "nothing arrives at night" is expected-but-invisible
+ * unless the number is on the screen.
+ *
+ * Best-effort: no way-db, or nobody by that name, simply shows nothing.
+ */
+async function quietWindow(env: Env, username: string): Promise<{ start: number; end: number; active: boolean } | null> {
+  try {
+    const row = await env.WAY_DB
+      .prepare('SELECT quiet_start, quiet_end FROM users WHERE lower(username) = lower(?)')
+      .bind(username)
+      .first<{ quiet_start: number | null; quiet_end: number | null }>()
+    if (!row) return null
+    const start = row.quiet_start ?? 22
+    const end = row.quiet_end ?? 6
+    return { start, end, active: inQuietHours(start, end, Date.now()) }
+  } catch {
+    return null
+  }
+}
+
+/** 22 → "22:00", in household time (Africa/Nairobi, UTC+3). */
+function clockHour(hour: number): string {
+  return `${String(((hour % 24) + 24) % 24).padStart(2, '0')}:00`
+}
+
+interface Following {
+  /** How many cells of W.A.Y's grid name this person as the recipient. */
+  events: number
+  /** Whose activity those cells are about, lower-cased. */
+  sources: string[]
+  quiet: { start: number; end: number }
+}
+
+/**
+ * What W.A.Y's subscription grid promises each person.
+ *
+ * This is the half of the routing that lives in another module, and it is the
+ * half that fails SILENTLY: W.A.Y can be told "niri wants maxx's arrivals" and
+ * still deliver nothing, because the events go to her TRACKING topic and she has
+ * none. The grid says yes, no phone rings, and no screen anywhere admits it —
+ * which is how a household ends up debugging a working pipeline. Read here so
+ * the admin card can say it out loud.
+ *
+ * Best-effort: no way-db (fresh deploy) simply shows nothing.
+ */
+async function wayFollowing(env: Env): Promise<Map<string, Following>> {
+  const out = new Map<string, Following>()
+  try {
+    const { results } = await env.WAY_DB
+      .prepare(
+        `SELECT lower(su.username) AS subscriber, lower(src.username) AS source,
+                su.quiet_start, su.quiet_end
+         FROM notification_subs s
+         JOIN users su  ON su.id  = s.subscriber_id
+         JOIN users src ON src.id = s.source_id`
+      )
+      .all<{ subscriber: string; source: string; quiet_start: number | null; quiet_end: number | null }>()
+    for (const row of results ?? []) {
+      const cur =
+        out.get(row.subscriber) ??
+        { events: 0, sources: [], quiet: { start: row.quiet_start ?? 22, end: row.quiet_end ?? 6 } }
+      cur.events += 1
+      if (!cur.sources.includes(row.source)) cur.sources.push(row.source)
+      out.set(row.subscriber, cur)
+    }
+  } catch {
+    // No way-db: the card just does not make the claim.
+  }
+  return out
 }
 
 /** A titled group of cards — the page is organised by WHO a setting belongs
@@ -157,6 +239,13 @@ settings.get('/', async (c) => {
   const withFeed = channels.filter((ch) => (ch.ntfy_topic || '').trim()).length
   const withTracking = channels.filter((ch) => (ch.way_topic || '').trim()).length
   const legacyServer = (await getHomeSetting(c.env.HOME_DB, 'ntfy_server')) || ''
+  const quiet = await quietWindow(c.env, user.username)
+  const following = isAdmin ? await wayFollowing(c.env) : new Map<string, Following>()
+  // People the grid has events for, but whose tracking channel is missing —
+  // the exact shape of "she was subscribed and heard nothing".
+  const unreachable = isAdmin
+    ? channels.filter((ch) => following.has(ch.username.toLowerCase()) && !(ch.way_topic || '').trim())
+    : []
 
   return c.html(
     <Layout title="Settings" user={user} activeTab="settings">
@@ -240,7 +329,21 @@ settings.get('/', async (c) => {
             blurb: 'Arrivals, departures, movement and chat messages. W.A.Y alone decides which of those reach you: who you follow, and which activities, in its own notification grid. Nobody is notified about their own events, and quiet hours apply only here.',
             id: 'my-way-topic',
             topic: mine?.way_topic ?? null,
-            extra: <a href="/way/" class="text-[11px] text-green-600 dark:text-green-400 font-semibold">Open W.A.Y's notification grid →</a>,
+            extra: (
+              <div>
+                <a href="/way/" class="text-[11px] text-green-600 dark:text-green-400 font-semibold">
+                  Open W.A.Y's notification grid →
+                </a>
+                {quiet && (
+                  <p class={`text-[11px] mt-1 ${quiet.active ? 'text-orange-600 dark:text-orange-400 font-semibold' : 'text-gray-400 dark:text-gray-500'}`}>
+                    Quiet hours {clockHour(quiet.start)}–{clockHour(quiet.end)} (household time).
+                    {quiet.active
+                      ? ' They are ON right now — only chat messages reach you until they end.'
+                      : ' Inside them, only chat messages reach you.'}
+                  </p>
+                )}
+              </div>
+            ),
           })}
 
           <p class="text-[11px] text-gray-400 dark:text-gray-500 mb-4">
@@ -267,14 +370,36 @@ settings.get('/', async (c) => {
                 {withFeed} of {channels.length} {channels.length === 1 ? 'person has' : 'people have'} a feed topic,{' '}
                 {withTracking} a tracking one.
               </p>
+              {unreachable.length > 0 && (
+                <p class="mb-3 p-2.5 rounded-xl bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 text-[12px] text-orange-700 dark:text-orange-300">
+                  ⚠ {unreachable.map((ch) => ch.display_name || ch.username).join(', ')}:{' '}
+                  W.A.Y has activity to send them but no tracking topic, so none of it arrives.
+                  Generate one below, then subscribe the phone to it.
+                </p>
+              )}
               <div class="space-y-2 mb-4">
-                {channels.map((ch) => (
-                  <div class="p-2.5 rounded-xl bg-gray-50 dark:bg-gray-900/40">
-                    <div class="text-sm font-semibold truncate mb-1.5">{ch.display_name || ch.username}</div>
-                    {ChannelRow(ch.id, 'feed', '💬', ch.ntfy_topic)}
-                    {ChannelRow(ch.id, 'tracking', '📍', ch.way_topic)}
-                  </div>
-                ))}
+                {channels.map((ch) => {
+                  const follows = following.get(ch.username.toLowerCase())
+                  const blind = !!follows && !(ch.way_topic || '').trim()
+                  return (
+                    <div class="p-2.5 rounded-xl bg-gray-50 dark:bg-gray-900/40">
+                      <div class="text-sm font-semibold truncate mb-1.5">{ch.display_name || ch.username}</div>
+                      {ChannelRow(ch.id, 'feed', '💬', ch.ntfy_topic)}
+                      {ChannelRow(ch.id, 'tracking', '📍', ch.way_topic)}
+                      {follows ? (
+                        <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">
+                          W.A.Y has {follows.events} {follows.events === 1 ? 'event' : 'events'} for them about{' '}
+                          {follows.sources.join(', ')} · quiet {clockHour(follows.quiet.start)}–{clockHour(follows.quiet.end)}
+                          {blind && (
+                            <span class="block text-orange-600 dark:text-orange-400 font-semibold">
+                              ⚠ no tracking topic — none of those reach them.
+                            </span>
+                          )}
+                        </p>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
               <form method="post" action="/settings/adopt-way" class="mb-2">
                 <Btn>Adopt W.A.Y's tracking topics</Btn>
@@ -289,7 +414,9 @@ settings.get('/', async (c) => {
           {isAdmin ? (
             <Card title="📡 ntfy server" className="mb-4">
               <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-                Shared by every module and every person. Leave empty to disable all push notifications.
+                Shared by every module and every person. Leave it empty and the deployment's own{' '}
+                <span class="font-mono">NTFY_URL</span> is used instead; when that is empty too, push
+                notifications are off entirely.
               </p>
               <form method="post" action="/settings/notifications" class="space-y-3">
                 <input
@@ -435,12 +562,17 @@ settings.post('/notifications/test', async (c) => {
   const who = user.display_name || user.username
   // The test says WHICH channel answered. Two topics on one phone means "a test
   // arrived" is no longer enough information to diagnose anything.
-  const sent = channel === 'tracking'
+  const result = channel === 'tracking'
     ? await pushNtfyTo(c.env, topic, 'Home test', `${who} · tracking channel`, 'blue')
     : await pushNtfyTo(c.env, topic, 'Home test', `${who} · money & chat feed`, 'green')
-  return c.redirect(sent
-    ? `/settings?ok=${encodeURIComponent(channel === 'tracking' ? 'Test sent to your tracking topic' : 'Test sent to your feed topic')}`
-    : '/settings?err=no_server')
+  // Report what the SERVER answered, not that we tried. "Sent" over a push the
+  // server refused is the one answer this button must never give: it is the
+  // difference between a wrong topic on the phone and an ntfy server that wants
+  // a token, and only this field tells them apart.
+  const where = channel === 'tracking' ? 'tracking topic' : 'feed topic'
+  return c.redirect(result.ok
+    ? `/settings?ok=${encodeURIComponent(`Test accepted for your ${where} — ${result.detail}`)}`
+    : `/settings?err=${encodeURIComponent(`Test NOT sent — ${result.detail}`)}`)
 })
 
 /** Which of the two channels a form meant. Defaults to the feed, which is what
