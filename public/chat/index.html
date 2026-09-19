@@ -214,7 +214,12 @@ function formatTime(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 function sendWs(obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    // Returns whether it actually left the machine. A caller that clears its
+    // own UI before checking this is how a message vanishes: the socket is
+    // closed while the phone sleeps, the box empties, nothing is sent, and the
+    // user is told nothing (setConn's "Reconnecting…" is easy to miss).
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); return true; }
+    return false;
 }
 
 function toChat(raw) {
@@ -376,7 +381,9 @@ function handleNewMessage(msg, isLive) {
                 closeAllPickers();
                 // Only the message id and the emoji travel; identity and
                 // counts are stamped server-side, exactly like chat text.
-                sendWs({ type: 'chat-react', id: msg.id, emoji: em });
+                if (!sendWs({ type: 'chat-react', id: msg.id, emoji: em })) {
+                    setConn('Not connected — try again in a moment');
+                }
             };
             picker.appendChild(eb);
         });
@@ -471,7 +478,9 @@ function renderReactionRow(row, reactions, reactionUsers) {
         // A pill tap is the same toggle as picking from the picker.
         pill.onclick = function(e) {
             e.stopPropagation();
-            sendWs({ type: 'chat-react', id: row.dataset.reactFor, emoji: em });
+            if (!sendWs({ type: 'chat-react', id: row.dataset.reactFor, emoji: em })) {
+                setConn('Not connected — try again in a moment');
+            }
         };
         row.appendChild(pill);
     });
@@ -492,9 +501,16 @@ function sendChatMessage() {
     if (!text) return;
     const payload = { type: 'chat', message: text };
     if (replyTarget) payload.replyToId = replyTarget.id;
+    // Send FIRST; only an accepted send may clear the composer. On a dead
+    // socket the text stays in the box (and the reply target stays armed) and
+    // the banner says why -- the message must never disappear silently.
+    if (!sendWs(payload)) {
+        setConn('Not connected — your message is still here, send again in a moment');
+        input.focus();
+        return;
+    }
     input.value = '';
     cancelReply();
-    sendWs(payload);
 }
 
 // ---- Boot ------------------------------------------------------------------

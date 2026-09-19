@@ -1947,7 +1947,17 @@ async function apiJson(method, path, body) {
         opts.headers = { 'Content-Type': 'application/json' };
         opts.body = JSON.stringify(body);
     }
-    const resp = await fetch(path, opts);
+    // A fetch that never reaches the server REJECTS instead of answering, and
+    // an unhandled rejection here is a silent no-op: tapping Save appears to
+    // do nothing at all (a phone whose radio was asleep, a dropped Wi-Fi
+    // handover). Answer in the same shape as every other failure so the
+    // callers' existing alert branch runs and the save cannot fail invisibly.
+    let resp;
+    try {
+        resp = await fetch(path, opts);
+    } catch (e) {
+        return { ok: false, status: 0, data: { message: 'Could not reach the server — check your connection and try again.' } };
+    }
     let data = null;
     try { data = await resp.json(); } catch (e) {}
     return { ok: resp.ok, status: resp.status, data: data };
@@ -2161,9 +2171,24 @@ async function submitGeofence() {
     const category = document.getElementById('gf-category').value || null;
     const lat = parseFloat(document.getElementById('gf-lat').value);
     const lon = parseFloat(document.getElementById('gf-lon').value);
-    const radius = parseFloat(document.getElementById('gf-radius').value) || 50;
+    // Blank means "the default" (50 / entry+40), a NUMBER means what it says,
+    // and anything else is refused out loud. The old parseFloat-or-fallback
+    // silently turned a typo ("100m", "1,5") into the default — for the exit
+    // field that meant silently CLEARING a radius the household had set.
+    const radiusRaw = document.getElementById('gf-radius').value.trim();
+    let radius = 50;
+    if (radiusRaw) {
+        const n = parseFloat(radiusRaw);
+        if (!Number.isFinite(n) || n <= 0) { alert('Entry radius must be a positive number of metres.'); return; }
+        radius = n;
+    }
     const exitRaw = document.getElementById('gf-exit').value.trim();
-    const exit = exitRaw ? parseFloat(exitRaw) : null;
+    let exit = null;
+    if (exitRaw) {
+        const n = parseFloat(exitRaw);
+        if (!Number.isFinite(n) || n <= 0) { alert('Exit radius must be a positive number of metres, or leave it blank for entry+40.'); return; }
+        exit = n;
+    }
     if (!name || !display || isNaN(lat) || isNaN(lon)) { alert('Name, display name, lat, and lon are required.'); return; }
 
     const body = { displayName: display, category: category, lat: lat, lon: lon, radiusM: radius, exitRadiusM: exit };

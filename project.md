@@ -424,6 +424,29 @@ Each is silent by design, and each is now named somewhere on screen:
 All of this is managed in one place: **`/settings`**, organised by who a
 setting belongs to (You / the household / a module) rather than by app.
 
+### A user ACTION must fail loudly, never silently
+
+The notification rule above, pointed the other way: when a person taps **Save**
+or **Send**, "nothing happened" is not an acceptable outcome. Two places used to
+swallow the failure whole, both found on 2026-09-19:
+
+* **The dashboard's `apiJson`** (`public/way/index.html`) let a rejected
+  `fetch` escape — a phone whose radio was asleep, a dropped Wi-Fi handover —
+  so the tap produced no request, no alert and no state change. It now answers
+  in the same shape as every other failure (`ok:false, status:0`, carrying the
+  message every caller already knows how to show), and the geofence form
+  refuses a non-numeric radius out loud instead of silently falling back to the
+  default (a `100m` typo in the exit field used to CLEAR it).
+* **The chat composer** (`public/chat/index.html`) cleared the box BEFORE
+  `sendWs`, and `sendWs` silently dropped the frame when the socket was closed:
+  a message typed while the phone slept vanished with no trace. `sendWs` now
+  returns whether the frame left; the composer clears only on success, and on
+  refusal the text stays in the box and `#chat-conn` says so.
+
+Smoke guards: section 15 (apiJson + the radius fields) and section 12 (the
+composer), each falsified by its own mutation — and the composer was verified
+live by closing the socket and watching the text stay.
+
 ### The chat's data path is shared, so watch it during any cutover
 
 The chat is the one surface every module now depends on, and it has a failure

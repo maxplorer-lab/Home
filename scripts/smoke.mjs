@@ -17,15 +17,19 @@
 // (see the run doc) — they are meaningless in production. Whatever account
 // you pass must be an ADMIN, because the admin-console check needs it.
 //
-// What it proves, in order:
-//   1. the Worker boots and serves the login page
-//   2. ONE login mints ALL module session cookies
-//   3. every tab (Sompitra pages + the WAY/Laoka/Chat shells) answers 200
-//   4. every module API answers 200 through the same cookie jar
-//   5. the chrome is consistent: real brand icons on EVERY tab, no emoji
-//   6. the modules are session-gated (anonymous access redirects to /login)
-//   7. bad credentials are rejected AND set no cookie
-//   8. a jar holding ONLY home_session self-repairs on every module
+// The checks run in NUMBERED SECTIONS (banners in this file), and the docs
+// (AGENTS.md, README.md, project.md) cite them by those numbers — so the
+// numbers are a contract: renumbering a banner breaks every citation.
+//   1. the server answers                10. unified settings & channels
+//   2. one login, all cookies            11. two channels per person
+//   3. every tab renders                 12. the chat is the ONE feed
+//   4. module APIs                       13. Laoka's list reaches Sompitra
+//   5. chrome consistency                14. a template can be forgotten
+//   6. modules are session-gated         15. the map clock + the tracking laws
+//   7. bad credentials                   16. Android install, both shapes
+//   8. auto-repair from home_session     17. Laoka inside the shell
+//   9. no silent map reversion           18. one brand, one colour per screen
+//   9b. the HUD reads what the tracker sends
 // Exit code 0 = all green, 1 = something regressed.
 
 import { readFileSync } from 'node:fs'
@@ -501,6 +505,14 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
   }
 
   const chat = await body(await req('/chat/index.html'))
+  // The composer's contract: a frame the socket refused must leave the text
+  // where it was. The old order cleared the box first, so a message typed
+  // while the phone was asleep vanished with no trace.
+  check('a message typed on a dead socket is kept, not silently swallowed',
+    /function sendWs[\s\S]{0,600}return true[\s\S]{0,120}return false/.test(chat) &&
+    chat.includes('if (!sendWs(payload))') &&
+    chat.indexOf("input.value = ''") > chat.indexOf('if (!sendWs(payload))'),
+    'the composer clears before the send is known to have gone out, so a closed socket eats the message with no trace')
   check('chat styles expense events', /AUTO_STYLE[\s\S]{0,600}expense\s*:/.test(chat) && chat.includes('.system-msg.expense .text'), 'expense event type has no styling')
   check('chat styles income events', /AUTO_STYLE[\s\S]{0,600}income\s*:/.test(chat) && chat.includes('.system-msg.income .text'), 'income event type has no styling')
   check('chat styles kine events', /AUTO_STYLE[\s\S]{0,600}kine\s*:/.test(chat) && chat.includes('.system-msg.kine .text'), 'kine event type has no styling')
@@ -1108,6 +1120,18 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   check('crossing into a fence stops the pulse without waiting for a frame',
     /is_inside_geofence && approachPulses\[devId\]/.test(way) && way.includes("data.type === 'approach'"),
     'the ping path does not clear the pulse on entry, or the frame is never handled')
+
+  // A save that never reached the server must not look like nothing happened.
+  // `fetch` REJECTS on a dead network, and both apiJson and its callers used to
+  // let that rejection escape: no alert, no state change, no clue -- the exact
+  // shape of "I set it and it did not save".
+  check('a network failure answers like every other failure, not as silence',
+    /async function apiJson[\s\S]{0,900}catch[\s\S]{0,220}ok: false[\s\S]{0,60}status: 0/.test(way),
+    'a rejected fetch escapes apiJson again, so a save that never reached the server is invisible')
+  check('a non-numeric radius is refused out loud, not silently discarded',
+    /Number\.isFinite\(n\)[\s\S]{0,140}Entry radius must be a positive number/.test(way) &&
+    /Number\.isFinite\(n\)[\s\S]{0,140}Exit radius must be a positive number/.test(way),
+    'typing a unit or a comma into a radius field ("100m") silently falls back to the default instead of saying so')
 
   // …and the server half, in the DO's own source: the pulse must come from the
   // SAME code path as the notification, or the two can disagree about whether
