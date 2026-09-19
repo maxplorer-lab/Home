@@ -793,6 +793,10 @@ the follow it had just started.
 * `home-db` never stores module data and modules never store identity.
 * Every module call from the identity engine is wrapped in try/catch: a
   broken module must never break login.
+* A tap either succeeds or says why. No save, message or reaction may fail
+  silently — a dead network answers in the same shape as any other error, and
+  the chat composer keeps unsent text in the box (see "A user ACTION must fail
+  loudly" above; smoke sections 12 and 15 guard it).
 * One login per person, admin-managed; no self-signup anywhere.
 * Colour palettes of each module are untouched — Laoka stays orange, W.A.Y
   **sky** (`#0284c7`, the colour its own tab carries), Sompitra's Tailwind theme
