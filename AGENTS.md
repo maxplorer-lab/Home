@@ -139,6 +139,19 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     read those two variables. So: never hardcode a hue in a heading, a pill or
     a primary button — use `var(--accent)` for a mark and `var(--accent-ink)`
     for anything filled with white text (white on the tint is only 3.9:1).
+    **Scope, because this rule used to be read as "no fixed colours anywhere"
+    and Sompitra's own screens contradicted it:** it governs HOME-OWNED
+    surfaces — the chrome, the shell hosts, `/settings`. An embedded module's
+    own screens keep the palette they shipped with (project.md's invariants),
+    which is why Sompitra's money pages still carry their hardcoded Tailwind
+    greens and blues.
+    What is NOT module style is the **meaning of a money colour**: green in,
+    red out, teal a period's net result, orange we owe, purple owed to us —
+    plus the two stated exceptions (Sompitra's graded balance scale for cash on
+    hand, and Kiné's session tiles). A money screen that prints "Net" or
+    "owed to us" in a colour the legend does not own is a bug, not a style
+    choice; smoke section 18 reads the SERVED pages and fails on exactly that
+    (it caught `/budget/reports`, Sales and the Debts page).
     Card headings take an `icon` from `ICONS`, never an emoji: an emoji is a
     colour picture the OS picks, so it cannot take the accent and it renders at
     a different size on every platform (emoji that ENCODE data — the Kiné
@@ -183,10 +196,10 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     **A phone is given its topic by `/way/`'s Users & topics screen**, so that
     screen answers from identity too (`/way/api/users` → `topicSource`), and
     its generate button writes through `setWayTopic()` — which also MIRRORS the
-    value into `way-db`, because the standalone Worker is still a deployable
-    build and must publish to the topic the phone really follows. Never delete
-    either way-db copy without migrating first, or every phone silently stops
-    receiving. `adoptWayTopics()` (admin button in /settings) promotes W.A.Y's
+    value into `way-db`, because that is what a **rollback** publishes from
+    (`CUTOVER.md` §6: one `wrangler deploy` per module repo, D1 bound by id and
+    never owned by a Worker). Never delete either way-db copy without migrating
+    first, or every phone silently stops receiving. `adoptWayTopics()` (admin button in /settings) promotes W.A.Y's
     topics into `way_topic` and never overwrites a channel someone already has.
 16. The household ntfy **server** lives in home-db (`home_settings`), with a
     fallback read of Sompitra's legacy `app_settings.ntfy_server` and then of
@@ -200,8 +213,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     response: "Test sent" over a refused push is undiagnosable, and that button
     is only ever pressed when nothing is arriving.
 17. `HOME_DB`'s `database_id` is the **real** `home-db` id (created at cutover).
-    A
-    placeholder passes `wrangler deploy --dry-run` and then hands the deployed
+    A placeholder passes `wrangler deploy --dry-run` and then hands the deployed
     Worker a dead identity database, so never let one back in.
     **Local state is keyed to that id**: change it and `wrangler dev` reads a
     different, empty sqlite file in `.wrangler/state/v3/d1/` — the symptoms are
@@ -314,11 +326,20 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `PLAYBACK_LAG_SECONDS` (25 s), commits track segments append-only
     (`commitTrail` / `drawTail` / `resetTrail`), moves persistent markers
     instead of rebuilding them per ping, and lets `updateFollowCamera` — the
-    ONLY caller of `map.panTo` — glide the camera when the device leaves the
-    middle half of the screen (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`; that size is
-    a judgement call — see `project.md`, a third of each axis is too small to be
-    comfortable). The old per-ping `redrawAllTracks()` +
-    `panTo` lived in `handleNewPing`; nothing there may come back. Frozen: the
+    only thing that moves the camera, and the only caller of `map.panBy` — run
+    the follow CYCLE: the device roams the middle half of the screen
+    (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`) while the map holds still, keeps going
+    for `FOLLOW_PUSH_MS` past the edge, and is then drawn back to the **centre**
+    over `FOLLOW_PULL_DURATION` with a spring ease (`FOLLOW_PULL_SPRING`, a few
+    percent of overshoot past the centre). Two halves of that are load-bearing:
+    the pull must keep moving WITH the device (it closes the gap the device had
+    when the pull began, so a device that drives on, turns or stops is still
+    drawn) and it must LAND ON THE CENTRE — a camera that only undoes the
+    overshoot pins the device to the box edge for as long as it keeps moving,
+    and the edge is where the HUD and the badge strip are. The box size is a
+    judgement call — see `project.md`, a third of each axis is too small to be
+    comfortable. The old per-ping `redrawAllTracks()` + `panTo` lived in
+    `handleNewPing`; nothing there may come back. Frozen: the
     speed ramp, walking dash, gap rule, stationary dots, `shouldDrawPoint`,
     the state machine, `pending_sync` → `gps_pings`/`messages`, the 21:00 cron
     and the Flush button. `devicePings` stays the COMPLETE ordered record the
@@ -508,7 +529,12 @@ have their own separate repositories and their own history.
 | The HUD's age reads `-1s ago` | the phone's clock runs ~1 s ahead of the viewer's: the age is `Date.now() - ping.timestamp` and must be **clamped at 0** (`now` under a second). Whatever the skew, an age can never be negative |
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
 | A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth is **case-sensitive** on `users.username` (`MaxX`, lowercase `niri` — a lowercase login works for the dashboard, not for a phone), and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h) |
-| The WAY marker is 25 s behind the device, or the map keeps re-centring | **not a bug** — the viewer draws on a delayed playback cursor and a dead-zone camera on purpose. The HUD stays live, and the lag is named by the one blue line under the pace pills in **Settings → Map** (shown on Smooth, removed on Live). If you need the newest ping now, switch the pace to **Live**. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
+| The WAY marker is 25 s behind the device, or the map keeps moving | **not a bug** — the viewer draws on a delayed playback cursor and a follow camera that cycles on purpose. The HUD stays live, and the lag is named by the one blue line under the pace pills in **Settings → Map** (shown on Smooth, removed on Live). If you need the newest ping now, switch the pace to **Live**. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
+| The map drifts while the device is clearly inside the box, or the device is left sitting at the edge after the camera moves | the follow cycle is DRIFT (map **still** while the device roams a quarter of each axis) → PUSH (map still for `FOLLOW_PUSH_MS` while the device shoves past the edge) → PULL (drawn back to the **centre** over `FOLLOW_PULL_DURATION`). A camera that moves during the drift, or that stops at the box edge instead of the centre, means `updateFollowCamera` was changed: smoke section 15 asserts the phases, that the pull drives a live offset (`panBy`, never `panTo`/`setView`) and — by evaluating `pullEase` — that it lands exactly on the centre with a small overshoot |
+| A page you changed still looks old on a phone — the deploy is fine, the number did not move | first check WHICH build the phone is on: **WAY → Settings** prints `build 2026-09-19.5-superapp` under Log out (the marker only bumps when the WAY document itself changes). Each tab is a **fresh server-rendered page**, so switching tabs (or reopening the installed app) reloads it — but a tab that was already open through the deploy keeps its old document until you do. Assets are served `must-revalidate`, so it is never the HTTP cache. This is how the HUD's size change looked like it had not shipped: it had, and on a ≤420 px viewport it is only 33 px vs 30 px (the larger 42 px branch starts above 420 px, which is why a phone and a 423 px iframe render differently) |
+| The HUD/speed readout is smaller than the desktop screenshot | `.spd-num` is 42 px, and the `@media (max-width: 420px)` block in `public/way/index.html` drops it to 33 px with a 138 px card — a 1 px width change across that boundary is a 9 px jump. Change the branch, not the desktop value, when tuning for phones |
+| A cached page appeared for the wrong account, or an offline load showed a signed-in screen | a service worker cached a DOCUMENT. There are two (`public/sw.js` at `/`, `public/way/sw.js` at `/way/`) and the narrower scope wins for a /way/ URL, so both must keep the assets-only policy: no page in the precache list, and `req.mode === 'navigate' || req.destination === 'document'` returns before any cache is consulted. A policy change must also bump the cache name — that is what evicts the old entries. Smoke section 16 fails on both files |
+| A Kiné payment does not show up as budget income | the sync resolves its account (`kineIncomeAccount` in `src/routes/kine.tsx`): the signed-in person's own account whose name starts with `Kin%` first, then any `Kiné Privée`. No such account → the "Sync to Budget Income" checkbox is not even offered. It used to look for `username='niri'` specifically, which quietly broke the feature for anyone else |
 | A WAY track vanishes, or a trail stops growing | `resetTrail()` is the only thing that clears one (snapshot / track-eye / late `track` point). Check `trailFor(devId).drawnIdx` vs `devicePings[devId].length` in the console, and remember a hidden track (👁) still moves its marker |
 | The WAY camera stops following for no reason | `map.on('zoomstart')` clears the follow: our own `flyTo`s must be wrapped in `ignoreMapEvents()` (a deadline, NOT a flag — a `flyTo` fires `zoomstart` twice) |
 | A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker, or switch the pace to **Live** |
@@ -526,3 +552,10 @@ The root `dashboard/` (an older copy of W.A.Y's frontend) and the empty
 `sql/` were deleted for exactly this reason — they were never served, and
 editing them for a "fix that did nothing" was a real false lead. Don't
 reintroduce a second copy of a served file anywhere in the root.
+
+Two files in `public/` are deliberately unreferenced, and should stay:
+`public/icons/icon.svg` and `public/icons/icon-maskable.svg` are the only
+**vector** sources of the brand mark (the brand kit is rasters only), kept
+beside the PNGs rendered from them. Everything else there is either served
+directly or listed in a service worker's precache — a file that is neither is
+dead weight: `favicon-48.png` was referenced by nothing and is gone.

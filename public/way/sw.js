@@ -1,21 +1,39 @@
-// sw.js — minimal service worker (superapp build).
-// Scoped to /way/ inside the family super app: the shell lives under
-// /way/index.html and the other two apps (Sompitra at /, Laoka at
-// /laoka/) must never be intercepted by this worker.
+// sw.js — Home's service worker, scoped to /way/ (superapp build).
 //
-// Its jobs:
-//   1. Make WAY installable (Chrome requires a fetch handler + valid manifest).
-//   2. Cache the static shell (index, manifest, icons) for a fast start and
-//      a basic offline fallback.
-// Dynamic data (/way/api/*, /ws, /ulogger) is deliberately NEVER cached --
-// those must always hit the network fresh.
+// It exists for two reasons: Chrome/Brave refuse to offer "Install app" without
+// a manifest AND a fetch handler, and a cold start on a phone should not wait on
+// the network for a pin icon.
+//
+// What it deliberately does NOT do: cache HTML or API responses. That is the
+// app-wide policy (`public/sw.js`), and it is a security rule rather than a
+// style choice — every document here is server-rendered for ONE signed-in
+// person, on a device that may be shared. A cached `/way/index.html` would be
+// handed to the next person (or to an offline visitor) as though it were
+// theirs. This file used to precache the shell and fall back to it offline;
+// `way-assets-v3` is the cache that no longer exists, and the name change is
+// what purges it from phones that already installed v2.
+//
+// Dynamic data (/way/api/*, /ws, /ulogger) is never touched either — it must
+// always hit the network fresh.
+//
+// This worker is nested inside Home's root one (scope `/way/` vs `/`): a
+// narrower scope wins for a /way/ URL, so BOTH files must keep this policy or
+// the stricter one is pointless.
 
-const CACHE = 'way-shell-v2-superapp';
-const SHELL = ['/way/', '/way/index.html', '/way/manifest.json', '/way/icon-512.png', '/way/icon-maskable-512.png'];
+const CACHE = 'way-assets-v3';
+const PRECACHE = [
+  '/way/manifest.json',
+  '/way/icon-64.png',
+  '/way/icon-512.png',
+  '/way/icon-maskable-512.png',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE)
+      // One bad URL must not fail the whole install: add them individually.
+      .then((cache) => Promise.all(PRECACHE.map((url) => cache.add(url).catch(() => {}))))
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -29,25 +47,40 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  const url = new URL(req.url);
+  if (req.method !== 'GET') return;
 
-  // Same-origin GETs only; leave cross-origin (Leaflet CDN, tiles, fonts,
-  // Nominatim) and all dynamic data to the browser's normal network path.
-  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (!url.pathname.startsWith('/way/')) return; // scope guard: Sompitra (/) and Laoka (/laoka/) are other apps
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+
+  // Scope guard: Sompitra (/) and Laoka (/laoka/) are other apps.
+  if (!url.pathname.startsWith('/way/')) return;
   if (url.pathname.startsWith('/way/api/') || url.pathname === '/ws' || url.pathname.startsWith('/ulogger')) return;
 
-  // Network-first for the shell, so a freshly-deployed Worker always wins;
-  // fall back to cache (then to the cached index) when offline.
-  event.respondWith(
-    fetch(req)
-      .then((resp) => {
-        if (resp.ok) {
-          const clone = resp.clone();
-          caches.open(CACHE).then((c) => c.put(req, clone));
-        }
-        return resp;
-      })
-      .catch(() => caches.match(req).then((cached) => cached || caches.match('/way/index.html')))
-  );
+  // Documents are the app itself — the Worker's session-gated render, never a
+  // cache entry. `destination` is '' for some same-origin fetches, so the
+  // navigation mode is checked too.
+  if (req.mode === 'navigate' || req.destination === 'document') return;
+
+  const cacheable = ['image', 'style', 'script', 'font'].includes(req.destination);
+  if (!cacheable) return;
+
+  // Stale-while-revalidate: instant from cache, refreshed in the background so
+  // the next load already has the new build. An offline miss answers 504 rather
+  // than rejecting the fetch (a rejected respondWith shows the browser's own
+  // error page for an asset).
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    const hit = await cache.match(req);
+    const refresh = fetch(req).then((response) => {
+      if (response && response.status === 200 && response.type === 'basic') {
+        cache.put(req, response.clone()).catch(() => {});
+      }
+      return response;
+    });
+    if (hit) {
+      event.waitUntil(refresh.catch(() => {}));
+      return hit;
+    }
+    return refresh.catch(() => new Response('', { status: 504, statusText: 'offline' }));
+  })());
 });

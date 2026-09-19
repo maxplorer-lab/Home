@@ -70,12 +70,27 @@ export function mga(amount: number): string {
   return `Ar ${amount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 }
 
-// ─── User accent color (orange = Niri, blue = MaxX) ──────────
+// ─── Per-person dot colour ───────────────────────────────────
+// The dot tells one person's rows from another's, so its only job is to be
+// STABLE and DISTINGUISHABLE. The household's two accounts keep the colours
+// they have always had (recognised everywhere: the legend beside the
+// transaction list, the map's chat scrollback); anyone else the admin creates
+// gets a colour picked from the palette below by a hash of their name, rather
+// than the flat grey this used to return — two extra people in grey are the
+// same person as far as the eye is concerned.
+const EXTRA_DOT_COLORS = [
+  'bg-teal-500', 'bg-violet-500', 'bg-pink-500', 'bg-amber-500',
+  'bg-lime-500', 'bg-cyan-500', 'bg-rose-500', 'bg-indigo-500',
+]
+
 export function userAccentColor(displayName: string | null | undefined): string {
   const n = (displayName || '').toLowerCase()
   if (n === 'niri') return 'bg-orange-500'
   if (n === 'maxx') return 'bg-blue-500'
-  return 'bg-gray-400'
+  if (!n) return 'bg-gray-400'
+  let hash = 0
+  for (let i = 0; i < n.length; i++) hash = (hash * 31 + n.charCodeAt(i)) % 100000
+  return EXTRA_DOT_COLORS[hash % EXTRA_DOT_COLORS.length]!
 }
 
 // ─── Current balance grading ─────────────────────────────────

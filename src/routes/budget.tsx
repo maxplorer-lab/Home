@@ -283,10 +283,25 @@ budget.get('/', async (c) => {
 
       {/* Transaction list */}
       <Card title="Transactions" icon="list">
-        <p class="text-[10px] text-gray-400 mb-3 -mt-1">
-          <span class="inline-block w-2 h-2 rounded-full bg-orange-500 mr-1 align-middle" /> Niri
-          <span class="inline-block w-2 h-2 rounded-full bg-blue-500 ml-3 mr-1 align-middle" /> MaxX
-        </p>
+        {/* Who the dots belong to, taken from the rows on screen rather than
+            from names typed into this page. It used to read "Niri / MaxX"
+            literally, so an admin-created third person got no entry at all and
+            a rename left a stranger's name on the card. Same helper as the row
+            dots, so a colour can never disagree with the legend. */}
+        {(() => {
+          const people = [...new Set(txns.results.map(t => t.added_by_display_name).filter(Boolean))] as string[]
+          if (people.length < 2) return null
+          return (
+            <p class="text-[10px] text-gray-400 mb-3 -mt-1">
+              {people.sort().map((name, i) => (
+                <span class={i ? 'ml-3' : ''}>
+                  <span class={`inline-block w-2 h-2 rounded-full ${userAccentColor(name)} mr-1 align-middle`} />
+                  {name}
+                </span>
+              ))}
+            </p>
+          )
+        })()}
         {txns.results.length === 0
           ? <p class="text-sm text-gray-400 text-center py-6">No transactions this week</p>
           : (
@@ -1525,9 +1540,13 @@ budget.get('/reports', async (c) => {
           <p class="text-[10px] text-red-700 dark:text-red-400 font-semibold uppercase">Expenses</p>
           <p class="text-base sm:text-xl font-bold text-red-700 dark:text-red-400 truncate">{mga(expense)}</p>
         </div>
-        <div class={`rounded-2xl p-3 text-center border ${net >= 0 ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-100 dark:border-blue-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
-          <p class={`text-[10px] font-semibold uppercase ${net >= 0 ? 'text-blue-700 dark:text-blue-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
-          <p class={`text-base sm:text-xl font-bold truncate ${net >= 0 ? 'text-blue-700 dark:text-blue-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(net)}</p>
+        {/* Teal is the app's "net" colour (the main budget summary, the dashboard's
+            Net Worth). Blue here meant "net" on this one screen only — the same
+            fact in two colours, which is the thing the money palette exists to
+            stop. Negative keeps orange ("we owe"), as everywhere. */}
+        <div class={`rounded-2xl p-3 text-center border ${net >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 border-teal-100 dark:border-teal-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
+          <p class={`text-[10px] font-semibold uppercase ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
+          <p class={`text-base sm:text-xl font-bold truncate ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(net)}</p>
         </div>
       </div>
 
@@ -1566,7 +1585,7 @@ budget.get('/reports', async (c) => {
               </p>
               <p class="text-xs text-green-600 dark:text-green-400">+ {mga(u.income)}</p>
               <p class="text-xs text-red-500">- {mga(u.expense)}</p>
-              <p class={`text-xs font-semibold mt-1 ${u.income - u.expense >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-orange-500'}`}>
+              <p class={`text-xs font-semibold mt-1 ${u.income - u.expense >= 0 ? 'text-teal-600 dark:text-teal-400' : 'text-orange-500'}`}>
                 Net {mga(u.income - u.expense)}
               </p>
             </div>

@@ -21,7 +21,8 @@
 > that must not be skipped. Its pings were already in D1 from the nightly cron.
 
 Sompitra, W.A.Y and Laoka were each already live as standalone Workers, with the
-same two people (MaxX, Niri) and real data. This is how to move to the merged
+same two people (`MaxX`, lowercase `niri` — and the case matters, see §1d) and
+real data. This is how to move to the merged
 **Home** Worker without losing the data that matters (Sompitra's) and without
 silently breaking the parts that keep working by accident.
 
@@ -203,7 +204,9 @@ extra "arrived" event on its first ping. Harmless — and the chat now records i
 1. Open `/bootstrap` on the new domain — the **first account becomes the
    admin**. Create **MaxX** there, using the *same username* the module
    databases already know (`MaxX`; matching is case-insensitive).
-2. As MaxX, open `/admin` and create **Niri**.3. Each person's notification channels: **You → Notifications** shows two — 💬
+2. As MaxX, open `/admin` and create **niri** (the username the module
+   databases already know, case included).
+3. Each person's notification channels: **You → Notifications** shows two — 💬
 the money/chat feed and 📍 W.A.Y tracking — and each is *generated*, not
 inherited. To keep the topics the phones already follow, use **Adopt W.A.Y's
 tracking topics** there instead: W.A.Y's DO only ever pushes tracking events to

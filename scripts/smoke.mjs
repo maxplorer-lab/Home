@@ -889,6 +889,44 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     !/map\.panTo\(/.test(way),
     'the camera should be one panBy() from updateFollowCamera, off a screen-fraction box, and panTo() should be gone')
 
+  // The camera is a CYCLE, and the cycle's whole point is where it LANDS: the
+  // box edge is a moment on the way, not a place to sit. The shape this
+  // replaced only undid the overshoot, which pinned the device to that edge
+  // for as long as it kept moving -- where the HUD and the badge strip are.
+  check('the camera roams, shoves through the edge, then springs back to the CENTRE',
+    !!cam && /followCam\.phase = 'push'/.test(cam) && /followCam\.phase = 'pull'/.test(cam) &&
+    cam.includes('followCam.pushUntil') && cam.includes('at.subtract(center)') &&
+    cam.includes('center.add(gap.multiplyBy(1 - pullEase(t)))') &&
+    // the old edge-pinned shape must be gone, not merely unused
+    !/dx - zone\.halfX|dy - zone\.halfY/.test(cam) && !way.includes('FOLLOW_GLIDE_DURATION'),
+    'the camera should run drift -> push -> pull TO THE CENTRE, with the old undo-the-overshoot glide gone')
+
+  check('the pull moves with the device instead of aiming at a point',
+    !!cam && cam.includes('at.subtract(want)') &&
+    cam.includes('map.panBy(delta, { animate: false, noMoveStart: true })') &&
+    !cam.includes('setView('),
+    'the pull should drive a live offset with per-frame panBy and no setView, so the device is still drawn while the gap closes')
+
+  // Not just the ease's NAME -- its numbers, evaluated here. 0 -> 0 and
+  // 1 -> 1 so the device lands ON the centre, and a small overshoot past it on
+  // the way, which is the whole difference between a spring and a slide.
+  {
+    const pull = fnBody(way, 'pullEase')
+    const spring = Number((way.match(/FOLLOW_PULL_SPRING: ([0-9.]+)/) || [])[1])
+    let ok = false, why = 'pullEase is not in the served page'
+    if (pull && spring) {
+      try {
+        const f = new Function('CONFIG', 'return function pullEase(t) ' + pull)({ FOLLOW_PULL_SPRING: spring })
+        let peak = 0, peakAt = 0
+        for (let i = 0; i <= 200; i++) { const v = f(i / 200); if (v > peak) { peak = v; peakAt = i / 200 } }
+        ok = Math.abs(f(0)) < 1e-9 && Math.abs(f(1) - 1) < 1e-9 &&
+             peakAt > 0.25 && peakAt < 0.9 && peak > 1.02 && peak < 1.12
+        why = `pullEase(0)=${f(0).toFixed(4)} pullEase(1)=${f(1).toFixed(4)} peak=${peak.toFixed(4)} at t=${peakAt}`
+      } catch (e) { why = 'pullEase would not evaluate: ' + e.message }
+    }
+    check('the pull eases out with a small overshoot (a spring, not a slide)', ok, why)
+  }
+
   // Styling is FROZEN by this feature: the same numbers must still decide what
   // a track looks like, or "visual only" stopped being true.
   const frozen = [
@@ -1141,12 +1179,32 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
     appleRef.status === 200 && !!apple && apple.w === apple.h && apple.w >= 180,
     apple ? `${apple.w}x${apple.h}` : `status ${appleRef.status}`)
 
-  const swRes = await req('/sw.js')
-  const sw = await body(swRes)
-  check('the service worker is served and actually handles fetches',
-    swRes.status === 200 && /javascript/.test(swRes.headers.get('content-type') || '') &&
-    /addEventListener\(\s*'fetch'/.test(sw),
-    `${swRes.status} ${swRes.headers.get('content-type')}`)
+  // ── The service workers: installable AND honest about what they cache ──
+  // There are TWO of them, and the scope rule means the narrower one wins for a
+  // /way/ URL — so the stricter policy is worthless if either file breaks it.
+  // What they must never do is cache a DOCUMENT: every page here is rendered
+  // for ONE signed-in person, on a device that may be shared, so a precached
+  // shell (or an offline fallback to one) hands the next person a page that is
+  // not theirs. /way/sw.js did exactly that until it was made static-only.
+  for (const p of ['/sw.js', '/way/sw.js']) {
+    const swRes = await req(p)
+    const sw = await body(swRes)
+    check(`${p}: served and actually handles fetches`,
+      swRes.status === 200 && /javascript/.test(swRes.headers.get('content-type') || '') &&
+      /addEventListener\(\s*'fetch'/.test(sw),
+      `${swRes.status} ${swRes.headers.get('content-type')}`)
+
+    const precache = (sw.match(/const (?:PRECACHE|SHELL) = \[([\s\S]*?)\]/) || [])[1] || ''
+    const entries = precache.match(/'[^']*'/g) || []
+    const documentish = entries.filter((e) => /\.html'$|^'\/'$|^'\/way\/'$|^'\/laoka\/'$|^'\/chat\/'$/.test(e))
+    check(`${p}: precaches assets only, never a signed-in page`,
+      entries.length > 0 && documentish.length === 0,
+      documentish.length ? `it precaches ${documentish.join(' ')} — a shared device would be served someone else's page` : 'nothing is precached at all')
+    check(`${p}: documents go straight to the network`,
+      /req\.mode === 'navigate' \|\| req\.destination === 'document'/.test(sw) &&
+      !/caches\.match\('\/(way\/)?index\.html'\)/.test(sw),
+      'a navigation can be answered from (or fall back to) a cached document')
+  }
 
   // ── The chrome on every page, in both shapes ──
   // `md:` classes ARE the desktop/mobile split: the bar hides itself from md up
@@ -1382,6 +1440,48 @@ log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
       headings.some((h) => h.includes('section-title') && h.includes('accent-mark')),
       'headings are plain text again — the icon set is not wired up')
   }
+
+  // ── One meaning per money colour ──
+  // green = money in, red = money out, teal = a period's net result, orange =
+  // we owe, purple = owed to us. The rule is only worth stating if every money
+  // screen obeys it, and two of them did not: /budget/reports and Sales printed
+  // a POSITIVE result in blue (a hue the money palette uses for nothing), and
+  // the Debts page printed credit — owed to us — in blue while the dashboard
+  // printed the same money in purple. Reading the SERVED html is what makes
+  // this a guard rather than a convention: the Tailwind class IS the colour,
+  // and a screenshot only ever catches the screen you happened to open.
+  for (const [p, label] of [['/budget/reports', 'Net'], ['/sales', 'Profit']]) {
+    const html = await body(await req(p))
+    const at = html.indexOf(`>${label}</p>`)
+    const before = at > 0 ? html.slice(Math.max(0, at - 400), at) : ''
+    check(`${p}: its period result wears the net colour (teal), not blue`,
+      at > 0 && /teal-/.test(before) && !/blue-/.test(before),
+      at < 0 ? `no ${label} tile on the page` : `${label} is not teal (${before.includes('blue-') ? 'it is blue' : 'no teal class found'}) — the same money in two colours`)
+  }
+  const debtsHtml = await body(await req('/debts'))
+  check('the Debts page prints "owed to us" in purple, like the dashboard does',
+    /purple[\s\S]{0,400}Owed to Us/.test(debtsHtml) && !/blue-[\s\S]{0,400}Owed to Us/.test(debtsHtml),
+    'credit is in a colour the rest of the app does not use for it (blue) — orange stays "we owe"')
+
+  // Two hardcoded people used to sit in Sompitra's logic and copy: the
+  // transaction legend next to the list, and the account a Kiné payment syncs
+  // into (`WHERE u.username='niri' AND ia.name='Kiné Privée'`). Both read the
+  // data now — an admin can create anyone, and a rename must not leave a
+  // stranger's name on a card or send money to an account nobody looked up.
+  // Comments must be stripped before asserting on a source file, or a check
+  // fires on the very comment that explains the fix (this one did, first run).
+  const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  let budgetSrc = ''
+  try { budgetSrc = code(readFileSync(new URL('../src/routes/budget.tsx', import.meta.url), 'utf8')) } catch (e) {}
+  let kineSrc = ''
+  try { kineSrc = code(readFileSync(new URL('../src/routes/kine.tsx', import.meta.url), 'utf8')) } catch (e) {}
+  check('the transactions legend is derived from the rows, not from typed names',
+    /new Set\(txns\.results\.map\(t => t\.added_by_display_name\)/.test(budgetSrc) &&
+    !/align-middle"\s*\/>\s*(Niri|MaxX)/.test(budgetSrc),
+    'the legend names people literally again — a third account gets no entry and a rename lies')
+  check('the Kiné→budget sync resolves its income account instead of hardcoding one',
+    !/username\s*=\s*'niri'/.test(kineSrc) && (kineSrc.match(/kineIncomeAccount\(/g) || []).length >= 3,
+    'the account lookup is hardcoded again (or one of the two call sites bypasses the helper) — a second practitioner silently gets nothing')
 
   // The horizontal-scroll trap: a grid item's automatic minimum size is its
   // min-content width, and a transaction description is rendered with

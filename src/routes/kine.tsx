@@ -9,6 +9,36 @@ import type { Env, User, AttendanceTick, IncomeAccount, Customer, ServiceContrac
 const kine = new Hono<{ Bindings: Env; Variables: { user: User } }>()
 kine.use('*', requireAuth)
 
+// ─── Which income account a Kiné payment lands in ─────────────
+// Resolved, never hardcoded. This used to be `WHERE u.username='niri' AND
+// ia.name='Kiné Privée'`, copied into both the preview page and the save
+// handler, with the person's name printed in the copy: a rename, a second
+// practitioner, or an admin-created account silently broke the sync, and the
+// form promised income into an account it had not looked up.
+//
+// Order: the signed-in person's OWN Kiné account first (so a second
+// practitioner works), then any account named "Kiné Privée" — which is where
+// the household's existing payments already post, so nothing moves. The
+// display name comes back with the row so the copy can name it from data.
+async function kineIncomeAccount(
+  db: D1Database,
+  user: { id: string } | null,
+): Promise<{ account: IncomeAccount; owner: string | null } | null> {
+  const row = await db.prepare(
+    `SELECT ia.* FROM income_accounts ia JOIN users u ON ia.user_id = u.id
+      WHERE ia.name LIKE 'Kin%'
+      ORDER BY CASE WHEN ia.user_id = ?1 THEN 0 ELSE 1 END, ia.created_at
+      LIMIT 1`
+  ).bind(user?.id ?? '').first<IncomeAccount & { owner?: string }>().catch(() => null)
+  if (!row) return null
+  const owner = await db
+    .prepare('SELECT display_name FROM users WHERE id = ?')
+    .bind(row.user_id)
+    .first<{ display_name: string | null }>()
+    .catch(() => null)
+  return { account: row, owner: owner?.display_name || null }
+}
+
 interface ClientRow {
   customer_id: string
   customer_name: string
@@ -814,10 +844,8 @@ kine.get('/payment/new', async (c) => {
   const billed  = (contract.delivered_count ?? 0) * (contract.session_rate ?? 0)
   const balance = billed - (contract.paid_amount || 0)
 
-  // Niri's Kiné Privée account
-  const niriAccount = await c.env.DB.prepare(
-    `SELECT ia.* FROM income_accounts ia JOIN users u ON ia.user_id = u.id WHERE u.username='niri' AND ia.name='Kiné Privée' LIMIT 1`
-  ).first<IncomeAccount>()
+  // Where this payment can sync to (see kineIncomeAccount).
+  const syncTarget = await kineIncomeAccount(c.env.DB, user)
 
   return c.html(
     <Layout title="Log Payment" user={user} activeTab="kine">
@@ -857,12 +885,14 @@ kine.get('/payment/new', async (c) => {
             <input type="text" name="notes" placeholder="e.g. Cash payment"
               class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
           </div>
-          {niriAccount && (
+          {syncTarget && (
             <label class="flex items-start gap-3 p-4 rounded-xl border-2 border-green-500 bg-green-50 dark:bg-green-900/20 cursor-pointer">
               <input type="checkbox" name="sync_to_budget" value="1" checked class="mt-0.5 w-4 h-4 accent-green-600" />
               <div>
                 <p class="text-sm font-semibold text-green-700 dark:text-green-400">Sync to Budget Income</p>
-                <p class="text-xs text-green-600 dark:text-green-500">Adds this payment as income in Niri's Kiné Privée account</p>
+                <p class="text-xs text-green-600 dark:text-green-500">
+                  Adds this payment as income in {syncTarget.account.name}{syncTarget.owner ? ` (${syncTarget.owner})` : ''}
+                </p>
               </div>
             </label>
           )}
@@ -892,10 +922,8 @@ kine.post('/payment/new', async (c) => {
   let clientName = ''
 
   if (syncBudget) {
-    const niriAccount = await c.env.DB.prepare(
-      `SELECT ia.* FROM income_accounts ia JOIN users u ON ia.user_id = u.id WHERE u.username='niri' AND ia.name='Kiné Privée' LIMIT 1`
-    ).first<IncomeAccount>()
-    if (niriAccount) {
+    const target = await kineIncomeAccount(c.env.DB, user)
+    if (target) {
       syncedTxnId = generateId()
       const contract = await c.env.DB.prepare(
         `SELECT sc.*, cu.name AS customer_name FROM service_contracts sc JOIN customers cu ON sc.customer_id=cu.id WHERE sc.id=?`
@@ -904,7 +932,7 @@ kine.post('/payment/new', async (c) => {
       await c.env.DB.prepare(
         `INSERT INTO transactions (id, date, amount, type, income_account_id, description, added_by_user_id)
          VALUES (?, ?, ?, 'income', ?, ?, ?)`
-      ).bind(syncedTxnId, paymentDate, amount, niriAccount.id, `${clientName} - Kiné Privée`, user.id).run()
+      ).bind(syncedTxnId, paymentDate, amount, target.account.id, `${clientName} - ${target.account.name}`, user.id).run()
       // Renders as "{client} (Ar …) paid" via classifyTransaction
       await notifyTransaction(c.env, syncedTxnId)
     }

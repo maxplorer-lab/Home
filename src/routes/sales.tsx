@@ -46,9 +46,13 @@ sales.get('/', async (c) => {
           <p class="text-xs text-red-700 dark:text-red-400 font-semibold uppercase">Cost</p>
           <p class="text-lg font-bold text-red-700 dark:text-red-400">{mga(totalCost)}</p>
         </div>
-        <div class={`rounded-2xl p-4 border text-center ${totalProfit >= 0 ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-100 dark:border-blue-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
-          <p class={`text-xs font-semibold uppercase ${totalProfit >= 0 ? 'text-blue-700 dark:text-blue-400' : 'text-orange-700 dark:text-orange-400'}`}>Profit</p>
-          <p class={`text-lg font-bold ${totalProfit >= 0 ? 'text-blue-700 dark:text-blue-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(totalProfit)}</p>
+        {/* Profit is a period's net result, so it wears the net colour (teal) and
+            the negative colour is orange — the same pair the budget summary and
+            the dashboard use. It was blue, a hue the money palette does not use
+            for anything. */}
+        <div class={`rounded-2xl p-4 border text-center ${totalProfit >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 border-teal-100 dark:border-teal-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
+          <p class={`text-xs font-semibold uppercase ${totalProfit >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Profit</p>
+          <p class={`text-lg font-bold ${totalProfit >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(totalProfit)}</p>
         </div>
       </div>
 

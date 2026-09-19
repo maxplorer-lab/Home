@@ -66,10 +66,15 @@ dot**: chat is the only module that receives things while you are somewhere
 else (a message, or another module's activity line), so a red dot on that tab
 says "there is something new" from any screen. It is a dot rather than a count
 — a count has to be owned by whoever last read the room, and a wrong number is
-worse than a vague dot. Money keeps one meaning everywhere:
-**green in, red out, amber cash on hand, purple owed to us, orange we owe,
-teal net**, and every amount is tabular so columns line up. `npm run smoke`
-section 18 fails if any of this drifts.
+worse than a vague dot. Money keeps one meaning on every money screen:
+**green in, red out, teal a period's net result, orange what we owe, purple
+what is owed to us**, and every amount is tabular so columns line up. Cash on
+hand is the one deliberate exception — it is a *health reading* rather than a
+direction, so it uses Sompitra's balance scale (red under zero, then yellow,
+blue, green as the balance grows). Kiné's own tiles keep Sompitra's original
+colours too: they count sessions, not money. `npm run smoke` section 18 fails if
+a money colour drifts — it reads the **served pages**, so a blue "Net" or a blue
+"owed to us" cannot come back unnoticed.
 
 That one chat is also **where the app reports activity**, so the household
 does not have to watch each module to know what happened. WAY's arrivals and
@@ -162,17 +167,20 @@ is subscribed on paper and hears nothing.
 W.A.Y's existing topics were **adopted** into the tracking channel (never
 overwriting a topic someone already follows), so a phone in the field keeps
 working — **Adopt W.A.Y's tracking topics** re-runs that for anyone added
-later. The topics are also mirrored back into `way-db`, so the standalone
-W.A.Y Worker, if it ever serves again, publishes to the topic the phone is
-actually following.
+later. Every tracking write is also mirrored back into `way-db`, so a rollback
+to the standalone W.A.Y Worker (`CUTOVER.md` §6) publishes to the topic the
+phone is actually following rather than to the one it replaced.
 
 ## The W.A.Y map
 
 The map is drawn on a **playback clock** rather than ping by ping: the marker
 trails live by ~25 s and glides between positions instead of hopping to each
-one, and the camera lets the device roam the **middle half of the screen**
-before it re-centres (smoothly, along whichever axis it left) — so the map sits
-still most of the time instead of chasing every step. What W.A.Y records is
+one, and the camera works in **cycles** rather than chasing it — the device
+roams out from the middle of the screen while the map sits still, shoves a beat
+past the edge of its box, and is then drawn back to the centre in one elastic
+pull (it keeps being drawn while it is pulled, so its heading is never lost).
+The map is therefore still most of the time, and the device is never left
+parked against the edge. What W.A.Y records is
 unaffected — the same points, the same classifications, the same colours, dash
 and stationary dots, the same **Flush now**. The HUD is live while the map is
 behind, and the one line that names the lag sits under the pace pills in
@@ -316,10 +324,14 @@ household at `/admin`.
     `messages.device_id`, and without it the DO's flush fails **as a whole**
     while the live chat keeps working — so chat history and map tracks go
     quietly empty.
-* **Disable the three old Workers once Home is verified.** The old W.A.Y cron
-  and its FleetDO would otherwise flush the same `way-db` as Home's, from a
-  second stale view of the same phones. Re-pointing the μlogger phones is a
-  step in the runbook, not an afterthought.
+* **The three old Workers are gone** (deleted 2026-09-19, after the phones
+  were verified to be posting to Home's `/ulogger`): two cron flushes of the
+  same `way-db` and a second stale view of the same phones was the risk.
+  Rollback is still one `wrangler deploy` per module repo — D1 is bound by id
+  and never owned by a Worker, so a redeploy finds every row where Home left
+  it. What a rollback cannot recover is a deleted Durable Object's storage,
+  which is why the old `way` DO's chat backlog was flushed into `way-db`
+  (466 messages) before the deletion.
 * Sompitra's old PIN logins stop working (by design — the password replaces
   the PIN); sessions minted after the cutover are normal.
 
@@ -327,3 +339,6 @@ household at `/admin`.
 
 See `project.md` for the full architecture and `AGENTS.md` for the
 engineering gotchas (mount order, cookie-join bug class, hash formats, cron).
+`CUTOVER.md` is the runbook from the three standalone Workers to this one, and
+`DB-REDESIGN.md` is the *proposal* for what the schemas would look like if they
+were redrawn — read it as future work, not as a description of today's tables.

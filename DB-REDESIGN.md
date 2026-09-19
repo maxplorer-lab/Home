@@ -209,6 +209,16 @@ person_modules(person_id, module, module_user_id, provisioned_at)
   in its own right.
 * A new module is one row per person, not a fourth hash format.
 
+How this duplication leaks into ordinary features, concretely: Kiné's payment
+sync looked its income account up with `WHERE u.username='niri' AND
+ia.name='Kiné Privée'`, in two handlers, and printed that person's name in the
+form. A module that does not own identity has to name a person to reach their
+data — so a rename, a second practitioner or an admin-created account broke the
+feature silently. It now resolves the account (`kineIncomeAccount`: the signed-in
+person's own `Kin%` account first, then any `Kiné Privée`) and prints the account
+it actually found. That is the pattern, not the exception: **every hardcoded
+username is a place where the missing mapping table is doing its work by hand.**
+
 Caveat, and it's the important one: **Sompitra's `users` table stays.** The
 mapping table means we reference it rather than migrate it — existing
 `transactions.added_by_user_id` keeps pointing where it always did, and the

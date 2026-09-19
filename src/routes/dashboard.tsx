@@ -437,11 +437,15 @@ dashboard.get('/', async (c) => {
                 <div class="flex items-center justify-between gap-2 pb-2 border-b border-gray-100 dark:border-gray-700 last:border-0 last:pb-0">
                   <div>
                     <p class="text-sm font-medium">{d.person_name}</p>
-                    <span class={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${d.type === 'debt' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'}`}>
+                    {/* Orange = we owe, purple = owed to us — the same pair the
+                        Debts page and the Uncollected Dues tile use. */}
+                    <span class={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${d.type === 'debt' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'}`}>
                       {d.type === 'debt' ? 'We owe' : 'They owe us'}
                     </span>
                   </div>
-                  <span class="text-sm font-bold text-orange-600 dark:text-orange-400">{mga(d.current_balance)}</span>
+                  {/* The amount used to be orange whatever the direction, so a
+                      credit we are owed printed in the "we owe" colour. */}
+                  <span class={`text-sm font-bold ${d.type === 'debt' ? 'text-orange-600 dark:text-orange-400' : 'text-purple-600 dark:text-purple-400'}`}>{mga(d.current_balance)}</span>
                 </div>
               ))}
             </div>

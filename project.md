@@ -209,10 +209,21 @@ sub-path running against its parent punches a hole (the donut, the target rings,
 the padlock's shackle, the server's status lights, the pin's centre).
 
 **The palette means something.** On the money screens: **green = money in,
-red = money out, amber = cash on hand, purple = owed to us, orange = we owe,
-teal = net** (Sompitra's own hue). Income used to be blue in the summary tiles
-while the same income printed as `+Ar 45,000` in green in the list below it —
-one fact, two colours, one screen.
+red = money out, teal = a period's net result, orange = we owe, purple = owed
+to us** (teal is Sompitra's own hue). Income used to be blue in the summary
+tiles while the same income printed as `+Ar 45,000` in green in the list below
+it — one fact, two colours, one screen — and the same disease was still present
+later in three places: `/budget/reports` and Sales printed a positive result in
+blue, the Debts page printed credit (owed to us) in blue while the dashboard
+printed the same money in purple, and a credit's amount on the dashboard
+printed in orange, the "we owe" colour. Smoke section 18 now reads the served
+pages and fails on any of them.
+Two deliberate exceptions, both stated so they do not look like drift: **cash
+on hand is graded** by `currentGradedTone` (red under zero, then yellow, blue,
+green as the balance grows) because it answers "is this healthy?" rather than
+"which way did the money go"; and **Kiné's tiles keep Sompitra's original
+colours** (delivered blue, paid orange) because they count sessions and
+payments, not the direction of money.
 
 **The module stage.** WAY, Laoka and Chat run inside
 the `#home-module-stage` → `#home-module-frame` frame (shell.tsx): inset 8px
@@ -246,10 +257,17 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
   clipped 111px of the mark once the circle was applied. It is regenerated
   with the mark inside the safe circle. `npm run smoke` compares the *served
   hashes*, because a duplicate is invisible to any HTML-level check.
-* **The service worker caches static assets only — never HTML, never an API
+* **Both service workers cache static assets only — never HTML, never an API
   response.** Every page here is server-rendered for ONE signed-in person on a
   possibly shared device, so a cached `/budget` or `/way/index.html` would hand
-  one person another person's page the moment the network blinked.
+  one person another person's page the moment the network blinked. There are
+  TWO workers — `public/sw.js` at scope `/` and `public/way/sw.js` at scope
+  `/way/` — and because a narrower scope wins for a /way/ URL, the stricter one
+  is worthless if the other breaks the rule. `/way/sw.js` did: it precached the
+  shell and fell back to a cached `/way/index.html` offline (cache
+  `way-shell-v2-superapp`, dropped by the rename to `way-assets-v3`). Smoke now
+  asserts both files: no document in the precache list, and a navigation never
+  answered from cache.
 * **Installation is offered, never promised:** the You tab shows *Install Home*
   only when the browser fires `beforeinstallprompt`, with an iOS hint and a
   browser-menu fallback line for everything else.
@@ -323,6 +341,14 @@ schemas, untouched data):
 * `way-db` — migrations in `migrations-way/`.
 * `laoka` — migrations in `migrations-laoka/`.
 
+The three module migration folders mirror the standalone repos and are treated
+as read-only: they are the modules' own history, and an index or a column added
+here would silently fork them. What that costs is written down in
+**`DB-REDESIGN.md`** (the proposal, not a plan of record) — most concretely,
+`way-db` has **no indexes at all**, so every history load scans `gps_pings`,
+which is the free tier's read budget and the first thing that will misbehave at
+volume.
+
 Durable Objects: `FLEET_DO` (W.A.Y live fleet + chat) and `LOBBY` (Laoka
 metadata-only fan-out). Cron `0 21 * * *` flushes the FleetDO into way-db —
 **that cron is the "today" boundary for W.A.Y; never move it to UTC midnight.**
@@ -376,8 +402,9 @@ what it says: a grid that gated bank notifications too would be a surprise.
 * W.A.Y's existing topics are **adopted into `way_topic`** (case-insensitive
   username match) rather than abandoned — the phone in the field is still
   following them — and every tracking write is **mirrored back into `way-db`**
-  so the standalone Worker, if it serves again, publishes to the topic the
-  phone is really following rather than to the one it replaced.
+  so a rollback to the standalone Worker (`CUTOVER.md` §6 — one
+  `wrangler deploy` per module repo) publishes to the topic the phone is really
+  following rather than to the one it replaced.
 * A person with no channel on a side is skipped there; the whole push no-ops
   without a server. Notifications are best-effort and never break a user
 action.
@@ -521,11 +548,31 @@ points there, so the marker waits and eases the last stretch.
   committed segment is never touched again, and the pair under the cursor is a
   live "tail" that grows with it. `resetTrail()` is the rare full rebuild — a
   fresh snapshot, the track eye switched back on, or a late `track` point that
-  slots in *before* the cursor and shifts every commit index.* **A dead-zone follow camera.** The device may roam the **middle half of the
-  screen** before the camera re-centres, along the axis it left, by the
-  minimum needed, gliding over 1.4 s instead of snapping. One glide runs at a
-  time with a 3 px minimum correction — without that, a moving device produces
-  a sub-pixel overshoot every frame and the camera re-decides forever.
+  slots in *before* the cursor and shifts every commit index.
+* **A follow camera that works in cycles.** The device roams the **middle half
+  of the screen** while the map sits still (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`),
+  then leaves that box; the map holds for `FOLLOW_PUSH_MS` (380 ms) while the
+  device shoves a few pixels past the edge, and then the camera draws it back to
+  the **centre** over `FOLLOW_PULL_DURATION` (1.6 s) with an ease that
+  overshoots by `FOLLOW_PULL_SPRING`'s few percent and settles — a spring, not a
+  slide. Four phases, one at a time: DRIFT → PUSH → PULL → DRIFT.
+
+  The pull closes the gap the device had when the pull began **while still
+  following where the device is**, so a device that keeps driving, turns or
+  stops is drawn correctly throughout and lands on the centre either way; that
+  is what makes the camera move with the device instead of aiming at a point.
+  Every frame is a `panBy` of a pixel or two — which is what Leaflet's own
+  animated pan does internally — and deliberately not `panTo` (it would pick a
+  landing point and stop moving with the device) or `setView` (it fires
+  `viewreset` and re-projects every layer).
+
+  This replaced a camera that re-centred **only by the overshoot**, which left
+  the device pinned to the edge of the box for as long as it kept moving — and
+  the edge is where the HUD and the badge strip live, so the tracker spent a
+  long drive half-hidden and the road ahead was off-screen. Landing on the
+  centre makes the edge a moment rather than a place: measured on a 423×768 map
+  at 100 km/h, ~8.5 s of still map, ~0.3 s of shove, ~1.5 s of pull that returns
+  the device to **0.5 px of the centre** having crossed it by 5.5 px.
 
   Sizing this was a judgement call, and the reasoning is worth keeping:
   a "numpad 5" ninth (a third of each axis) is only ~140 px wide on a phone at
@@ -533,9 +580,10 @@ points there, so the marker waits and eases the last stretch.
   camera would be moving most of the time, which is the judder this replaces —
   and every wobble near a corner would trigger it. Half the screen
   (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`, so the device drifts at most a quarter
-  of each axis) is the comfortable middle ground: never near an edge, road
-  ahead still visible, and measured **0–1 re-centres in 20 s** of steady 50–90
-  km/h driving where the old per-ping pan did 20. It is deliberately a SCREEN
+  of each axis) is the comfortable middle ground: the map is still for the
+  whole drift — measured **one cycle per ~10.3 s** at 100 km/h, of which 8.5 s
+  is a motionless map — where the old per-ping pan moved it on all 20 pings of
+  those 20 s. It is deliberately a SCREEN
   fraction and not a distance — a metre-based box is a handful of pixels when
   zoomed out, so the camera starts moving on every ping there instead, and how
   far the eye tolerates the device drifting depends on the screen, not the
@@ -619,8 +667,11 @@ the follow it had just started.
   broken module must never break login.
 * One login per person, admin-managed; no self-signup anywhere.
 * Colour palettes of each module are untouched — Laoka stays orange, W.A.Y
-  indigo, Sompitra's Tailwind theme as it was. The **chrome** is shared; the
-  module internals are never restyled.
+  **sky** (`#0284c7`, the colour its own tab carries), Sompitra's Tailwind theme
+  as it was. The **chrome** is shared; the module internals are never restyled.
+  The money legend above is the exception that proves the rule: it is about a
+  fact the whole app reads, not about how a screen looks, so a screen that
+  prints money in a colour the legend does not own is a bug rather than a style.
 * Module documents detect the shell themselves (`window.self !==
   window.top` → hide own chrome). Never try to style iframe content from the
   parent document — same-origin CSS cannot reach in; only an injected script
@@ -633,7 +684,7 @@ the follow it had just started.
 * **W.A.Y's viewer may only change WHEN its state is drawn, never WHAT.**
   Backend behaviour — what is tracked, dropped, written, classified or
   flushed — is out of scope for any map/UI work, and so is every style value
-  that decides how a track looks. The playback clock and the dead-zone camera
+  that decides how a track looks. The playback clock and the follow camera's cycle
   are display-only: `devicePings` stays the complete ordered record the Trips
   card sums (or the household's own numbers start disagreeing with the
   database), and the HUD stays live while the map is behind. The **approach

@@ -53,10 +53,13 @@ debts.get('/', async (c) => {
           <p class="text-2xl font-bold text-orange-700 dark:text-orange-400">{mga(totalDebt)}</p>
           <p class="text-xs text-orange-600 dark:text-orange-500">{openDebts.results.length} open</p>
         </div>
-        <div class="bg-blue-50 dark:bg-blue-900/20 rounded-2xl p-4 border border-blue-100 dark:border-blue-800">
-          <p class="text-xs text-blue-700 dark:text-blue-400 font-semibold uppercase tracking-wide">Owed to Us (Credit)</p>
-          <p class="text-2xl font-bold text-blue-700 dark:text-blue-400">{mga(totalCredit)}</p>
-          <p class="text-xs text-blue-600 dark:text-blue-500">{openCredits.results.length} open</p>
+        {/* Purple IS "owed to us" everywhere else in the app (the dashboard's
+            Uncollected Dues tile), so credit wears it here too. It was blue,
+            which made the same money a different colour on this page. */}
+        <div class="bg-purple-50 dark:bg-purple-900/20 rounded-2xl p-4 border border-purple-100 dark:border-purple-800">
+          <p class="text-xs text-purple-700 dark:text-purple-400 font-semibold uppercase tracking-wide">Owed to Us (Credit)</p>
+          <p class="text-2xl font-bold text-purple-700 dark:text-purple-400">{mga(totalCredit)}</p>
+          <p class="text-xs text-purple-600 dark:text-purple-500">{openCredits.results.length} open</p>
         </div>
       </div>
 
@@ -112,15 +115,15 @@ debts.get('/', async (c) => {
                       <p class="text-xs text-gray-400">Lent → Liability · Collections → Liability</p>
                       {d.notes && <p class="text-xs text-gray-400 mt-0.5">{d.notes}</p>}
                     </div>
-                    <p class="text-base font-bold text-blue-600">{mga(d.current_balance)}</p>
+                    <p class="text-base font-bold text-purple-600 dark:text-purple-400">{mga(d.current_balance)}</p>
                   </div>
                   <div class="h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mb-2">
-                    <div class="h-full bg-blue-400 rounded-full" style={`width:${pct}%`} />
+                    <div class="h-full bg-purple-400 rounded-full" style={`width:${pct}%`} />
                   </div>
                   <p class="text-xs text-gray-400 mb-2">{pct}% collected</p>
                   <div class="flex items-center gap-2">
                     <a href={`/debts/${d.id}/collect`}
-                      class="text-xs px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold">
+                      class="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-semibold">
                       Log Collection
                     </a>
                     <a href={`/debts/${d.id}/delete`} class="text-xs px-2 py-1.5 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 text-red-500 rounded-lg" title="Delete credit">🗑</a>
@@ -179,7 +182,7 @@ debts.get('/new', async (c) => {
               </label>
               <label class="cursor-pointer">
                 <input type="radio" name="type" value="credit" class="sr-only peer" />
-                <div class="peer-checked:border-blue-500 peer-checked:bg-blue-50 dark:peer-checked:bg-blue-900/20 border-2 border-gray-200 dark:border-gray-600 rounded-xl p-4 text-center transition-all">
+                <div class="peer-checked:border-purple-500 peer-checked:bg-purple-50 dark:peer-checked:bg-purple-900/20 border-2 border-gray-200 dark:border-gray-600 rounded-xl p-4 text-center transition-all">
                   <div class="text-2xl mb-1">🤲</div>
                   <p class="text-sm font-semibold">Credit</p>
                   <p class="text-xs text-gray-400">We lent money</p>
