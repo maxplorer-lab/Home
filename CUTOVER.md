@@ -228,7 +228,7 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v5-two-channels   (kept honest by `npm run smoke`,
+#   expect build notify-v6-approach-pulse   (kept honest by `npm run smoke`,
 #   which reads THIS line and compares it with what the DO reports)
 
 # The chat flush completes (this is the `devices` FK check, live)

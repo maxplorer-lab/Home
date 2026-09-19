@@ -151,6 +151,14 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     holding a `truncate` (nowrap) description needs `min-w-0` on the element
     that IS the grid item, or one long string gives the whole page a horizontal
     scrollbar on a phone (smoke section 18 fails on it).
+
+    **The Chat tab's unread dot** is chrome too, so it lives here: the markup is
+    `ChatIconWithDot` in BOTH bars (`data-chat-unread`; the bar is hidden from
+    `md` up, so a hook in one shape only would never be seen), the CSS is
+    `.chat-unread-dot` in `CHROME_CSS`, and the state is `CHAT_UNREAD_SCRIPT`,
+    loaded by `layout.tsx` AND `shell.tsx`. It is a DOT and not a counter on
+    purpose: a count has to be owned by whoever last saw the room, and a wrong
+    number is worse than a vague dot. See rule 24.
 15. **TWO ntfy channels per PERSON, both owned by home-db** (migrations-home
     0002 + 0004) — not one topic per app, and no longer one topic doing two
     jobs:
@@ -315,8 +323,11 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     the state machine, `pending_sync` → `gps_pings`/`messages`, the 21:00 cron
     and the Flush button. `devicePings` stays the COMPLETE ordered record the
     Trips card sums — the playback buffer is additive display state — and the
-    HUD stays live (`map ~25s behind` is how the lag is disclosed, and it is the
-    Smooth pace's badge only). The lag IS the pace: `playbackLagSeconds()` is
+    HUD stays live, and the lag is disclosed in ONE place: a blue line under the
+    pace pills in Settings → Map (`updatePaceNote`), shown on Smooth and gone on
+    Live. It used to be a HUD badge — do not put it back; the HUD is the
+    device's readout and was overcrowded.
+    The lag IS the pace: `playbackLagSeconds()` is
     the ONE number the cursor reads (25 s for Smooth, 0 for Live), and
     `setMapPace` / `applyMapPace` may only repaint the pills and call
     `redrawAllTracks()` — no fetch, no server setting, `localStorage` per
@@ -324,6 +335,74 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `pace-switch` is in the map chrome. `npm run smoke` section 15 asserts the
     served page still carries every frozen value, that the ping path no longer
     redraws, and that the pace switch stays display-only.
+
+23. **"Someone is nearly home" is announced TWICE, from ONE decision.** The
+    entry timer is a push, and a push can be missed — so the same thresholds
+    that send it (`APPROACH_THRESHOLDS` = 60 s / 30 s, category `home` only,
+    driving ≥ 15 km/h, heading at the fence) also arm a **badge pulse** the map
+    shows. It is deliberately NOT computed in the browser: the DO broadcasts
+    `{type: "approach", threshold, place}` / `{cleared: true}` from
+    `maybeNotifyApproach` itself, so the pulse and the notification can never
+    disagree about whether a threshold was crossed. It is armed on the CROSSING,
+    not on a successful publish, so the badge still pulses when the push is
+    suppressed (quiet hours, cooldown, nobody subscribed) -- that is the case
+    the pulse exists for. The client owns only the
+    SHAPE and the WINDOW (`approachPulses`, `approachPulseFrom`,
+    `dropExpiredPulses`): yellow at 60 s, red at 30 s, gone 60 s after the last
+    threshold with no follow-up and instantly on entry or turn-away. Two traps:
+    * The window is **wall time**, never ping-counted — a device that stops
+      reporting mid-approach must stop pulsing too, which is why `handleApproach`
+      arms a `setTimeout` as well as dropping expired pulses during a render.
+    * A snapshot pulse carries `ageMs` computed on the SERVER's clock. Never
+      subtract the browser's `Date.now()` from a server `at` — a phone minutes
+      off would silently eat the whole window.
+    **The visual is split in two, and the split is not cosmetic.**
+    `#badge-strip` is `overflow-y: auto`, so anything drawn outside a card is
+    clipped to a ~170 px column: the first version animated rings on the card
+    and was, in practice, invisible. So (a) the CARD carries identity only — a
+    **3px band drawn INWARD** (`inset 0 0 0 3px`, animated between full and half
+    opacity, plus a soft inset glow; `approach-card-yellow` /
+    `approach-card-red`) — which by construction cannot be clipped, and which is
+    why **no rule there animates `border-color`**: a 1px edge is what read as
+    "barely visible" the first time. And (b) `#approach-radar-layer`, a
+    `position: fixed` sibling of `#map` at `z-index: 1001`, carries the
+    **sweep**: rings anchored on that badge's centre (`renderApproachRadar` →
+    `positionApproachRadar`, from the card's own `getBoundingClientRect`), flying
+    across the map and fading out. Move that layer inside the strip and the cue
+    disappears again; smoke asserts the layer precedes `#badge-strip` in the
+    document for that reason. The rings are SVG circles with
+    `vector-effect: non-scaling-stroke` — a scaled div would thicken its border
+    into a band, and animating width/height instead would put a layout animation
+    on the same main thread as the map's rAF loop.
+    **The countdown takes the status line; it does not add one.** The card has
+    one 9px row answering "what is happening right now?" — `Live` / `4 Min Ago`
+    / the clock — and while a pulse is on that row IS the approach line
+    (`→ Home1 · ~30s`, in the pulse's colour). A second row just for a countdown
+    was a temporary line in a very small card, and freshness comes straight back
+    when the pulse ends. `statusRow` in `renderBadges` is the one place that
+    decides which of the two it prints.
+    `renderBadges()` rebuilds every badge, so the pulse is re-applied on every
+    render (like the cached address) and the radar re-anchored; `data-device` on
+    each card is what makes the anchor findable, and a resize / orientation
+    change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
+    halves, and `GET /way/api/debug/notify` reports the DO's build
+    (`notify-v6-approach-pulse`).
+
+24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
+    (`localStorage`, per device, an ISO instant) is compared against the newest
+    `chat_messages.created_at` the DO reports at `GET /way/api/chat/latest`
+    (reached through the Worker, session-gated; D1 cannot answer this — the
+    flush is nightly). `CHAT_UNREAD_SCRIPT` polls it on EVERY page, and:
+    * on `/chat` nothing is ever "unread": that same poll advances the
+      watermark instead (so the dot is off the moment you are in the room);
+    * the FIRST poll on a device adopts the existing backlog as seen — without
+      that, a fresh install badges yesterday's messages with no way to clear
+      them short of opening the chat;
+    * a failed fetch paints nothing. An unread dot that appears because the
+      network blipped teaches people to ignore the dot.
+    The comparison is a plain string compare, so `created_at` must stay an ISO
+    instant. The dot is asserted for BOTH bars and for a real watermark answer
+    in smoke section 5.
 
 ## Smoke test (local, after any identity change)
 
@@ -416,11 +495,14 @@ have their own separate repositories and their own history.
 | The HUD's age reads `-1s ago` | the phone's clock runs ~1 s ahead of the viewer's: the age is `Date.now() - ping.timestamp` and must be **clamped at 0** (`now` under a second). Whatever the skew, an age can never be negative |
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
 | A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth is **case-sensitive** on `users.username` (`MaxX`, lowercase `niri` — a lowercase login works for the dashboard, not for a phone), and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h) |
-| The WAY marker is 25 s behind the device, or the map keeps re-centring | **not a bug** — the viewer draws on a delayed playback cursor and a dead-zone camera on purpose. The HUD stays live and shows `map ~25s behind`. If you need the newest ping now, switch the pace to **Live** (Settings → Map). See `project.md` → "The W.A.Y map is drawn on a playback clock" |
+| The WAY marker is 25 s behind the device, or the map keeps re-centring | **not a bug** — the viewer draws on a delayed playback cursor and a dead-zone camera on purpose. The HUD stays live, and the lag is named by the one blue line under the pace pills in **Settings → Map** (shown on Smooth, removed on Live). If you need the newest ping now, switch the pace to **Live**. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
 | A WAY track vanishes, or a trail stops growing | `resetTrail()` is the only thing that clears one (snapshot / track-eye / late `track` point). Check `trailFor(devId).drawnIdx` vs `devicePings[devId].length` in the console, and remember a hidden track (👁) still moves its marker |
 | The WAY camera stops following for no reason | `map.on('zoomstart')` clears the follow: our own `flyTo`s must be wrapped in `ignoreMapEvents()` (a deadline, NOT a flag — a `flyTo` fires `zoomstart` twice) |
 | A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker, or switch the pace to **Live** |
-| The pace switch is there but the marker does not look any fresher | check `localStorage.getItem('map_pace')` and `playbackLagSeconds()` in the console; a device whose newest ping is in the FUTURE (clock skew) keeps `playbackState` true either way, and the pill only repaints through `applyMapPace()` |
+| The pace switch is there but the marker does not look any fresher | check `localStorage.getItem('map_pace')` and `playbackLagSeconds()` in the console; the pills and the pace line only repaint through `applyMapPace()` → `updatePaceNote()`, and a device whose newest ping is in the FUTURE (clock skew) is drawn from its `latestPing` either way |
+| The Chat tab shows a red dot, but the chat has nothing new in it | the dot is a **watermark**, not a count: `localStorage['chat_last_seen']` (an ISO instant) against the DO's newest `chat_messages.created_at`, polled from `/way/api/chat/latest` on every page. It never shows while you are ON `/chat` (that poll advances the watermark instead). A device seeing the dot for the first time adopts the whole backlog — if it is lit on a fresh device, the watermark was set by hand or the DO's timestamps are not ISO |
+| A badge pulses (or keeps pulsing after the car has parked) | that is the **approach pulse**: the DO arms it from the same 60 s / 30 s thresholds that send the entry-timer push (`notify-v6-approach-pulse`), yellow at 60 s and red at 30 s. It expires on **wall time** — 60 s from the 60 s trigger with no 30 s, 60 s from the 30 s trigger with no entry — and on arrival or turn-away (`clearApproachPulse`). Nothing pulsing means no threshold was crossed: the push and the pulse are the same decision, so a missing pulse is a missing notification, and `/way/api/debug/notify` says whether the per-event-type recipient count is 0 |
+| The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |
 
 ### What is actually served
 

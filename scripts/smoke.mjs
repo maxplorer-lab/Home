@@ -60,6 +60,15 @@ function tabBarHtml(html) {
   return m ? m[0] : ''
 }
 
+/** The desktop nav's markup only. Scoped on purpose: a check that searched the
+    whole page for something BELOW the nav would pass on the tab bar's copy of
+    it (this is how the unread-dot guard first passed while the dot was missing
+    from the nav — found by falsifying it). */
+function navHtml(html) {
+  const m = html.match(/<nav id="home-nav"[\s\S]*?<\/nav>/)
+  return m ? m[0] : ''
+}
+
 /** Cookie jar: name → value, sent as one `Cookie:` header. */
 const jar = new Map()
 function absorb(res) {
@@ -166,6 +175,33 @@ for (const p of ['/', '/chat', '/way/', '/laoka/']) {
     emojis.length ? `emoji tab icon(s): ${emojis.join(' ')}` : 'no /icon-64.png')
   check(`${p}: all six tabs linked`, missingHrefs.length === 0, `missing ${missingHrefs.join(' ')}`)
   check(`${p}: Sompitra tab labelled correctly`, bar.includes('Sompitra'), 'label missing')
+  // The Chat tab's unread cue: one hook in the tab bar (bottom, phone) and one
+  // in the header nav (desktop), because the bar is hidden from md up and a dot
+  // in the hidden one would simply never be seen.
+  check(`${p}: the Chat tab can show an unread dot in both bars`,
+    bar.includes('data-chat-unread') && navHtml(html).includes('data-chat-unread'),
+    bar.includes('data-chat-unread') ? 'the desktop nav has no unread hook' : 'no [data-chat-unread] in the tab bar')
+  check(`${p}: the unread dot's poll runs on this page`,
+    html.includes('chat_last_seen') && html.includes('/way/api/chat/latest'),
+    'the dot has no state script — it could never light up')
+}
+
+// The watermark that dot polls. One row from the Durable Object, not D1: the
+// flush is nightly, so today's messages exist only in the DO, and "has anything
+// arrived since I last looked" is exactly the question D1 cannot answer.
+{
+  const r = await req('/way/api/chat/latest')
+  let d = null
+  try { d = JSON.parse(await body(r)) } catch (e) {}
+  check('the chat watermark answers with a timestamp and an id (the nav dot polls this)',
+    r.status === 200 && !!d && 'at' in d && 'id' in d,
+    `status ${r.status} body=${JSON.stringify(d).slice(0, 80)}`)
+  const savedJar = new Map(jar)
+  jar.clear()
+  const anon = await req('/way/api/chat/latest')
+  jar.clear(); for (const [k, v] of savedJar) jar.set(k, v)
+  check('the chat watermark is session-gated', anon.status === 401,
+    `${anon.status} — an anonymous caller read the room's watermark`)
 }
 
 // ─── 6. modules are session-gated ────────────────────────────────
@@ -235,6 +271,23 @@ log('\n9b. WAY HUD says only what it knows')
   check("the HUD age is clamped (a phone a second ahead printed '-1s ago')",
     /Math\.max\(0, \(Date\.now\(\) - new Date\(p\.timestamp\)\.getTime\(\)\) \/ 1000\)/.test(way),
     'the negative clock skew is back')
+  // The speed readout is the one number this card exists for. It was 38px;
+  // the check asserts it is BIGGER than that rather than naming a size, so a
+  // future tweak is free but shrinking it back is not silent.
+  const spd = way.match(/\.spd-num \{ font-size: (\d+)px/)
+  const speedBigger = !!spd && Number(spd[1]) > 38
+  const cardWidened = /#speedo-container \{[^}]*width: 1[5-9]\dpx/.test(way)
+  check('the speed readout is larger than it was (38px), and the card kept up',
+    speedBigger && cardWidened,
+    !spd ? 'the .spd-num size rule is gone'
+      : !speedBigger ? `the speed is ${spd[1]}px — not larger than the 38px it was widened from`
+      : 'the HUD card was not widened for the bigger number')
+  // The two '--' placeholders (Waiting / No signal) are inline-styled, so they
+  // do not follow `.spd-num`; they are checked here so a resize of the readout
+  // cannot leave the empty states looking like a different size.
+  check('the empty HUD states scaled with it',
+    way.includes('font-size:26px;">--</div>') && way.includes('font-size:29px;">--</div>'),
+    'the Waiting / No signal placeholders did not scale with the readout')
   check('address lines take the house number and never repeat a word',
     way.includes('function describeAddress') && way.includes('house_number') && /seen\[candidates\[i\]\]/.test(way),
     'address lines can repeat the same word or drop the street number')
@@ -894,7 +947,7 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // pace exists at all.
   const mapSection = (() => {
     const at = way.indexOf("settingsSection('map'")
-    return at === -1 ? '' : way.slice(at, at + 700)
+    return at === -1 ? '' : way.slice(at, at + 1000)
   })()
   check('both paces are switchable from Settings -> Map, and the choice persists',
     mapSection.includes('data-pace="smooth"') && mapSection.includes('data-pace="live"') &&
@@ -904,6 +957,97 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   check('no pace switch floats over the map itself',
     !way.includes('pace-switch'),
     'a pace control is back in the map chrome — it belongs in Settings only')
+
+  // The pace's one line moved OUT of the HUD (it was one readout too many on a
+  // card about the device) and under the setting that owns it: blue, on a
+  // transparent background, present on Smooth and REMOVED on Live.
+  check('the pace readout left the HUD',
+    !way.includes('hud-playback') && !way.includes('updatePlaybackBadge'),
+    'the HUD is carrying the pace again — it belongs under the Map setting')
+  const paceNote = fnBody(way, 'updatePaceNote')
+  check('the pace line is under Settings -> Map, shown on Smooth and gone on Live',
+    !!paceNote && paceNote.includes("mapPace === 'live'") && paceNote.includes("'none'") && paceNote.includes("'block'") &&
+    mapSection.includes('id="pace-note"') && way.includes('.pace-note {') && way.includes('background: transparent'),
+    paceNote ? 'the pace note is not tied to the pace, or has no transparent style' : 'updatePaceNote is not in the served page')
+
+  // ── The approach pulse (the badge radar) ──
+  // The push can be missed; the badge cannot, because it is on the screen while
+  // the map is. The threshold that fires the push is the same one that arms the
+  // pulse, and the pulse expires on WALL TIME -- 60s from the 60s trigger with
+  // no 30s, 60s from the 30s trigger with no arrival -- never on a ping count.
+  const handleApproachSrc = fnBody(way, 'handleApproach')
+  const pulseFrom = fnBody(way, 'approachPulseFrom')
+  check('the badge pulse is armed by the DO and expires on its own clock',
+    !!handleApproachSrc && handleApproachSrc.includes('data.cleared') && handleApproachSrc.includes('dropExpiredPulses()') &&
+    !!pulseFrom && pulseFrom.includes('APPROACH_PULSE_LINGER_MS') && pulseFrom.includes("'red'") && pulseFrom.includes("'yellow'") &&
+    way.includes('APPROACH_PULSE_LINGER_MS: 60000'),
+    'the approach pulse lost its 60s window, its two levels, or its clear handling')
+  check('the pulse is yellow at 60s and red at 30s, on the card AND across the map',
+    way.includes('.user-badge.approach-yellow') && way.includes('.user-badge.approach-red') &&
+    way.includes('@keyframes approach-card-yellow') && way.includes('@keyframes approach-card-red') &&
+    way.includes('@keyframes approach-sweep') && way.includes('prefers-reduced-motion'),
+    'the pulse has no card styling, no second level, or no reduced-motion fallback')
+  // The sweep must live OUTSIDE #badge-strip. That strip is a scroll container
+  // (overflow-y: auto), so a ring growing out of a card is clipped to a ~170px
+  // column — the first version of this cue was technically running and
+  // practically invisible, which is what this check exists to prevent.
+  check('the radar sweeps from its own layer, clear of the clipping badge strip',
+    way.includes('id="approach-radar-layer"') &&
+    way.indexOf('id="approach-radar-layer"') < way.indexOf('id="badge-strip"') &&
+    /#approach-radar-layer \{ position: fixed;[^}]*pointer-events: none/.test(way) &&
+    /#badge-strip \{[^}]*overflow-y: auto/.test(way),
+    'the radar is inside the scrolling strip (or lost its own fixed layer), so the sweep is clipped to the badge column')
+  // Two ways the sweep could go back to being a 170px smudge: a stroke that
+  // thickens as the ring scales, or an outward ring drawn on the CARD (which
+  // the strip clips). Kept as its own check so either one fails alone.
+  // The stroke has to be inside the circles' OWN rule: a mention in a comment
+  // satisfies a plain `includes()`, which is how this check first passed while
+  // the declaration was mutated away (found by falsifying it).
+  check('the rings stay a thin line on the way out, and nothing is drawn outside a card',
+    /\.approach-radar circle \{[\s\S]{0,400}vector-effect: non-scaling-stroke/.test(way) &&
+    /approach-card-yellow[\s\S]{0,400}inset 0 0 0 3px/.test(way) &&
+    /approach-card-red[\s\S]{0,400}inset 0 0 0 3px/.test(way) &&
+    // The card's emphasis is a 3px band drawn INWARD and nothing else: an
+    // animated border-colour is an edge, and edges in this strip read thin.
+    !/approach-card-(yellow|red)[\s\S]{0,400}border-color/.test(way),
+    'either the stroke scales with the ring (a 2px line becomes a band at full stretch), the card band is no longer 3px inset, or the card animates an OUTWARD edge again')
+  const rb = fnBody(way, 'renderBadges')
+  check('a badge rebuild re-applies the pulse instead of dropping it',
+    !!rb && rb.includes('dropExpiredPulses()') && rb.includes("'approach-' + pulse.level") &&
+    rb.includes('badge-approach-note') && rb.includes('renderApproachRadar()'),
+    'renderBadges no longer reads approachPulses (or no longer re-anchors the radar) — a ping mid-approach would wipe or misplace the cue')
+  // The card is small: the countdown must TAKE the status line ("Live", "4 Min
+  // Ago"), not add a row under it.
+  check('the approach line replaces the status line without growing the card',
+    /const statusRow = pulse[\s\S]{0,300}badge-status-row/.test(rb || '') &&
+    /badge-status-row[\s\S]{0,220}badge-approach-note/.test(rb || '') &&
+    !(rb || '').includes('pulseHtml') &&
+    // One ellipsised line: a long fence name must not wrap it into rows.
+    /\.badge-approach-note \{[^}]*white-space: nowrap/.test(way),
+    'the pulse grew a line of its own again, stopped taking the status row, or can wrap a long place name into several rows')
+  const radar = fnBody(way, 'renderApproachRadar')
+  check('every radar is anchored on a real badge and finds its device',
+    !!radar && radar.includes('data-device') && way.includes("badge.setAttribute('data-device', devId)") &&
+    way.includes('function positionApproachRadar') && way.includes('getBoundingClientRect()'),
+    'the radar is not tied to a badge element, so it would float in the wrong place (or not at all)')
+  check('crossing into a fence stops the pulse without waiting for a frame',
+    /is_inside_geofence && approachPulses\[devId\]/.test(way) && way.includes("data.type === 'approach'"),
+    'the ping path does not clear the pulse on entry, or the frame is never handled')
+
+  // …and the server half, in the DO's own source: the pulse must come from the
+  // SAME code path as the notification, or the two can disagree about whether
+  // someone is arriving at all.
+  let doSrc = ''
+  try { doSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
+  check('the DO arms the pulse from the notify threshold, and clears it on arrival / re-arm',
+    /this\.setApproachPulse\(/.test(doSrc) &&
+    // two call sites (arrival, re-arm) plus the helper's own body
+    (doSrc.match(/clearApproachPulse\(/g) || []).length >= 3 &&
+    /type: "approach"/.test(doSrc),
+    'the DO no longer broadcasts the pulse, so the badge can only lag the notification')
+  check('the snapshot carries in-flight pulses with their age',
+    /approaches/.test(doSrc) && /ageMs/.test(doSrc),
+    'a reload mid-approach would either lose the pulse or restart its window')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────

@@ -556,10 +556,11 @@ points there, so the marker waits and eases the last stretch.
   either too much (to Smooth) or too little (to Live), and `resetTrail()` is the
   one correct answer for both.
 * **The HUD stays live.** `latestPing` (speed, cadence, accuracy, today's card)
-  is still the newest ping; only the *drawing* is delayed, and the header says
-  so (`map ~25s behind`) so a lagging map can never read as a dead device. That
-  badge is Smooth-only: a live map is not behind anything, and `~0s behind`
-  would look like a bug rather than a setting.
+  is still the newest ping; only the *drawing* is delayed, and the lag is named
+  in the one place that owns it: a blue line under the pace pills in
+  **Settings → Map** (`updatePaceNote`), shown on Smooth and removed on Live. It
+  used to be a HUD badge; a card about the device was the wrong home for a
+  setting, and `~0s behind` would have read as a bug rather than a choice.
 * **The HUD's footer reads what the tracker actually sends.** The left slot is
   battery when a tracker reports one; μlogger does not (96 of 12,077 pings ever
   carried a level, all on the old app's first day — and the live push never
@@ -635,7 +636,30 @@ the follow it had just started.
   that decides how a track looks. The playback clock and the dead-zone camera
   are display-only: `devicePings` stays the complete ordered record the Trips
   card sums (or the household's own numbers start disagreeing with the
-  database), and the HUD stays live while the map is behind.
+  database), and the HUD stays live while the map is behind. The **approach
+  pulse** is the one addition that crosses that line, and it crosses it in one
+  place only: the DO broadcasts the threshold it was ALREADY notifying about
+  (`maybeNotifyApproach`), and the browser decides nothing except how the pulse
+  looks and when its window closes. Same thresholds, one decision, two
+  deliveries — a push for when nobody is looking, a badge ring for when they
+  are. The visual is deliberately two parts: the card says **which** device — a
+  3px band drawn **inward** (so nothing is painted outside a card) and its one
+  status line handed over to the countdown — and a **radar layer over the map**
+  says **how close** — rings that leave the card, cross the map and fade out. That split is forced by the layout: `#badge-strip` is an
+  `overflow-y: auto` scroll container, so a ring drawn inside it is clipped to a
+  170 px column and the cue becomes invisible in practice (which is exactly how
+  the first version shipped).
+* **Unread is a watermark, not a count.** `chat_last_seen` (per device, an ISO
+  instant) against the DO's newest message, polled from `/way/api/chat/latest`
+  on every page. `/chat` never shows the dot — being in the room advances the
+  watermark instead — and a device's first poll adopts the backlog as seen. Dead
+  simple on purpose: a counter would need every reader and writer of the room to
+  agree, and being wrong about unread is worse than being vague.
+* **The chat's unread state is a watermark in the browser, the chat's content is
+  the DO's.** Nothing is written to mark something as read: `/chat` advances
+  `chat_last_seen` instead of showing a dot. That keeps the server out of a
+  per-device preference and means a new phone starts clean rather than inheriting
+  someone else's "read" flags.
 
 ## Testing locally
 

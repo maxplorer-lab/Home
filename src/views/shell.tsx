@@ -17,7 +17,7 @@
 // The header and tab bar come from views/app-chrome.tsx — the SAME
 // components Sompitra's pages use, so all six tabs share one chrome
 // (and one set of real brand icons).
-import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, TabSvg, BrandFontLinks, tabColorFor, tabInkFor, type Badge } from './app-chrome'
+import { CHROME_CSS, TAILWIND_CONFIG, CHAT_UNREAD_SCRIPT, HomeHeader, HomeTabBar, TabSvg, BrandFontLinks, tabColorFor, tabInkFor, type Badge } from './app-chrome'
 
 type ModuleKind = 'way' | 'laoka' | 'chat'
 
@@ -136,6 +136,10 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
             });
           }
         `}} />
+
+        {/* The Chat tab's unread dot — the same script the Sompitra pages run,
+            so sitting on the map or in Laoka still shows "someone wrote". */}
+        <script dangerouslySetInnerHTML={{ __html: CHAT_UNREAD_SCRIPT }} />
 
         {/* Fade the loader once the module starts painting. Each module's
             own head script detects the iframe and drops its chrome — the

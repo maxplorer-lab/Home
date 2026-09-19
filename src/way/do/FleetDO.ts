@@ -166,6 +166,12 @@ export class FleetDO extends DurableObject<Env> {
   private lastNotify: { at: string; source: string; type: string; outcome: string } | null = null;
   // "deviceId:fenceName" -> thresholds already announced on this approach.
   private approachFired = new Map<string, Set<number>>();
+  // The DASHBOARD's half of the same moment: which device the map should pulse
+  // for, at which level, and when the threshold that set it fired. Purely
+  // visual -- never persisted, never notified, and it decides nothing about
+  // the state machine, so an evicted DO simply stops pulsing (the
+  // notification, which is the durable half, has already been sent).
+  private approachPulses = new Map<string, { fence: string; place: string; threshold: number; at: number }>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -310,6 +316,24 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(null, { status: 204 });
     }
 
+    // The Home nav's unread dot: WHEN the chat last received anything, and
+    // nothing else. Read from here rather than D1 because the flush is nightly
+    // -- today's messages exist only in this DO. One row, no conversation, so
+    // a poll on every page of the app stays cheap. The caller (the Worker's
+    // /way/api/chat/latest) has already required a session.
+    if (url.pathname === "/chat-latest" && request.method === "GET") {
+      const rows = this.sql
+        .exec<{ id: string; created_at: string }>(
+          `SELECT id, created_at FROM chat_messages ORDER BY created_at DESC LIMIT 1`
+        )
+        .toArray();
+      const newest = rows[0] ?? null;
+      return new Response(
+        JSON.stringify({ id: newest?.id ?? null, at: newest?.created_at ?? null }),
+        { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
+      );
+    }
+
     // System chat message posted by a SIBLING MODULE (Sompitra's
     // expense/income/kine events), so the household's one chat carries every
     // activity, not just
@@ -384,7 +408,8 @@ export class FleetDO extends DurableObject<Env> {
             // v4 = splits that into expense/income so they read differently.
             // v5 = tracking events publish to the TRACKING channel
             //      (home-db users.way_topic), not the money feed.
-            build: "notify-v5-two-channels",
+            // v6 = approach thresholds also drive the dashboard's badge pulse.
+            build: "notify-v6-approach-pulse",
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
             // "does the RUNNING instance know about income yet?" without
@@ -462,6 +487,9 @@ export class FleetDO extends DurableObject<Env> {
     devices: Record<string, LiveDeviceStatus | null>;
     tracks: Record<string, unknown[]>;
     chat: unknown[];
+    /** In-flight badge pulses (see approachPulses). Additive: a client that
+     * does not know the key just ignores it. */
+    approaches: Record<string, unknown>;
   } {
     const rows = this.sql.exec<{ device_id: string; state_json: string }>(`SELECT device_id, state_json FROM device_state`).toArray();
     const devices: Record<string, LiveDeviceStatus | null> = {};
@@ -485,7 +513,15 @@ export class FleetDO extends DurableObject<Env> {
       .toArray()
       .reverse();
 
-    return { type: "snapshot", devices, tracks, chat };
+    // `ageMs` is computed against THIS clock and shipped with the pulse, so the
+    // client never has to subtract its own clock from the server's (a phone can
+    // be minutes off; that comparison would silently eat the whole window).
+    const now = Date.now();
+    const approaches = Object.fromEntries(
+      Array.from(this.approachPulses.entries()).map(([devId, p]) => [devId, { ...p, ageMs: Math.max(0, now - p.at) }])
+    );
+
+    return { type: "snapshot", devices, tracks, chat, approaches };
   }
 
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
@@ -1268,6 +1304,7 @@ export class FleetDO extends DurableObject<Env> {
     // Arriving (or sitting at) a fence clears the countdown.
     if (result.isInside) {
       this.approachFired.delete(ping.deviceId);
+      this.clearApproachPulse(ping.deviceId);
       return;
     }
     const speedKmh = ping.vel ?? result.speedAvg;
@@ -1294,6 +1331,7 @@ export class FleetDO extends DurableObject<Env> {
       // Moving away / too far to matter -> re-arm for the next approach.
       if (etaSec > APPROACH_THRESHOLDS[0]) {
         this.approachFired.delete(key);
+        this.clearApproachPulse(ping.deviceId, f.name);
         continue;
       }
       if (heading !== null) {
@@ -1310,6 +1348,12 @@ export class FleetDO extends DurableObject<Env> {
         for (const t of APPROACH_THRESHOLDS) if (t >= threshold) fired.add(t);
         this.approachFired.set(key, fired);
         const words = threshold >= 60 ? "about a minute" : `${threshold} seconds`;
+        // The VISUAL half of the same moment: the dashboard pulses this
+        // device's badge, so a notification that is missed still reads as
+        // "someone is arriving, open the gate". Sent from here rather than
+        // worked out in the browser so the pulse can never disagree with the
+        // push about whether a threshold was crossed.
+        this.setApproachPulse(ping.deviceId, f.name, place, threshold);
         this.ctx.waitUntil(
           this.notifyEvent(
             ping.deviceId,
@@ -1323,6 +1367,28 @@ export class FleetDO extends DurableObject<Env> {
       }
       this.approachFired.set(key, fired);
     }
+  }
+
+  /** Broadcast the badge pulse one crossed threshold turns on. `threshold` is
+   * what the DASHBOARD scales by (60 -> yellow, 30 -> red); the client owns the
+   * expiry, because the rules are about wall time ("no 30s within 60s of the
+   * 60s -> stop") rather than about further pings. */
+  private setApproachPulse(deviceId: string, fence: string, place: string, threshold: number) {
+    const pulse = { fence, place, threshold, at: Date.now() };
+    this.approachPulses.set(deviceId, pulse);
+    this.broadcast({ type: "approach", deviceId, ...pulse, cleared: false });
+  }
+
+  /** Stop pulsing a device, because it arrived, turned away, or is too far out
+   * to matter. `fence` scopes the clear to the pulse that fence owns, so a
+   * device drifting past a SECOND home fence cannot cancel the countdown the
+   * first one started. */
+  private clearApproachPulse(deviceId: string, fence?: string) {
+    const pulse = this.approachPulses.get(deviceId);
+    if (!pulse) return;
+    if (fence && pulse.fence !== fence) return;
+    this.approachPulses.delete(deviceId);
+    this.broadcast({ type: "approach", deviceId, fence: pulse.fence, cleared: true });
   }
 
   /** "Stopped at <street, suburb, municipality>" -- geocoded here (not in the

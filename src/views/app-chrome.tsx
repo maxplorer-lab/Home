@@ -251,6 +251,22 @@ export const TabIcon: FC<{
   )
 }
 
+// ─── The chat unread dot ─────────────────────────────────────────
+/** A 9px red dot on the Chat tab's icon, in BOTH bars (the script shows every
+    `[data-chat-unread]` on the page). Chat is the one module that receives
+    things while you are somewhere else -- a message from someone, or another
+    module's system notification -- so the tab has to be able to say "there is
+    something new" from any other tab. Just a dot, deliberately not a counter:
+    a number would have to be kept in sync by whatever last saw the room, and
+    being wrong is worse than being vague. See CHAT_UNREAD_SCRIPT for the
+    state (one localStorage watermark + a poll of /way/api/chat/latest). */
+export const ChatIconWithDot: FC<{ item: { img?: string; svg?: string; color: string } }> = ({ item }) => (
+  <span class="chat-dot-wrap">
+    <TabIcon item={item} />
+    <span class="chat-unread-dot" data-chat-unread aria-hidden="true" />
+  </span>
+)
+
 // ─── The desktop nav (md+) ───────────────────────────────────────
 // Declared before the header that renders it: same tabs, horizontal.
 export const HomeNav: FC<{ active?: string }> = ({ active }) => {
@@ -272,7 +288,7 @@ export const HomeNav: FC<{ active?: string }> = ({ active }) => {
             // so "colour = which module" holds at every width.
             style={{ '--tab': item.color, ...(isActive ? { backgroundColor: item.color + '1a' } : {}) }}
           >
-            <TabIcon item={item} />
+            {item.tab === 'chat' ? <ChatIconWithDot item={item} /> : <TabIcon item={item} />}
             {item.label}
           </a>
         )
@@ -374,7 +390,7 @@ export const HomeTabBar: FC<{ active?: string; className?: string }> = ({ active
                 class={`tab-tint rounded-xl px-2.5 py-0.5 transition-colors ${isActive ? 'is-active' : ''}`}
                 style={{ '--tab': item.color, backgroundColor: isActive ? item.color + '1a' : 'transparent' }}
               >
-                <TabIcon item={item} />
+                {item.tab === 'chat' ? <ChatIconWithDot item={item} /> : <TabIcon item={item} />}
               </span>
               {/* The label keeps the tab's colour even when inactive: the six
                   modules are meant to be readable by colour alone (design note
@@ -459,6 +475,17 @@ export const CHROME_CSS = `
   html.dark .tab-tint.is-active { opacity: 1; }
   .tab-tint:hover { opacity: 1; }
 
+  /* ── The chat unread dot ───────
+     Shown by CHAT_UNREAD_SCRIPT, which toggles the class .on on every
+     [data-chat-unread] element on the page -- so the same dot exists in both
+     bars and neither is the "real" one. The white ring is what keeps it
+     legible where it overlaps the icon; dark mode swaps the ring for the bar
+     colour rather than dropping it. */
+  .chat-dot-wrap { position: relative; display: inline-flex; }
+  .chat-unread-dot { position: absolute; top: -2px; right: -3px; width: 9px; height: 9px; border-radius: 9999px; background: #ef4444; box-shadow: 0 0 0 2px #ffffff; display: none; }
+  html.dark .chat-unread-dot { box-shadow: 0 0 0 2px #1f2937; }
+  .chat-unread-dot.on { display: block; }
+
   /* iPhone safe-area */
   .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
@@ -471,6 +498,61 @@ export const CHROME_CSS = `
      platform will refuse. */
   #install-app-card { display: none; }
   #install-app-card.available { display: block; }
+`
+
+// ─── The chat unread dot's state ─────────────────────────────────
+// ONE watermark in localStorage (the newest createdAt this device has laid
+// eyes on) plus a poll of the DO's one-field watermark. It lives here so every
+// document the app serves -- the Sompitra pages and the module shells -- runs
+// the same code, and the dot cannot mean two different things on two tabs.
+//
+// Why a poll rather than the socket the chat already has: the chat document
+// only exists while you are IN the chat tab, which is precisely when the dot
+// is not needed. The nav sits outside it, and the Sompitra pages have no
+// socket at all.
+//
+// Worth keeping, the details that make it correct:
+//   * On the chat tab everything counts as seen: the dot is never shown there,
+//     and the watermark is advanced by the same poll.
+//   * The FIRST poll on a device adopts whatever is already in the room as
+//     seen -- otherwise a fresh install badges last night's backlog with no
+//     way to clear it short of opening the chat.
+//   * Both comparisons are plain string compares (createdAt is an ISO instant,
+//     so it sorts). Keep that column ISO or this stops working silently.
+//   * A failed fetch paints nothing: an unread dot that appears because the
+//     network blipped is worse than no dot.
+export const CHAT_UNREAD_SCRIPT = `
+(function () {
+  var KEY = 'chat_last_seen';
+  var POLL_MS = 25000;
+  var onChat = location.pathname === '/chat' || location.pathname.indexOf('/chat/') === 0;
+  function paint(on) {
+    var dots = document.querySelectorAll('[data-chat-unread]');
+    for (var i = 0; i < dots.length; i++) dots[i].classList.toggle('on', !!on);
+  }
+  function poll() {
+    if (document.visibilityState === 'hidden') return;
+    fetch('/way/api/chat/latest', { credentials: 'include' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || !data.at) return;
+        var seen = localStorage.getItem(KEY);
+        if (!seen) { localStorage.setItem(KEY, data.at); paint(false); return; }
+        if (onChat) {
+          if (data.at > seen) localStorage.setItem(KEY, data.at);
+          paint(false);
+          return;
+        }
+        paint(data.at > seen);
+      })
+      .catch(function () {});
+  }
+  poll();
+  setInterval(poll, POLL_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') poll();
+  });
+})();
 `
 
 export const TAILWIND_CONFIG = `

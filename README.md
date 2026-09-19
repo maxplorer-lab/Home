@@ -61,7 +61,12 @@ a 2px hairline under the header all follow it. Dark mode lifts the tint
 
 An embedded module (WAY, Laoka, Chat) runs inside a **framed stage** — inset,
 rounded, with a hairline ring — so it reads as a panel *of* Home instead of a
-separate app the header happens to sit on. Money keeps one meaning everywhere:
+separate app the header happens to sit on. And **the Chat tab carries an unread
+dot**: chat is the only module that receives things while you are somewhere
+else (a message, or another module's activity line), so a red dot on that tab
+says "there is something new" from any screen. It is a dot rather than a count
+— a count has to be owned by whoever last read the room, and a wrong number is
+worse than a vague dot. Money keeps one meaning everywhere:
 **green in, red out, amber cash on hand, purple owed to us, orange we owe,
 teal net**, and every amount is tabular so columns line up. `npm run smoke`
 section 18 fails if any of this drifts.
@@ -170,14 +175,30 @@ before it re-centres (smoothly, along whichever axis it left) — so the map sit
 still most of the time instead of chasing every step. What W.A.Y records is
 unaffected — the same points, the same classifications, the same colours, dash
 and stationary dots, the same **Flush now**. The HUD is live while the map is
-behind, and says so (`map ~25s behind`), and the Trips summary keeps reading the
-database, so "driven this month" is unchanged.
+behind, and the one line that names the lag sits under the pace pills in
+**Settings → Map** (blue, shown on Smooth and removed on Live), and the Trips
+summary keeps reading the database, so "driven this month" is unchanged.
 
 The trade the lag buys: motion you can actually watch. The cost: a just-arrived
 position reaches the map half a minute later — so the pace is a **switch**, in
 **Settings → Map**: **Smooth** keeps the 25 s of buffer, **Live** draws the
 newest ping the moment it lands. It is per device, remembered on that phone, and
 changes nothing about what W.A.Y records, stores or notifies.
+
+**Approaching home sends up a flare.** The "about a minute / 30 seconds away"
+push is easy to miss, and being at the gate is not — so the same thresholds that
+send it also mark the map: that device's **badge card** is banded in colour — a
+thick line drawn *inside* the card, and its status line becomes the countdown
+(`→ Home1 · ~30s`) instead of growing one of its own — while a **radar sweeps
+out of the card across the whole map** and fades as it travels: **yellow** from
+the 60 s trigger, **red** from the 30 s one (faster, and brighter). It stops on its own if nothing follows (60 s with no 30 s trigger,
+then 60 s with no arrival) and at once if the car arrives or turns away. Both
+come from the same threshold crossing in the Durable Object, and the pulse is
+armed even when the push is suppressed (quiet hours, nobody subscribed) — which
+is exactly when the map is all you have. The sweeps are read as distance from
+the card, so they are drawn in their own layer over the map rather than inside
+the scrollable badge strip, which clipped the first version down to a ~170 px
+smudge.
 
 ## One login, how it works
 

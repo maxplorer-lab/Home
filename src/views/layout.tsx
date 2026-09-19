@@ -2,7 +2,7 @@
 import type { FC } from 'hono/jsx'
 import { PressFeedbackStyle, PressFeedbackScript } from './feedback'
 // The one app chrome (header + tab bar) — shared with the module shells.
-import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, BrandFontLinks, Icon, tabColorFor, tabInkFor } from './app-chrome'
+import { CHROME_CSS, TAILWIND_CONFIG, CHAT_UNREAD_SCRIPT, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, BrandFontLinks, Icon, tabColorFor, tabInkFor } from './app-chrome'
 
 interface LayoutProps {
   title?: string
@@ -114,6 +114,10 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
             while the Worker is busy — a double submit would create a duplicate
             transaction/record. */}
         <PressFeedbackScript />
+
+        {/* The Chat tab's unread dot — same script the module shells run, so the
+            dot means one thing everywhere (see CHAT_UNREAD_SCRIPT). */}
+        <script dangerouslySetInnerHTML={{ __html: CHAT_UNREAD_SCRIPT }} />
 
         {/* Register service worker for PWA offline support */}
         <script dangerouslySetInnerHTML={{ __html: `

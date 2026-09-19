@@ -492,6 +492,20 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     });
   }
 
+  // ---- Live chat watermark (the Home nav's unread dot) ----
+  // The newest message as the DO holds it, NOT as D1 does: the flush runs once
+  // at midnight, so today's messages exist only in the Durable Object. Returns
+  // a timestamp to compare against, never the conversation -- every page of
+  // the app polls this, so the payload is one field wide.
+  if (pathname === "/api/chat/latest" && request.method === "GET") {
+    const id = env.FLEET_DO.idFromName("fleet");
+    const res = await env.FLEET_DO.get(id).fetch("https://fleet-do/chat-latest");
+    return new Response(res.body, {
+      status: res.status,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+
   // ---- Synced chat history ----
   if (pathname === "/api/chat/history" && request.method === "GET") {
     const { start, end } = resolveRange(url);
