@@ -146,6 +146,92 @@ you are in.
 * Sompitra (budget/kine/debts/sales) is one tab with its own desktop sub-nav;
   `/settings` is the You tab; `/admin` stays a Sompitra-style page.
 
+## The brand system (one typeface, one accent per screen, brand glyphs)
+
+The chrome is shared; this section is about what makes a screen *look* like it
+belongs to the same app. Every item below was a real "is this one app or three?"
+tell that survived all the functional work, because none of it is visible to a
+test that only reads behaviour.
+
+**One typeface.** `BRAND_FONT_STACK` (app-chrome.tsx) is loaded by every
+document we serve, via the shared `<BrandFontLinks />`: the Sompitra pages, the
+module shells **and** the sign-in / claim / change-password screens. Before
+this, W.A.Y shipped Plus Jakarta Sans while Sompitra, Laoka and the chat room
+shipped Segoe UI — the same person could see two typefaces in two tabs, which
+is the loudest possible signal that they are separate apps. The system stack
+stays behind the brand family as the fallback, so a cold cache or a fully
+offline PWA still renders in a real face instead of a serif default. Money uses
+`.num` (`font-variant-numeric: tabular-nums`): proportional digits make
+`Ar 7,500` and `Ar 12,300` different widths, which is exactly what makes a
+column of amounts look hand-scattered.
+
+**One accent per screen, taken from the tab you are in.** `HOME_TABS` carries
+two values per module (app-chrome.tsx):
+
+| Module | `color` (tint) | `ink` (filled surface) |
+| --- | --- | --- |
+| Home | `#16a34a` | `#166534` |
+| Sompitra | `#0d9488` | `#0f766e` |
+| Chat | `#7c3aed` | `#6d28d9` |
+| Laoka | `#ea580c` | `#c2410c` |
+| WAY | `#0284c7` | `#0369a1` |
+| You | `#475569` | `#334155` |
+
+The layout and the module shells set both on `<body>` (`--accent`,
+`--accent-ink`) from that one table, so a page cannot disagree with the tab that
+got you there: the card-heading glyphs (`.accent-mark`), the section headings on
+`/settings`, the money sub-nav's active pill and the 2px hairline under the
+header all read those variables instead of hard-coding a hue. Two rules come out
+of the table:
+
+* **`ink` for anything filled with white text.** The tint is too light for a
+  filled surface — white on `#0d9488` measures 3.9:1 — so a filled control uses
+  the same hue one step down (white on `#0f766e` is 5.3:1). Using the tint as a
+  button background is a contrast bug, not a shortcut.
+* **Dark mode lifts the tint.** `html.dark .accent-mark` mixes `80%` of the
+  accent with white; measured on the `#1f2937` card surface the six accents land
+  at 3.2–5.7:1, above the 3:1 floor for graphical objects. Slate You is the
+  worst case and the reason the lift exists at all (raw slate is 1.9:1, i.e.
+invisible). Icon size is why the standard here is non-text contrast: these are
+  marks, not labels, and the heading *labels* stay grey on purpose — tinting
+  11–12px text is how a heading becomes unreadable in dark mode.
+
+**Brand glyphs, not decoration emoji.** `ICONS` / `<Icon>` in app-chrome.tsx is
+the app's own glyph set (~25 shapes), and card headings take an `icon` prop
+(`<Card title="Cash Flow" icon="trend">`). This replaced the emoji that were
+glued onto nearly every title (🔔 👐 💰 📋 🎯 …), for three reasons: an emoji is
+a colour picture the OS chooses, so it cannot wear the screen's accent and never
+belonged to the module it sat in; it changes size and baseline per platform; and
+it cannot inherit a tint. Emoji that **encode** something — the 🟢🟡🔴 Kiné
+legend, category icons, the per-user colour dots — are data, not decoration, and
+stay. Several glyphs rely on winding the same way the Sompitra tab icon does: a
+sub-path running against its parent punches a hole (the donut, the target rings,
+the padlock's shackle, the server's status lights, the pin's centre).
+
+**The palette means something.** On the money screens: **green = money in,
+red = money out, amber = cash on hand, purple = owed to us, orange = we owe,
+teal = net** (Sompitra's own hue). Income used to be blue in the summary tiles
+while the same income printed as `+Ar 45,000` in green in the list below it —
+one fact, two colours, one screen.
+
+**The module stage.** WAY, Laoka and Chat run inside
+the `#home-module-stage` → `#home-module-frame` frame (shell.tsx): inset 8px
+(12px from `sm` up), rounded 16px, with a hairline ring instead of a shadow
+edge. A module that bleeds to all four window edges reads as a separate app the
+chrome happens to sit on — the Chat tab was a black room jammed under a white
+header, one hard seam and no shared edge. The inset makes it a panel *of* Home,
+the way a mini-program sits inside its host, and the ring is the panel's edge in
+both themes.
+
+**The trap this all rests on:** a grid item's automatic minimum size is its
+*min-content* width, and a transaction description is rendered with `truncate`
+(`white-space: nowrap`). One long description — a Laoka import reads "Laoka
+shopping 2026-09-12 – 2026-09-18" — therefore widens the whole page past a
+422px viewport and the phone gets a horizontal scrollbar. `min-w-0` has to be on
+the element that **is** the grid item, not only inside it. `npm run smoke`
+section 18 guards that, the one-typeface rule, the accent-equals-tab rule, the
+glyph-not-emoji rule and the stage.
+
 ## Installable (PWA)
 
 Home installs from Chrome/Brave on Android and then behaves like an app:
@@ -454,9 +540,26 @@ points there, so the marker waits and eases the last stretch.
   zoomed out, so the camera starts moving on every ping there instead, and how
   far the eye tolerates the device drifting depends on the screen, not the
   ground. One number to tune, like the lag.
+* **The lag is also the pace, and the pace is the user's.** The lag above is
+  what makes a commute watchable, and it is also 25 s of "wrong" whenever the
+  question changes from *how did the trip look* to *where is he right now*. So
+  the map has two paces, switched in Settings → Map (and deliberately nowhere
+  else — a control floating over the map is one more thing between the eye and
+  the device, and the badge below is what the map itself has to say):
+  **Smooth** (the default, this lag) and **Live**, where
+  `playbackLagSeconds()` returns 0 and the marker is the newest ping the moment
+  it arrives. Only two things differ: the clock, and the marker's ease rate
+  (`MARKER_EASE_PER_SECOND_LIVE` = 3/s, so a live marker still glides rather
+  than snaps). Same playback loop, same append-only trail, no re-fetch, no
+  server setting — it is `localStorage`, per device. Flipping it calls
+  `redrawAllTracks()`: the cursor just moved 25 s, so what is already drawn is
+  either too much (to Smooth) or too little (to Live), and `resetTrail()` is the
+  one correct answer for both.
 * **The HUD stays live.** `latestPing` (speed, cadence, battery, today's card)
   is still the newest ping; only the *drawing* is delayed, and the header says
-  so (`map ~25s behind`) so a lagging map can never read as a dead device.
+  so (`map ~25s behind`) so a lagging map can never read as a dead device. That
+  badge is Smooth-only: a live map is not behind anything, and `~0s behind`
+  would look like a bug rather than a setting.
 * **The Trips summary is a different data path on purpose.** Monthly
 driven/walked totals come from `GET /way/api/history` (D1) and are summed
   through yesterday; today's card is computed from the **complete**

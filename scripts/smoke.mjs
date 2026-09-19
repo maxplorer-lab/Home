@@ -220,9 +220,11 @@ log('\n10. Unified settings + two notification channels per person')
   // cannot subscribe to the activity one, and vice versa.
   // Titles are compared as they appear in the HTML — JSX escapes the "&" in
   // the feed card's title, and a check that misses that reads as a missing card.
+  // Neither title carries an emoji any more: headings use the brand glyph set
+  // (section 18), so these two are matched on their text alone.
   for (const [title, id, empty] of [
-    ['💬 Money &amp; chat feed', 'my-topic', 'No feed topic yet'],
-    ['📍 W.A.Y tracking', 'my-way-topic', 'No tracking topic yet'],
+    ['Money &amp; chat feed', 'my-topic', 'No feed topic yet'],
+    ['W.A.Y tracking', 'my-way-topic', 'No tracking topic yet'],
   ]) {
     // Either this person has that topic (the input is rendered) or they are
     // offered one — a blank card is not acceptable, because it hides which of
@@ -803,6 +805,39 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     !!totals && totals.includes('fetchHistoryFor(') && !!historyOf && historyOf.includes('/way/api/history') &&
     way.includes('(through yesterday)'),
     'the monthly totals no longer read /way/api/history')
+
+  // The pace switch: Smooth is the fluid default, Live draws the newest ping the
+  // moment it lands. It is display-only, so the guard is as much about what it
+  // must NOT do -- and about the lag being ONE number the cursor reads.
+  const lag = fnBody(way, 'playbackLagSeconds')
+  const clock = fnBody(way, 'playbackClock')
+  check('the cursor runs on the pace, and Live means zero lag',
+    !!lag && /'live'\s*\?/.test(lag) && /\?\s*0\s*:/.test(lag) &&
+    !!clock && clock.includes('playbackLagSeconds()') && !clock.includes('CONFIG.PLAYBACK_LAG_SECONDS'),
+    lag ? 'the playback clock no longer reads the pace' : 'playbackLagSeconds is not in the served page')
+
+  const paceSet = fnBody(way, 'setMapPace')
+  const paceApply = fnBody(way, 'applyMapPace')
+  check('switching pace touches nothing but the drawing',
+    !!paceSet && !!paceApply && !/fetch\(|\/api\/|ws\.send/.test(paceSet + paceApply) &&
+    paceSet.includes("localStorage.setItem('map_pace'") && paceApply.includes('redrawAllTracks()'),
+    'the pace switch reaches the network, or no longer rebuilds the trails')
+
+  // The switch lives in Settings -> Map, NOT floating over the map: the map's
+  // own chrome stays about the device, and the HUD badge is how the map says a
+  // pace exists at all.
+  const mapSection = (() => {
+    const at = way.indexOf("settingsSection('map'")
+    return at === -1 ? '' : way.slice(at, at + 700)
+  })()
+  check('both paces are switchable from Settings -> Map, and the choice persists',
+    mapSection.includes('data-pace="smooth"') && mapSection.includes('data-pace="live"') &&
+    way.includes("localStorage.getItem('map_pace')") && way.includes("localStorage.setItem('map_pace'"),
+    mapSection ? 'the pace pills are not in the Map settings section' : 'the Map settings section is gone from the served page')
+
+  check('no pace switch floats over the map itself',
+    !way.includes('pace-switch'),
+    'a pace control is back in the map chrome — it belongs in Settings only')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────
@@ -1029,6 +1064,105 @@ log('\n17. Laoka as a tab: scrolling, the sticky nav, and the export ribbon')
   check('the Sompitra tab icon is no longer the old wallet/card',
     !moneyPath.includes('M17 10.5a1.5'),
     'the wallet path is back on the Sompitra tab')
+}
+
+// ─── 18. One brand: one typeface, brand glyphs, one colour per screen ──
+log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
+{
+  // These are the "is it one app or three?" properties, and every one of them
+  // was violated before this section existed:
+  //   • three typefaces (Sompitra/Laoka/chat in Segoe UI, W.A.Y in Jakarta);
+  //   • a colour picture (emoji) glued to every card title, so headings wore a
+  //     different hue on every OS and never matched the module they sat in;
+  //   • the module's colour existed only in the tab bar, so a Sompitra screen
+  //     was green-and-red inside a teal tab.
+  // None of them is visible to a functional test, which is exactly why they
+  // survived this long.
+  const PAGES = ['/', '/budget', '/chat', '/way/', '/laoka/', '/settings']
+  const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u
+  const activeTabColour = (html) => {
+    const bar = tabBarHtml(html)
+    if (!bar) return null
+    const active = bar.split('<a href=').slice(1).map((a) => '<a href=' + a)
+      .find((a) => a.includes('aria-current="page"')) || ''
+    return ((active.match(/--tab:(#[0-9a-fA-F]{6})/) || [])[1] || '').toLowerCase() || null
+  }
+
+  for (const p of PAGES) {
+    const html = await body(await req(p))
+
+    // ONE typeface. W.A.Y, Laoka and the chat room each shipped their own
+    // family, so the same screen could render in two faces depending on which
+    // tab you came from. Every document must load the one brand family, and
+    // the family must be FIRST in the body rule (a fallback-only match would
+    // pass while the page still renders in Segoe UI).
+    check(`${p}: loads the one brand typeface`,
+      /fonts\.googleapis\.com\/css2\?family=Plus\+Jakarta\+Sans/.test(html),
+      'no Plus Jakarta Sans request — this page falls back to the system face')
+    check(`${p}: the brand face is what the page actually uses`,
+      /body\s*\{[^}]*font-family:\s*'Plus Jakarta Sans'/.test(html),
+      'the body font stack does not start with the brand family')
+
+    // ONE colour per screen, and it must be the SAME value as the tab that got
+    // you there. The accent is what the headings, the header hairline and the
+    // section sub-nav all read, so a mismatch here means the screen disagrees
+    // with its own tab.
+    const accent = ((html.match(/--accent:\s*(#[0-9a-fA-F]{6})/) || [])[1] || '').toLowerCase()
+    const ink = ((html.match(/--accent-ink:\s*(#[0-9a-fA-F]{6})/) || [])[1] || '').toLowerCase()
+    const active = activeTabColour(html)
+    check(`${p}: the screen accent IS the active tab's colour`,
+      !!accent && !!active && accent === active,
+      `--accent=${accent || '(none)'} vs active tab ${active || '(none)'}`)
+    // …and the filled variant exists and is darker, because white text on the
+    // tint is under 4.5:1 (white on #0d9488 measures 3.9:1).
+    check(`${p}: a filled surface uses the darker ink variant`,
+      /^#[0-9a-f]{6}$/.test(ink) && ink !== accent,
+      `--accent-ink=${ink || '(none)'} — using the tint as a button background is a contrast bug`)
+
+    // The themed chrome: a module tab runs in a framed stage, and the ring is
+    // what makes it a panel of Home rather than a second app underneath it.
+    if (['/chat', '/way/', '/laoka/'].includes(p)) {
+      check(`${p}: the module runs in the framed stage, not edge to edge`,
+        /id="home-module-stage"/.test(html) && /id="home-module-frame"/.test(html),
+        'the module is not inside #home-module-stage/#home-module-frame')
+      check(`${p}: the stage is inset and rounded (one app, not a pasted-in app)`,
+        /#home-module-stage\s*\{[^}]*padding/.test(html) && /#home-module-frame[^{]*\{[^}]*border-radius/.test(html),
+        'the stage lost its inset or its rounding')
+    }
+  }
+
+  // Headings wear a brand glyph, never an emoji. An emoji is a colour picture
+  // the OS chooses: it cannot take the accent colour, it changes size and
+  // baseline per platform, and it made every card title look like a different
+  // app. Emoji that ENCODE something (the Kiné legend, category icons, the
+  // per-person colour dots) are data and are not inside a heading, so reading
+  // the headings is a safe way to assert this.
+  for (const p of ['/', '/budget', '/settings']) {
+    const html = await body(await req(p))
+    const headings = html.match(/<h3[\s\S]*?<\/h3>/g) || []
+    const withEmoji = headings.filter((h) => EMOJI.test(h))
+    check(`${p}: no card heading is an emoji`, headings.length > 0 && withEmoji.length === 0,
+      withEmoji.length ? `emoji heading: ${withEmoji[0].replace(/<[^>]*>/g, '').trim().slice(0, 40)}` : 'no headings found')
+    check(`${p}: card headings carry the brand glyph in the screen accent`,
+      headings.some((h) => h.includes('section-title') && h.includes('accent-mark')),
+      'headings are plain text again — the icon set is not wired up')
+  }
+
+  // The horizontal-scroll trap: a grid item's automatic minimum size is its
+  // min-content width, and a transaction description is rendered with
+  // `truncate` (white-space: nowrap). One long description — a Laoka import
+  // reads "Laoka shopping 2026-09-12 – 2026-09-18" — then widens the whole
+  // page past the viewport, which is invisible on a screenshot of the top and
+  // is exactly what a phone user hits.
+  const dash = await body(await req('/'))
+  // Names are matched as they appear in the HTML: JSX escapes the "&" in
+  // "Debts &amp; Credits", and a check that misses it reads as a missing card.
+  for (const card of ['Recent Transactions', 'Debts &amp; Credits']) {
+    const at = dash.indexOf(card)
+    check(`the ${card} card cannot push the page sideways`,
+      at > 0 && dash.slice(Math.max(0, at - 700), at).includes('min-w-0'),
+      'the card lost min-w-0 — a long description will force a horizontal scrollbar')
+  }
 }
 
 // ─── summary ─────────────────────────────────────────────────────

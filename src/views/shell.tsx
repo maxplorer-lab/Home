@@ -17,7 +17,7 @@
 // The header and tab bar come from views/app-chrome.tsx — the SAME
 // components Sompitra's pages use, so all six tabs share one chrome
 // (and one set of real brand icons).
-import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, TabSvg, tabColorFor, type Badge } from './app-chrome'
+import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, TabSvg, BrandFontLinks, tabColorFor, tabInkFor, type Badge } from './app-chrome'
 
 type ModuleKind = 'way' | 'laoka' | 'chat'
 
@@ -52,6 +52,10 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Home" />
+        {/* Same brand typeface as the Sompitra pages — every document the app
+            serves loads this one family, so a tab cannot render in a different
+            face than the page you arrived from. */}
+        <BrandFontLinks />
         <script src="https://cdn.tailwindcss.com" />
         <script dangerouslySetInnerHTML={{ __html: `
           ${TAILWIND_CONFIG}
@@ -66,26 +70,54 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
              to exactly 100% with no page scroll. */
           html, body { height: 100%; margin: 0; }
           #home-module-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+          /* The module STAGE: the module runs inset inside a rounded, framed
+             panel instead of bleeding to the window edges.
+
+             Why it matters: a module that touches all four edges reads as a
+             separate app the chrome happens to sit on top of — which is exactly
+             how the Chat tab looked (a black room jammed under a white header,
+             one hard seam and no shared edge). Insetting it by 8px and rounding
+             it makes the module a panel OF Home, the way a mini-program sits
+             inside its host. The ring is the panel's edge in both themes. */
+          #home-module-stage { padding: 8px 8px 6px; }
+          @media (min-width: 640px) { #home-module-stage { padding: 12px 12px 8px; } }
+          #home-module-frame {
+            position: relative; height: 100%; overflow: hidden;
+            border-radius: 16px;
+            box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px -12px rgba(0,0,0,.25);
+            outline: 1px solid rgba(0,0,0,.06);
+            outline-offset: 0;
+          }
+          html.dark #home-module-frame { outline-color: rgba(255,255,255,.10); }
         `}} />
         {/* Shared chrome CSS — same file the Sompitra pages use, so `.pb-safe`
             and friends can never go missing on a module tab. */}
         <style dangerouslySetInnerHTML={{ __html: CHROME_CSS }} />
       </head>
-      {/* Chat's module document is a dark, full-bleed room — the shell host
-          behind the transparent iframe edges must match it in both themes. */}
-      <body class={`home-host flex flex-col ${kind === 'chat'
-        ? 'bg-[#0a0a0c] text-gray-100'
-        : 'bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100'}`}>
+      {/* Chat's module document is a dark room: the ring around the stage is the
+          only place the host background shows, so it stays the app's own surface
+          (not the room's black) — that frame is what keeps Chat reading as a
+          panel of Home rather than a separate dark app. */}
+      <body
+        style={{ '--accent': tabColorFor(kind), '--accent-ink': tabInkFor(kind) }}
+        class="home-host flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+      >
         {/* ── the one Home header ── */}
         <HomeHeader displayName={displayName} badge={mod.badge} active={kind} />
 
-        {/* ── the module, chromeless ── */}
-        <div id="home-module-frame" class="flex-1 min-h-0 relative">
-          <iframe id="module-frame" title={`${mod.label} module`} src={mod.src} />
-          <div id="home-loading" class="absolute inset-0 flex items-center justify-center pointer-events-none">
-            {mod.badge.img
-              ? <img src={mod.badge.img} alt="" class="w-8 h-8 animate-pulse opacity-70" />
-              : <span className="animate-pulse"><TabSvg name={mod.badge.svg ?? ''} className="w-8 h-8" /></span>}
+        {/* ── the module, chromeless, inside its stage (CSS above) ── */}
+        <div id="home-module-stage" class="flex-1 min-h-0">
+          <div id="home-module-frame">
+            <iframe id="module-frame" title={`${mod.label} module`} src={mod.src} />
+            {/* `class`, not `className`: hono/jsx is not React and writes the
+                attribute verbatim, so `className` produced a literal
+                className="animate-pulse" — an attribute no browser styles, i.e.
+                the Chat tab's loader was the one tab that never pulsed. */}
+            <div id="home-loading" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+              {mod.badge.img
+                ? <img src={mod.badge.img} alt="" class="w-8 h-8 animate-pulse opacity-70" />
+                : <span class="animate-pulse"><TabSvg name={mod.badge.svg ?? ''} className="w-8 h-8" /></span>}
+            </div>
           </div>
         </div>
 

@@ -5,13 +5,15 @@ One app for the whole household — a family super app in the WeChat style.
 domain, behind **one login per person**: one username, one password, created
 by an admin.
 
-| Module | What it does | Where | Database |
+| Tab | What it does | Where | Database |
 | --- | --- | --- | --- |
-| 💰 **Sompitra** | Budget, Kiné, Debts & Credits, Sales & Stock | `/` | `sompitra-db` |
-| 📍 **W.A.Y** | Live GPS tracking, geofences, μlogger ingest | `/way/` | `way-db` |
-| 🍲 **Laoka** | Weekly dinner planner with a shared shopping list | `/laoka/` | `laoka` |
+| 🏠 **Home** | The household dashboard: this month at a glance, today's activity, Kiné, cash flow | `/` | `sompitra-db` |
+| 💰 **Sompitra** | Budget, Kiné, Debts & Credits, Sales & Stock | `/budget` | `sompitra-db` |
 | 💬 **Chat** | THE family chat **and the app's activity feed** (W.A.Y's FleetDO) | `/chat` | `way-db` |
-| 👥 **Home** | Central login + admin console (`/admin`) | `/login` | `home-db` |
+| 🍲 **Laoka** | Weekly dinner planner with a shared shopping list | `/laoka/` | `laoka` |
+| 📍 **W.A.Y** | Live GPS tracking, geofences, μlogger ingest | `/way/` | `way-db` |
+| ⚙️ **You** | Settings: your account, your two notification channels, the module panels | `/settings` | `home-db` |
+| 👥 **Accounts** | The one login: sign in (`/login`), first-run claim, admin console (`/admin`) | — | `home-db` |
 
 Each module keeps its own database and its own palette. Inside Home they run
 as **chromeless tabs under one shared chrome** — one header with the Home
@@ -36,6 +38,33 @@ Android (Chrome/Brave) it installs as a real app: a proper manifest, a
 spec-correct maskable icon and a service worker that caches static assets
 only — never a page or an API response, because this is a household app on
 possibly shared devices.
+
+## One app, one look
+
+Three things make the six tabs read as one product rather than three apps in a
+coat:
+
+* **One typeface.** Plus Jakarta Sans, loaded by every document including the
+  sign-in screen, with the system stack behind it as the offline fallback.
+  Before this, W.A.Y shipped Jakarta while Sompitra, Laoka and the chat shipped
+  Segoe UI — two typefaces, two tabs.
+* **One accent per screen, taken from the tab you tapped.** The screen's colour
+  (`--accent`) and its filled-surface variant (`--accent-ink`) come from the
+  same table the tab bar renders, so a Sompitra screen is teal inside and out:
+  the heading glyphs, the settings section, the money sub-nav's active pill and
+a 2px hairline under the header all follow it. Dark mode lifts the tint
+  (slate on the dark bar is otherwise 1.9:1, i.e. invisible).
+* **Brand glyphs, not decorative emoji.** Card headings wear an icon from the
+  app's own set, in the screen's accent. Emoji could never do that — they are
+  colour pictures the OS chooses, at a different size on every platform. Emoji
+  that encode data (the Kiné legend, category icons, per-person dots) stay.
+
+An embedded module (WAY, Laoka, Chat) runs inside a **framed stage** — inset,
+rounded, with a hairline ring — so it reads as a panel *of* Home instead of a
+separate app the header happens to sit on. Money keeps one meaning everywhere:
+**green in, red out, amber cash on hand, purple owed to us, orange we owe,
+teal net**, and every amount is tabular so columns line up. `npm run smoke`
+section 18 fails if any of this drifts.
 
 That one chat is also **where the app reports activity**, so the household
 does not have to watch each module to know what happened. WAY's arrivals and
@@ -145,8 +174,10 @@ behind, and says so (`map ~25s behind`), and the Trips summary keeps reading the
 database, so "driven this month" is unchanged.
 
 The trade the lag buys: motion you can actually watch. The cost: a just-arrived
-position reaches the map half a minute later. If that ever needs to be
-different, it is one number (`PLAYBACK_LAG_SECONDS`) — not a design change.
+position reaches the map half a minute later — so the pace is a **switch**, in
+**Settings → Map**: **Smooth** keeps the 25 s of buffer, **Live** draws the
+newest ping the moment it lands. It is per device, remembered on that phone, and
+changes nothing about what W.A.Y records, stores or notifies.
 
 ## One login, how it works
 

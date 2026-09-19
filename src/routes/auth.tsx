@@ -2,6 +2,7 @@
 import { Hono } from 'hono'
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie'
 import { PressFeedbackStyle, PressFeedbackScript } from '../views/feedback'
+import { BrandFontLinks } from '../views/app-chrome'
 import {
   HOME_COOKIE, SOMPITRA_COOKIE, WAY_COOKIE, LAOKA_COOKIE,
   HOME_SESSION_DAYS,
@@ -25,6 +26,9 @@ auth.get('/login', (c) => {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Login – Home</title>
+        {/* The sign-in screen is the app's first impression; it loads the same
+            brand typeface as everything behind it. */}
+        <BrandFontLinks />
         <script src="https://cdn.tailwindcss.com" />
         <script dangerouslySetInnerHTML={{ __html: `
           if (localStorage.getItem('theme') === 'dark' ||
@@ -164,6 +168,7 @@ auth.get('/bootstrap', async (c) => {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Claim Home</title>
+        <BrandFontLinks />
         <script src="https://cdn.tailwindcss.com" />
         <PressFeedbackStyle />
       </head>
@@ -278,6 +283,7 @@ auth.get('/change-password', (c) => {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Change Password – Home</title>
+        <BrandFontLinks />
         <script src="https://cdn.tailwindcss.com" />
         <PressFeedbackStyle />
       </head>

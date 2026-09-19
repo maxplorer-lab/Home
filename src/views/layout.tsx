@@ -2,7 +2,7 @@
 import type { FC } from 'hono/jsx'
 import { PressFeedbackStyle, PressFeedbackScript } from './feedback'
 // The one app chrome (header + tab bar) — shared with the module shells.
-import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, tabColorFor } from './app-chrome'
+import { CHROME_CSS, TAILWIND_CONFIG, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, BrandFontLinks, Icon, tabColorFor, tabInkFor } from './app-chrome'
 
 interface LayoutProps {
   title?: string
@@ -16,6 +16,11 @@ interface LayoutProps {
 
 export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullBleed, children }) => {
   const moneyTabs = SOMPITRA_SECTIONS
+  // Sompitra is its own tab now (Home is the dashboard), so its pages name the
+  // module in the header exactly as WAY, Laoka and Chat already do.
+  const badge = moneyTabs.includes(activeTab as string)
+    ? { svg: 'money', label: 'Sompitra' }
+    : undefined
 
   return (
     <html lang="en" class="h-full">
@@ -37,6 +42,8 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Home" />
+        {/* The one brand typeface — same family the module tabs load. */}
+        <BrandFontLinks />
         {/* Tailwind CDN – replaced by build step in production */}
         <script src="https://cdn.tailwindcss.com" />
         <script dangerouslySetInnerHTML={{ __html: `
@@ -54,10 +61,18 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
       </head>
       {/* min-h-full + flex-col: short pages still push the tab bar to the
           bottom; full-bleed children stretch between header and tab bar. */}
-      <body class="min-h-full flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
+      {/* `--accent` / `--accent-ink` are the module's own colours, read from the
+          same table as the tab bar (app-chrome.tsx). Everything on the page that
+          wants to look "Sompitra" (heading glyphs, the section sub-nav) asks
+          these two variables instead of hard-coding a hue, so the module you are
+          in always agrees with the tab you tapped. */}
+      <body
+        style={{ '--accent': tabColorFor(activeTab), '--accent-ink': tabInkFor(activeTab) }}
+        class="min-h-full flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors"
+      >
 
         {/* ── App Header — THE one chrome (app-chrome.tsx) ── */}
-        <HomeHeader displayName={user?.display_name ?? null} active={activeTab} />
+        <HomeHeader displayName={user?.display_name ?? null} active={activeTab} badge={badge} />
 
         {/* ── Sub-nav (desktop / tablet): Money section pages ── */}
         {user && moneyTabs.includes(activeTab as string) && (
@@ -69,7 +84,11 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
                 { href: '/debts',  label: 'Debts',  tab: 'debts'  },
                 { href: '/sales',  label: 'Sales',  tab: 'sales'  },
               ].map(item => (
-                <a href={item.href} class={`whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${activeTab === item.tab ? 'bg-green-600 text-white' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
+                <a
+                  href={item.href}
+                  style={activeTab === item.tab ? { backgroundColor: 'var(--accent-ink)' } : undefined}
+                  class={`whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${activeTab === item.tab ? 'text-white font-semibold shadow-sm' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                >
                   {item.label}
                 </a>
               ))}
@@ -111,17 +130,31 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
 
 // ─── Reusable UI Components ───────────────────────────────────
 
-export const Card: FC<{ title?: string; className?: string; noUppercase?: boolean; children?: any }> = ({ title, className = '', noUppercase, children }) => (
+// `icon` names a glyph from app-chrome's ICONS, drawn in the screen's accent
+// colour. It replaces the emoji that used to be glued onto the title text: an
+// emoji is a fixed colour picture, so "🔔 Today's Activity" looked identical on
+// the green Home tab and the teal Sompitra tab, and it changed shape and weight
+// on every OS. The label itself stays grey on purpose — tinting 11-12px text is
+// how a heading becomes unreadable in dark mode (the tab tints needed a
+// color-mix lift for exactly this reason).
+export const Card: FC<{ title?: string; icon?: string; className?: string; noUppercase?: boolean; children?: any }> = ({ title, icon, className = '', noUppercase, children }) => (
   <div class={`bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-4 sm:p-5 ${className}`}>
-    {title && <h3 class={`text-xs sm:text-sm font-semibold text-gray-500 dark:text-gray-400 ${noUppercase ? '' : 'uppercase'} tracking-wide mb-3`}>{title}</h3>}
+    {title && (
+      <h3 class={`flex items-center gap-2 mb-3 ${noUppercase
+        ? 'text-sm sm:text-[15px] font-bold text-gray-700 dark:text-gray-200'
+        : 'section-title text-gray-500 dark:text-gray-400'}`}>
+        {icon && <span class="accent-mark flex shrink-0"><Icon name={icon} className="w-[15px] h-[15px]" /></span>}
+        {title}
+      </h3>
+    )}
     {children}
   </div>
 )
 
 export const StatCard: FC<{ label: string; value: string; sub?: string; color?: string; children?: any }> = ({ label, value, sub, color = 'text-gray-900 dark:text-white' }) => (
   <div class="bg-white dark:bg-gray-800 rounded-xl sm:rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-3 sm:p-5 flex flex-col justify-center">
-    <p class="text-[10px] sm:text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">{label}</p>
-    <p class={`text-lg sm:text-2xl font-bold mt-0.5 sm:mt-1 truncate ${color}`}>{value}</p>
+    <p class="section-title text-gray-500 dark:text-gray-400">{label}</p>
+    <p class={`num text-lg sm:text-2xl font-bold mt-0.5 sm:mt-1 truncate ${color}`}>{value}</p>
     {sub && <p class="text-[10px] sm:text-xs text-gray-400 mt-1 truncate">{sub}</p>}
   </div>
 )
@@ -133,8 +166,8 @@ export const Badge: FC<{ text: string; color?: string; children?: any }> = ({ te
 // Tinted summary card (same look as the Budget summary cards).
 export const TintStat: FC<{ label: string; value: string; tone: string; sub?: string }> = ({ label, value, tone, sub }) => (
   <div class={`rounded-2xl p-3 text-center border ${tone}`}>
-    <p class="text-[10px] font-semibold uppercase tracking-wide opacity-80">{label}</p>
-    <p class="text-base sm:text-xl font-bold truncate">{value}</p>
+    <p class="text-[10px] font-semibold uppercase tracking-[.07em] opacity-80">{label}</p>
+    <p class="num text-base sm:text-xl font-bold truncate">{value}</p>
     {sub && <p class="text-[10px] opacity-70 mt-0.5 truncate">{sub}</p>}
   </div>
 )

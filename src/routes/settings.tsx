@@ -1,6 +1,9 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
+// The brand glyph set and the module colour table — the settings sections wear
+// the same colour and mark as the tab they belong to.
+import { HOME_TABS, Icon } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
 import { ntfyServer, pushNtfyTo } from '../lib/notify'
 import { reloadWayNotifications } from '../way/worker'
@@ -113,23 +116,44 @@ async function wayFollowing(env: Env): Promise<Map<string, Following>> {
 }
 
 /** A titled group of cards — the page is organised by WHO a setting belongs
-    to (you / the household / a module), not by which app it came from. */
-const Section = ({ title, subtitle, children }: { title: string; subtitle?: string; children?: any }) => (
+    to (you / the household / a module), not by which app it came from.
+
+    A module's own section can carry that module's colour and glyph, so the
+    "Sompitra" heading looks like the Sompitra tab even from inside You. The
+    colour arrives as `--accent`, the same variable the card headings read,
+    which is what keeps the dark-mode lift working here too. */
+const Section = ({ title, subtitle, icon, accent, children }: {
+  title: string; subtitle?: string; icon?: string; accent?: string; children?: any
+}) => (
   <section class="mb-7">
-    <h3 class="text-xs font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-1">{title}</h3>
+    <h3 class="flex items-center gap-2 section-title text-gray-400 dark:text-gray-500 mb-1"
+      style={accent ? { '--accent': accent } : undefined}>
+      {icon && <span class="accent-mark flex shrink-0"><Icon name={icon} className="w-[14px] h-[14px]" /></span>}
+      {title}
+    </h3>
     {subtitle && <p class="text-xs text-gray-400 dark:text-gray-500 mb-3">{subtitle}</p>}
     <div class={subtitle ? '' : 'mt-3'}>{children}</div>
   </section>
 )
 
+// The primary action wears the SCREEN's colour, not a hard-coded green: these
+// buttons live on the You tab, whose accent is slate, and a green button there
+// is the same "whose app is this?" tell as an off-brand heading. The filled
+// variant (--accent-ink) exists because white text on the tint is under 4.5:1.
 const Btn = ({ children, tone = 'plain' }: { children?: any; tone?: 'plain' | 'primary' | 'danger' }) => {
   const cls =
     tone === 'primary'
-      ? 'bg-green-600 hover:bg-green-700 text-white'
+      ? 'text-white hover:opacity-90'
       : tone === 'danger'
         ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40'
         : 'bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600'
-  return <button type="submit" class={`px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${cls}`}>{children}</button>
+  return (
+    <button
+      type="submit"
+      style={tone === 'primary' ? { backgroundColor: 'var(--accent-ink)' } : undefined}
+      class={`px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${cls}`}
+    >{children}</button>
+  )
 }
 
 /**
@@ -142,15 +166,16 @@ const Btn = ({ children, tone = 'plain' }: { children?: any; tone?: 'plain' | 'p
  * to test. A person cannot tell which of the two they are looking at anyway
  * unless the wording says so, which is what the title and blurb are for.
  */
-const ChannelCard = ({ channel, title, blurb, id, topic, extra }: {
+const ChannelCard = ({ channel, title, blurb, id, topic, icon, extra }: {
   channel: 'feed' | 'tracking'
   title: string
   blurb: string
   id: string
   topic: string | null
+  icon?: string
   extra?: any
 }) => (
-  <Card title={title} className="mb-4">
+  <Card title={title} icon={icon} className="mb-4">
     <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{blurb}</p>
     {topic ? (
       <div class="flex gap-2 mb-3">
@@ -250,7 +275,9 @@ settings.get('/', async (c) => {
   return c.html(
     <Layout title="Settings" user={user} activeTab="settings">
       <div class="max-w-lg mx-auto">
-        <h2 class="text-xl font-bold mb-1">⚙️ Settings</h2>
+        <h2 class="flex items-center gap-2 text-xl font-bold mb-1">
+          <span class="accent-mark flex"><Icon name="sliders" className="w-5 h-5" /></span>Settings
+        </h2>
         <p class="text-xs text-gray-400 dark:text-gray-500 mb-5">
           One place for the whole household — your account, your notifications and the module settings.
         </p>
@@ -268,7 +295,7 @@ settings.get('/', async (c) => {
 
         {/* ── YOU ───────────────────────────────────────────── */}
         <Section title="You" subtitle={`Signed in as ${user.display_name || user.username}.`}>
-          <Card title="🔐 Name & password" className="mb-4">
+          <Card title="Name & password" icon="lock" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Your password signs you into the whole app — Sompitra, W.A.Y and Laoka.
             </p>
@@ -288,7 +315,7 @@ settings.get('/', async (c) => {
               browser actually says the app is installable
               (`beforeinstallprompt`), so it can never promise something the
               platform will refuse. */}
-          <Card title="📲 Install on your phone" className="mb-4">
+          <Card title="Install on your phone" icon="phone" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Add Home to your home screen and it opens full screen with its own icon —
               no browser bars, and the shell still loads on a weak connection.
@@ -317,7 +344,8 @@ settings.get('/', async (c) => {
         >
           {ChannelCard({
             channel: 'feed',
-            title: '💬 Money & chat feed',
+            title: 'Money & chat feed',
+            icon: 'receipt',
             blurb: 'Sompitra pushes here: expenses, income and Kiné, in exactly the wording the chat shows — including the ones you recorded yourself. Nothing filters this one.',
             id: 'my-topic',
             topic: mine?.ntfy_topic ?? null,
@@ -325,7 +353,8 @@ settings.get('/', async (c) => {
 
           {ChannelCard({
             channel: 'tracking',
-            title: '📍 W.A.Y tracking',
+            title: 'W.A.Y tracking',
+            icon: 'pin',
             blurb: 'Arrivals, departures, movement and chat messages. W.A.Y alone decides which of those reach you: who you follow, and which activities, in its own notification grid. Nobody is notified about their own events, and quiet hours apply only here.',
             id: 'my-way-topic',
             topic: mine?.way_topic ?? null,
@@ -365,7 +394,7 @@ settings.get('/', async (c) => {
           />
 
           {isAdmin ? (
-            <Card title="🏠 Everyone in the household" className="mb-4">
+            <Card title="Everyone in the household" icon="people" className="mb-4">
               <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
                 {withFeed} of {channels.length} {channels.length === 1 ? 'person has' : 'people have'} a feed topic,{' '}
                 {withTracking} a tracking one.
@@ -412,7 +441,7 @@ settings.get('/', async (c) => {
           ) : null}
 
           {isAdmin ? (
-            <Card title="📡 ntfy server" className="mb-4">
+            <Card title="ntfy server" icon="server" className="mb-4">
               <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
                 Shared by every module and every person. Leave it empty and the deployment's own{' '}
                 <span class="font-mono">NTFY_URL</span> is used instead; when that is empty too, push
@@ -433,8 +462,9 @@ settings.get('/', async (c) => {
         </Section>
 
         {/* ── SOMPITRA ──────────────────────────────────────── */}
-        <Section title="Sompitra" subtitle="Budget, Kiné, debts, credits and stock.">
-          <Card title="📂 Categories, accounts & access" className="mb-4">
+        <Section title="Sompitra" subtitle="Budget, Kiné, debts, credits and stock."
+          icon="receipt" accent={HOME_TABS[1].color}>
+          <Card title="Categories, accounts & access" icon="folder" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Add, rename or remove budget categories and their groups, and manage income sources.
             </p>
@@ -448,7 +478,7 @@ settings.get('/', async (c) => {
             </div>
           </Card>
           {user.is_admin === 1 && (
-            <Card title="👥 People & Access" className="mb-4">
+            <Card title="People & Access" icon="people" className="mb-4">
               <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
                 Add people, set their password and role. One account signs them into every module.
               </p>
@@ -460,8 +490,9 @@ settings.get('/', async (c) => {
         </Section>
 
         {/* ── W.A.Y ─────────────────────────────────────────── */}
-        <Section title="W.A.Y" subtitle="Tracking, geofences, devices and the household chat.">
-          <Card title="📍 Tracking settings" className="mb-4">
+        <Section title="W.A.Y" subtitle="Tracking, geofences, devices and the household chat."
+          icon="pin" accent={HOME_TABS[4].color}>
+          <Card title="Tracking settings" icon="pin" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Profile, map defaults, device controls, geofences, users &amp; topics, invite codes and history live
               in the W.A.Y tab&apos;s Settings &mdash; the maps and device pickers they act on are right there.
@@ -473,8 +504,9 @@ settings.get('/', async (c) => {
         </Section>
 
         {/* ── LAOKA ─────────────────────────────────────────── */}
-        <Section title="Laoka" subtitle="The weekly dinner planner and shopping list.">
-          <Card title="🍲 Meal plan settings" className="mb-4">
+        <Section title="Laoka" subtitle="The weekly dinner planner and shopping list."
+          icon="bowl" accent={HOME_TABS[3].color}>
+          <Card title="Meal plan settings" icon="bowl" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Group icons, weeks and the shopping list are managed inside Laoka itself.
             </p>

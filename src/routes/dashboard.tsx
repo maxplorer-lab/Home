@@ -1,6 +1,9 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from 'hono'
 import { Layout, Card, KineClientStats, TintStat } from '../views/layout'
+// The module colours come from the SAME table the tab bar renders, so the
+// doorways below can never drift from the tabs they open.
+import { HOME_TABS, Icon } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
 import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedTone } from '../lib/utils'
 import { classifyTransaction } from '../lib/notify'
@@ -102,55 +105,80 @@ dashboard.get('/', async (c) => {
     green:  { border: 'border-green-500',  text: 'text-green-600 dark:text-green-400' },
   }
 
+  // The three modules that are not a money section, each wearing its own tab
+  // colour. Hard-coding hues here is what made this card the odd one out: Chat
+  // was sky blue on the dashboard and violet in the tab bar two centimetres
+  // below it, and WAY was indigo in one place and sky in the other. Reading
+  // HOME_TABS means the doorway and the tab are literally the same value.
+  const doorways = (['way', 'laoka', 'chat'] as const).map(key => {
+    const tab = HOME_TABS.find(t => t.tab === key)!
+    return {
+      href: tab.href,
+      color: tab.color,
+      label: tab.label,
+      // Each tab carries an image mark OR an inline glyph, never both.
+      img: 'img' in tab ? tab.img : undefined,
+      svg: 'svg' in tab ? tab.svg : undefined,
+      blurb: key === 'way' ? 'the family map' : key === 'laoka' ? 'meals for the week' : 'the family room',
+    }
+  })
+
   return c.html(
     <Layout title="Dashboard" user={user} activeTab="dashboard">
       {/* The rest of the super app — one tap each, same shell, same session.
           WAY and Laoka open as tabs of this app (chromeless embeds); Chat is
           the family room (WAY's own chat engine). */}
-      <Card title="Your other apps" noUppercase className="mb-4">
+      <Card title="Around the house" icon="house" className="mb-4">
         <div class="grid grid-cols-3 gap-2">
-          <a href="/way/" class="flex items-center gap-2.5 rounded-2xl bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800 px-3 py-3 transition-transform active:scale-95">
-            <img src="/way/icon-64.png" alt="" class="w-8 h-8 rounded-lg" />
-            <span class="min-w-0">
-              <span class="block text-sm font-semibold text-indigo-700 dark:text-indigo-300">WAY</span>
-              <span class="block text-[10px] text-gray-400 truncate">family map</span>
-            </span>
-          </a>
-          <a href="/laoka/" class="flex items-center gap-2.5 rounded-2xl bg-orange-50 dark:bg-orange-900/20 border border-orange-100 dark:border-orange-800 px-3 py-3 transition-transform active:scale-95">
-            <img src="/laoka/icon.svg" alt="" class="w-8 h-8 rounded-lg" />
-            <span class="min-w-0">
-              <span class="block text-sm font-semibold text-orange-700 dark:text-orange-300">Laoka</span>
-              <span class="block text-[10px] text-gray-400 truncate">meals</span>
-            </span>
-          </a>
-          <a href="/chat" class="flex items-center gap-2.5 rounded-2xl bg-sky-50 dark:bg-sky-900/20 border border-sky-100 dark:border-sky-800 px-3 py-3 transition-transform active:scale-95">
-            <svg viewBox="0 0 24 24" class="w-8 h-8 text-sky-500 dark:text-sky-400" fill="currentColor" aria-hidden="true">
-              <path d="M12 3C6.9 3 2.8 6.6 2.8 11c0 2.5 1.3 4.7 3.4 6.2-.2 1-.7 2-1.5 2.8 1.6-.1 3-.7 4.1-1.5 1 .3 2.1.4 3.2.4 5.1 0 9.2-3.6 9.2-8S17.1 3 12 3z" />
-            </svg>
-            <span class="min-w-0">
-              <span class="block text-sm font-semibold text-sky-700 dark:text-sky-300">Chat</span>
-              <span class="block text-[10px] text-gray-400 truncate">the family room</span>
-            </span>
-          </a>
+          {doorways.map(item => (
+            <a
+              href={item.href}
+              style={{
+                '--tab': item.color,
+                // A whisper of the module's own colour as the card's surface:
+                // 8% fill / 20% edge. Derived from the tab colour rather than
+                // hand-picked pastels, so the three cards read as one family
+                // with the tab bar instead of three different apps.
+                backgroundColor: item.color + '14',
+                borderColor: item.color + '33',
+              }}
+              class="tab-tint flex flex-col sm:flex-row items-center sm:items-center gap-1.5 sm:gap-2.5 rounded-2xl px-2 py-2.5 sm:px-3 sm:py-3 border transition-transform active:scale-95"
+            >
+              {item.img
+                ? <img src={item.img} alt="" class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg shrink-0" />
+                : <span class="shrink-0"><Icon name={item.svg ?? ''} className="w-7 h-7 sm:w-8 sm:h-8" /></span>}
+              <span class="min-w-0 text-center sm:text-left">
+                <span class="block text-[13px] sm:text-sm font-bold">{item.label}</span>
+                <span class="block text-[10px] text-gray-400 truncate">{item.blurb}</span>
+              </span>
+            </a>
+          ))}
         </div>
       </Card>
 
       {/* Static period header — Home has no prev/next (that lives under Budget) */}
-      <div class="flex items-center justify-center mb-4">
-        <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">📅 {month.label}</span>
+      <div class="flex items-center justify-center gap-1.5 mb-4 text-gray-500 dark:text-gray-400">
+        <Icon name="calendar" className="w-[15px] h-[15px]" />
+        <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">{month.label}</span>
       </div>
 
       <div class="grid grid-cols-2 gap-2 mb-4 sm:grid-cols-3">
         <TintStat label="Current" value={mga(currentCash)} tone={currentGradedTone(currentCash)} sub="cash on hand" />
         <TintStat label="Expenses" value={mga(totalExpenses)} tone="bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-100 dark:border-red-800" sub="this month" />
-        <TintStat label="Income" value={mga(totalIncome)} tone="bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border-blue-100 dark:border-blue-800" sub="this month" />
+        {/* Income is GREEN here, not blue: the transaction rows below print an
+            income as +green and the Budget page's Add Income button is green,
+            so a blue Income tile was the same fact in two colours on one screen.
+            The palette now means something: green = money in, red = money out,
+            amber = cash on hand, purple = owed to us, orange = we owe, teal =
+            net (Sompitra's own colour). */}
+        <TintStat label="Income" value={mga(totalIncome)} tone="bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-800" sub="this month" />
         <TintStat label="Uncollected Dues" value={mga(uncollectedDues)} tone="bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 border-purple-100 dark:border-purple-800" sub="Kiné + credits" />
         <TintStat label="Dues" value={mga(totalDebt)} tone="bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-100 dark:border-orange-800" />
-        <TintStat label="Net Worth" value={mga(netWorth)} tone={netWorth >= 0 ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-100 dark:border-red-800'} sub="cash + owed − dues" />
+        <TintStat label="Net Worth" value={mga(netWorth)} tone={netWorth >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400 border-teal-100 dark:border-teal-800' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-100 dark:border-red-800'} sub="cash + owed − dues" />
       </div>
 
       {notifs.length > 0 && (
-        <Card title="🔔 Today's Activity" noUppercase className="mb-4">
+        <Card title="Today's Activity" icon="bell" noUppercase className="mb-4">
           <div class="space-y-1">
             {notifs.map(n => (
               <a href={n.href} class={`block py-2 px-2.5 rounded-lg border-l-2 ${accents[n.accent].border} hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors`}>
@@ -162,9 +190,11 @@ dashboard.get('/', async (c) => {
         </Card>
       )}
 
-      <Card title="👐 Kiné Summary" className="mb-4">
+      <Card title="Kiné Summary" icon="pulse" className="mb-4">
         {/* Weekly totals (current SAT–FRI week) */}
-        <p class="text-[10px] text-gray-400 mb-2">📅 {weekLabel}</p>
+        <p class="flex items-center gap-1 text-[10px] text-gray-400 mb-2">
+          <Icon name="calendar" className="w-[13px] h-[13px]" />{weekLabel}
+        </p>
         <div class="grid grid-cols-2 gap-2 mb-4">
           <div class="rounded-xl bg-blue-50 dark:bg-blue-900/20 p-3 text-center">
             <p class="text-[10px] font-semibold uppercase text-blue-600 dark:text-blue-400">Sessions This Week</p>
@@ -198,7 +228,7 @@ dashboard.get('/', async (c) => {
         <p class="text-[10px] text-gray-400 mt-3 text-center">🟢 balanced · 🟡 prepaid (we owe sessions) · 🔴 owes sessions</p>
       </Card>
 
-      <Card title="💰 Cash Flow" className="mb-4">
+      <Card title="Cash Flow" icon="trend" className="mb-4">
         <div id="sankey-container" style="height:240px" class="w-full">
           <canvas id="sankeyCanvas" class="w-full h-full" />
         </div>
@@ -363,8 +393,16 @@ dashboard.get('/', async (c) => {
         `}} />
       </Card>
 
+      {/* `min-w-0` on both cards, and it is load-bearing: these are grid items,
+          and a grid item's automatic minimum size is its MIN-CONTENT width. A
+          transaction description is rendered with `truncate`, which means
+          `white-space: nowrap` — so one long description (a Laoka import reads
+          "Laoka shopping 2026-09-12 – 2026-09-18") makes its min-content ~415px
+          and the whole PAGE gains a horizontal scrollbar on a 422px phone,
+          even though the row above it already had min-w-0. The floor has to be
+          removed on the item that IS the grid item, not only inside it. */}
       <div class="grid md:grid-cols-2 gap-4">
-        <Card title="📋 Recent Transactions">
+        <Card title="Recent Transactions" icon="list" className="min-w-0">
           {recentTxns.results.length === 0 ? <p class="text-sm text-gray-400 text-center py-4">No transactions yet</p> : (
             <div class="space-y-3">
               {recentTxns.results.map(t => (
@@ -392,7 +430,7 @@ dashboard.get('/', async (c) => {
           </div>
         </Card>
 
-        <Card title="🤝 Debts & Credits">
+        <Card title="Debts & Credits" icon="swap" className="min-w-0">
           {debts.results.length === 0 ? <p class="text-sm text-gray-400 text-center py-4">No open debts</p> : (
             <div class="space-y-3">
               {debts.results.map(d => (

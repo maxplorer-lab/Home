@@ -131,6 +131,26 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     at 10px. So: never grey an inactive tab, never hardcode a colour in place
     of `--tab` (a literal cannot be lifted), and never dim the light mode (the
     brand hexes are already at their contrast ceiling on white).
+
+    The same list is the SCREEN's colour, not just the tab's: the layout and
+    the shells set `--accent` and `--accent-ink` on `<body>` from `HOME_TABS`,
+    and the heading glyphs (`.accent-mark`), the `/settings` section headings,
+    the money sub-nav's active pill and the 2px hairline under the header all
+    read those two variables. So: never hardcode a hue in a heading, a pill or
+    a primary button — use `var(--accent)` for a mark and `var(--accent-ink)`
+    for anything filled with white text (white on the tint is only 3.9:1).
+    Card headings take an `icon` from `ICONS`, never an emoji: an emoji is a
+    colour picture the OS picks, so it cannot take the accent and it renders at
+    a different size on every platform (emoji that ENCODE data — the Kiné
+    legend, category icons, user dots — stay). Card headings, the module stage
+    (`#home-module-stage`, which insets and rounds an embedded module) and the
+    one typeface (`BrandFontLinks`, loaded by EVERY document including the auth
+    screens) are all asserted by smoke section 18; a new page that skips
+    `Layout`/`ModuleShell` must load the font itself.
+    And a grid item's automatic minimum size is its min-content width: a card
+    holding a `truncate` (nowrap) description needs `min-w-0` on the element
+    that IS the grid item, or one long string gives the whole page a horizontal
+    scrollbar on a phone (smoke section 18 fails on it).
 15. **TWO ntfy channels per PERSON, both owned by home-db** (migrations-home
     0002 + 0004) — not one topic per app, and no longer one topic doing two
     jobs:
@@ -283,9 +303,15 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     the state machine, `pending_sync` → `gps_pings`/`messages`, the 21:00 cron
     and the Flush button. `devicePings` stays the COMPLETE ordered record the
     Trips card sums — the playback buffer is additive display state — and the
-    HUD stays live (`map ~25s behind` is how the lag is disclosed). `npm run
-    smoke` section 15 asserts the served page still carries every frozen value
-    and that the ping path no longer redraws.
+    HUD stays live (`map ~25s behind` is how the lag is disclosed, and it is the
+    Smooth pace's badge only). The lag IS the pace: `playbackLagSeconds()` is
+    the ONE number the cursor reads (25 s for Smooth, 0 for Live), and
+    `setMapPace` / `applyMapPace` may only repaint the pills and call
+    `redrawAllTracks()` — no fetch, no server setting, `localStorage` per
+    device. The pills live in Settings → Map ONLY: smoke asserts nothing named
+    `pace-switch` is in the map chrome. `npm run smoke` section 15 asserts the served page still carries
+    every frozen value, that the ping path no longer redraws, and that the pace
+    switch stays display-only.
 
 ## Smoke test (local, after any identity change)
 
@@ -345,6 +371,13 @@ have their own separate repositories and their own history.
 | The bottom bar shows on a desktop window | the `md:hidden` (bar) / `hidden md:flex` (header nav) split in `app-chrome.tsx` |
 | Chrome/Brave on Android never offers "Install app" | `public/manifest.webmanifest` + the icons it points at: each file must exist **at** the advertised size, and the maskable must not be a byte-copy of `icon-512.png` (Android then clips the mark). `npm run smoke` section 16 checks the served bytes |
 | Module still shows its own header/nav inside a tab | the module's own `window.self !== window.top` embed script — selectors drift when its UI changes |
+| A page's headings are a different colour than the tab you tapped | `--accent` is not set on that page's `<body>`, or a heading hardcodes a hue. Both must come from `HOME_TABS` (smoke section 18 compares `--accent` with the active tab's `--tab`) |
+| A page renders in a different typeface than the rest of the app | it does not load `<BrandFontLinks />` — the shell, Laoka's document, the chat room and the auth screens each need it (smoke section 18 reads the served bytes) |
+| A card heading has no icon, or a blank gap | the `icon` name is not in `ICONS` — `Icon` falls back to an empty span, so the failure is silent. Heading labels are grey on purpose; only the glyph wears the accent |
+| The whole page scrolls sideways on a phone (one screen only) | a grid item holding `truncate`/nowrap text needs `min-w-0` — its automatic minimum is min-content, so one long description (a Laoka import's title) widens the page. Smoke section 18 names the card |
+| White text on a coloured button is hard to read | the button uses the module's tint instead of `--accent-ink` (white on `#0d9488` is 3.9:1; the ink variant is 5.3:1) |
+| `npm run dev` fails with a syntax error inside `views/app-chrome.tsx` | a **backtick in `CHROME_CSS`** — it is a template literal, so a stray one ends the string early and the error surfaces further down the file (a failed build shows as *hanging* page loads, not an error page) |
+| One tab's module no longer fills the window | the module stage: `#home-module-stage` (the inset) and `#home-module-frame` (the rounded, ringed panel) in `views/shell.tsx`. A module must stay inside the frame — the frame is what makes it read as a panel of Home |
 | Chat bubbles never render as "mine" | `currentUser` failed to load — check the `/way/api/users/me` response shape (it is NOT enveloped) |
 | A chat/`/ws` frame stops working after a WAY change | the socket carries pings AND chat; WAY ignores the chat frames, the chat page handles them — see both `ws.onmessage` handlers |
 | Only some tabs render the same icons | `HomeTabBar` / `TabIcon` in `app-chrome.tsx`; assets under `public/` |
@@ -364,10 +397,11 @@ have their own separate repositories and their own history.
 | `/way/api/chat/history` is always empty, map history has no tracks | the DO **flush** is failing — almost always the missing `devices` FK parent (rule 19). `POST /way/api/flush` returns the real error |
 | Chat history looks frozen at some past day | `/api/chat/history` reads only what the flush has already written to `way-db`; the last 24h live in the DO and arrive over `/ws` |
 | Nothing seems to happen when editing a module UI | you are editing a file the Worker does not serve — see below |
-| The WAY marker is 25 s behind the device, or the map keeps re-centring | **not a bug** — the viewer draws on a delayed playback cursor and a dead-zone camera on purpose. The HUD stays live and shows `map ~25s behind`. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
+| The WAY marker is 25 s behind the device, or the map keeps re-centring | **not a bug** — the viewer draws on a delayed playback cursor and a dead-zone camera on purpose. The HUD stays live and shows `map ~25s behind`. If you need the newest ping now, switch the pace to **Live** (Settings → Map). See `project.md` → "The W.A.Y map is drawn on a playback clock" |
 | A WAY track vanishes, or a trail stops growing | `resetTrail()` is the only thing that clears one (snapshot / track-eye / late `track` point). Check `trailFor(devId).drawnIdx` vs `devicePings[devId].length` in the console, and remember a hidden track (👁) still moves its marker |
 | The WAY camera stops following for no reason | `map.on('zoomstart')` clears the follow: our own `flyTo`s must be wrapped in `ignoreMapEvents()` (a deadline, NOT a flag — a `flyTo` fires `zoomstart` twice) |
-| A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker |
+| A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker, or switch the pace to **Live** |
+| The pace switch is there but the marker does not look any fresher | check `localStorage.getItem('map_pace')` and `playbackLagSeconds()` in the console; a device whose newest ping is in the FUTURE (clock skew) keeps `playbackState` true either way, and the pill only repaints through `applyMapPace()` |
 
 ### What is actually served
 

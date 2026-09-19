@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
 import { mga, formatDate, generateId, currentWeekBounds, userAccentColor } from '../lib/utils'
+// The brand glyph set (see app-chrome.tsx) — money screens use the money icons.
+import { Icon } from '../views/app-chrome'
 import { notifyTransaction } from '../lib/notify'
 import type { Env, User, Transaction, CategoryGroup, Category, IncomeAccount } from '../db/schema'
 
@@ -178,49 +180,53 @@ budget.get('/', async (c) => {
 
       {/* Sub-nav */}
       <div class="flex gap-1 mb-4 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
-        <a href="/budget" class="flex-1 text-center py-2 rounded-lg text-sm font-semibold bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white">📋 Overview</a>
-        <a href="/budget/reports" class="flex-1 text-center py-2 rounded-lg text-sm font-medium text-gray-500 dark:text-gray-400">📈 Reports</a>
-        <a href="/budget/transactions" class="flex-1 text-center py-2 rounded-lg text-sm font-medium text-gray-500 dark:text-gray-400">📄 History</a>
+        <a href="/budget" class="flex flex-1 items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white"><Icon name="list" className="w-[15px] h-[15px]" />Overview</a>
+        <a href="/budget/reports" class="flex flex-1 items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium text-gray-500 dark:text-gray-400"><Icon name="trend" className="w-[15px] h-[15px]" />Reports</a>
+        <a href="/budget/transactions" class="flex flex-1 items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium text-gray-500 dark:text-gray-400"><Icon name="clock" className="w-[15px] h-[15px]" />History</a>
       </div>
 
       {/* Primary actions (most used) */}
       <div class="flex gap-2 mb-4">
         <a href="/budget/add-expense" class="flex-1 text-center py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold shadow-sm">+ Add Expense</a>
         <a href="/budget/add-income" class="flex-1 text-center py-3 rounded-xl bg-green-600 hover:bg-green-700 text-white text-sm font-semibold shadow-sm">+ Add Income</a>
-        <a href={`/budget/export?w=${weekOffset}`} class="px-4 py-3 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 text-sm font-semibold">⬇ CSV</a>
+        <a href={`/budget/export?w=${weekOffset}`} class="flex items-center gap-1.5 px-4 py-3 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 text-sm font-semibold"><Icon name="arrow-in" className="w-[15px] h-[15px]" />CSV</a>
       </div>
 
       {/* Week navigator */}
       <div class="flex items-center justify-between mb-4">
-        <a href={`/budget?w=${weekOffset - 1}`} class="px-3 py-1.5 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm hover:bg-gray-50">◀ Prev</a>
-        <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">📅 {weekLabel}</span>
-        <a href={`/budget?w=${weekOffset + 1}`} class="px-3 py-1.5 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm hover:bg-gray-50">Next ▶</a>
+        <a href={`/budget?w=${weekOffset - 1}`} class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm hover:bg-gray-50"><Icon name="chev-left" className="w-[13px] h-[13px]" />Prev</a>
+        <span class="flex items-center gap-1.5 text-sm font-semibold text-gray-600 dark:text-gray-300">
+          <Icon name="calendar" className="w-[15px] h-[15px] text-gray-400" />{weekLabel}
+        </span>
+        <a href={`/budget?w=${weekOffset + 1}`} class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm hover:bg-gray-50">Next<Icon name="chev-right" className="w-[13px] h-[13px]" /></a>
       </div>
 
-      {/* Summary */}
+      {/* Summary — the same palette as the dashboard's tiles, so the same
+          three numbers do not change colour between the two screens:
+          green = money in, red = money out, teal = net (Sompitra's own hue). */}
       <div class="grid grid-cols-3 gap-2 mb-4">
-        <div class="bg-blue-50 dark:bg-blue-900/20 rounded-2xl p-3 text-center border border-blue-100 dark:border-blue-800">
-          <p class="text-[10px] text-blue-700 dark:text-blue-400 font-semibold uppercase tracking-wide">Income</p>
-          <p class="text-base sm:text-xl font-bold text-blue-700 dark:text-blue-400 truncate">{mga(totalIncome)}</p>
+        <div class="bg-green-50 dark:bg-green-900/20 rounded-2xl p-3 text-center border border-green-100 dark:border-green-800">
+          <p class="text-[10px] text-green-700 dark:text-green-400 font-semibold uppercase tracking-[.07em]">Income</p>
+          <p class="num text-base sm:text-xl font-bold text-green-700 dark:text-green-400 truncate">{mga(totalIncome)}</p>
         </div>
         <div class="bg-red-50 dark:bg-red-900/20 rounded-2xl p-3 text-center border border-red-100 dark:border-red-800">
-          <p class="text-[10px] text-red-700 dark:text-red-400 font-semibold uppercase tracking-wide">Expenses</p>
-          <p class="text-base sm:text-xl font-bold text-red-700 dark:text-red-400 truncate">{mga(totalExpenses)}</p>
+          <p class="text-[10px] text-red-700 dark:text-red-400 font-semibold uppercase tracking-[.07em]">Expenses</p>
+          <p class="num text-base sm:text-xl font-bold text-red-700 dark:text-red-400 truncate">{mga(totalExpenses)}</p>
         </div>
-        <div class={`rounded-2xl p-3 text-center border ${net >= 0 ? 'bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
-          <p class={`text-[10px] font-semibold uppercase tracking-wide ${net >= 0 ? 'text-green-700 dark:text-green-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
-          <p class={`text-base sm:text-xl font-bold truncate ${net >= 0 ? 'text-green-700 dark:text-green-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(net)}</p>
+        <div class={`rounded-2xl p-3 text-center border ${net >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 border-teal-100 dark:border-teal-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
+          <p class={`text-[10px] font-semibold uppercase tracking-[.07em] ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
+          <p class={`num text-base sm:text-xl font-bold truncate ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(net)}</p>
         </div>
       </div>
 
       {/* Charts */}
       <div class="grid md:grid-cols-2 gap-4 mb-5">
-        <Card title="📊 Expenses by Category">
+        <Card title="Expenses by Category" icon="donut">
           <div class="w-full max-w-[240px] mx-auto">
             <canvas id="expenseChart"></canvas>
           </div>
         </Card>
-        <Card title="💵 Income by Source">
+        <Card title="Income by Source" icon="arrow-in">
           <div class="w-full max-w-[240px] mx-auto">
             <canvas id="incomeChart"></canvas>
           </div>
@@ -253,7 +259,7 @@ budget.get('/', async (c) => {
       `}} />
 
       {/* Category spending progress */}
-      <Card title="🎯 Budget Progress" className="mb-5">
+      <Card title="Budget Progress" icon="target" className="mb-5">
         <div class="space-y-3">
           {spendingByGroup.results.map(g => {
             const pct = g.budget > 0 ? Math.min(100, Math.round((g.spent / g.budget) * 100)) : 0
@@ -276,7 +282,7 @@ budget.get('/', async (c) => {
       </Card>
 
       {/* Transaction list */}
-      <Card title="📋 Transactions">
+      <Card title="Transactions" icon="list">
         <p class="text-[10px] text-gray-400 mb-3 -mt-1">
           <span class="inline-block w-2 h-2 rounded-full bg-orange-500 mr-1 align-middle" /> Niri
           <span class="inline-block w-2 h-2 rounded-full bg-blue-500 ml-3 mr-1 align-middle" /> MaxX
@@ -1526,7 +1532,7 @@ budget.get('/reports', async (c) => {
       </div>
 
       {/* Trend chart */}
-      <Card title="📈 Income vs Expenses" className="mb-4">
+      <Card title="Income vs Expenses" icon="trend" className="mb-4">
         <div class="w-full">
           <canvas id="trendChart"></canvas>
         </div>
@@ -1535,13 +1541,13 @@ budget.get('/reports', async (c) => {
 
       {/* Category / source doughnuts */}
       <div class="grid md:grid-cols-2 gap-4 mb-4">
-        <Card title="📊 Expenses by Category">
+        <Card title="Expenses by Category" icon="donut">
           <div class="w-full max-w-[240px] mx-auto">
             <canvas id="expenseChart"></canvas>
           </div>
           {expensesByGroup.results.length === 0 && <p class="text-sm text-gray-400 text-center py-4">No expenses</p>}
         </Card>
-        <Card title="💵 Income by Source">
+        <Card title="Income by Source" icon="arrow-in">
           <div class="w-full max-w-[240px] mx-auto">
             <canvas id="incomeChart"></canvas>
           </div>
@@ -1550,7 +1556,7 @@ budget.get('/reports', async (c) => {
       </div>
 
       {/* Per user */}
-      <Card title="👥 By User" className="mb-4">
+      <Card title="By User" icon="people" className="mb-4">
         <div class="grid grid-cols-2 gap-2">
           {perUser.results.map(u => (
             <div class="rounded-xl border border-gray-100 dark:border-gray-700 p-3">
@@ -1571,7 +1577,7 @@ budget.get('/reports', async (c) => {
 
       {/* Expenses table */}
       {expensesByGroup.results.length > 0 && (
-        <Card title="🧾 Expense Breakdown">
+        <Card title="Expense Breakdown" icon="receipt">
           <div class="divide-y divide-gray-100 dark:divide-gray-700">
             {expensesByGroup.results.map(g => {
               const pct = totalExp > 0 ? Math.round((g.total / totalExp) * 100) : 0
@@ -1590,7 +1596,7 @@ budget.get('/reports', async (c) => {
       )}
 
       {/* Comparison */}
-      <Card title="🔁 Comparison" className="mt-4">
+      <Card title="Comparison" icon="swap" className="mt-4">
         {/* Mode toggle */}
         <div class="flex gap-1 mb-3 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
           <a href={`/budget/reports?${reportBase}&cm=week`}

@@ -80,6 +80,14 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 .zone-office { font-size: 13px; font-weight: 800; color: #38bdf8; line-height: 1.2; }
 .hud-footer { display: flex; align-items: center; justify-content: space-between; font-size: 9px; color: #9ca3af; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.08); }
 
+/* ---- Map pace: Smooth (trails live on purpose) <-> Live. Lives in
+   Settings -> Map only: a switch floating over the map is one more thing
+   between the eye and the device, and the HUD's `map ~25s behind` badge is
+   what the map itself needs to say. ---- */
+.pace-pill { flex: 1; background: transparent; border: none; color: #9ca3af; font-family: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.2px; padding: 5px 4px; border-radius: 9999px; cursor: pointer; white-space: nowrap; }
+.pace-pill.active { background: #38bdf8; color: #0a0a0c; }
+.pace-pill[data-pace="live"].active { background: #34d399; color: #0a0a0c; }
+
 /* ---- Together / peer pill ---- */
 #peer-pill {
     position: absolute; top: 12px; right: 12px; z-index: 1002;
@@ -425,6 +433,10 @@ const CONFIG = {
     // pings instead of snapped to each arrival. Nothing else reads this
     // clock: devicePings stays the complete record, the HUD and the Trips
     // totals stay live (see the playback loop further down).
+    // The lag is also the map's PACE, and the pace is the user's: 'smooth'
+    // (this number) is the default because it is what a commute looks like,
+    // and 'live' draws the newest ping the moment it lands -- see setMapPace.
+    // Both are display-only; nothing about pings, storage or the record moves.
     PLAYBACK_LAG_SECONDS: 25,
     // A trail break (TRACK_GAP_SECONDS) is not crawled across -- there are no
     // points there, so the marker holds at the last one and eases the final
@@ -432,6 +444,12 @@ const CONFIG = {
     PLAYBACK_GLIDE_MS: 1400,
     // Only used to glide a parked device's metre-scale shuffles.
     MARKER_EASE_PER_SECOND: 2.0,
+    // The same ease, run faster on the live clock: with no lag to hide behind,
+    // the marker has to BE where the newest ping says within about a second or
+    // "live" is a lie. 3.0 settles in ~1s -- still a glide, not a twitch -- and
+    // unlike the lag it costs no accuracy, so a parked device's jitter stops
+    // moving the marker the moment it arrives either way.
+    MARKER_EASE_PER_SECOND_LIVE: 3.0,
     // The live tail is redrawn only once the cursor has moved this far: a
     // walking run's polyline grows for the whole walk, and rebuilding it every
     // frame buys motion that cannot be seen.
@@ -451,7 +469,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-17.1-superapp';
+const WAY_BUILD = '2026-09-19.1-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -506,6 +524,11 @@ let markerPositions = {};    // devId -> where its marker actually is (playback 
 let trailState = {};         // devId -> append-only trail drawing state
 let playbackState = {};      // devId -> is the map drawing it behind live?
 let followCam = { lastZoomFix: 0, glideUntil: 0 };
+// 'smooth' (default) draws from the delayed cursor; 'live' draws the newest
+// ping now. Persisted, because it is a temperament rather than a one-off: the
+// person who wants to find someone is not the same as the one watching a
+// commute, and neither should have to re-pick on every reload.
+let mapPace = localStorage.getItem('map_pace') === 'live' ? 'live' : 'smooth';
 let playbackRunning = false;
 let playbackLastFrame = 0;
 let geofenceCircleLayers = [];
@@ -911,7 +934,12 @@ function drawTail(devId, pos) {
 
 // ── The playback cursor (visual clock) ───────────────────────────
 
-function playbackClock() { return Date.now() - CONFIG.PLAYBACK_LAG_SECONDS * 1000; }
+/** How far behind real time the cursor draws. This one number is the whole
+ * difference between the two paces: PLAYBACK_LAG_SECONDS for the fluid default,
+ * 0 for "the newest ping, as soon as it lands" (setMapPace). */
+function playbackLagSeconds() { return mapPace === 'live' ? 0 : CONFIG.PLAYBACK_LAG_SECONDS; }
+
+function playbackClock() { return Date.now() - playbackLagSeconds() * 1000; }
 
 /** Index of the last point at or before `clock`; -1 when every point is newer.
  * Binary search, because late `track` points are re-sorted INTO this list, so
@@ -1005,10 +1033,12 @@ function placeTip(devId, lat, lng, cls) {
 }
 
 /** Frame-rate independent exponential ease: a slow phone lands in the same
- * place at the same time as a fast one. */
+ * place at the same time as a fast one. The rate is the pace's: on the live
+ * clock the marker is chasing a position nobody has delayed for it. */
 function easeNumber(cur, target, dtSec) {
     if (cur === null || cur === undefined) return target;
-    const k = 1 - Math.exp(-CONFIG.MARKER_EASE_PER_SECOND * dtSec);
+    const rate = mapPace === 'live' ? CONFIG.MARKER_EASE_PER_SECOND_LIVE : CONFIG.MARKER_EASE_PER_SECOND;
+    const k = 1 - Math.exp(-rate * dtSec);
     return cur + (target - cur) * k;
 }
 
@@ -1066,12 +1096,45 @@ function updatePlaybackBadge() {
     const el = document.getElementById('hud-playback');
     if (!el) return;
     const devId = followDeviceId || selectedDevice;
-    const on = !!(devId && playbackState[devId]);
+    // Live pace shows nothing here: the map is not behind anything, and a
+    // badge reading "~0s behind" would look like a bug rather than a setting.
+    const on = mapPace !== 'live' && !!(devId && playbackState[devId]);
     const text = on ? ('map ~' + CONFIG.PLAYBACK_LAG_SECONDS + 's behind') : '';
     if (el.__txt === text) return;
     el.__txt = text;
     el.textContent = text;
     el.style.display = text ? 'inline-block' : 'none';
+}
+
+// ── The map pace (VISUAL ONLY) ───────────────────────────────────
+// Smooth is the default and the reason the motion reads as motion: 25s of
+// buffer means a ping is always already in hand, so the marker is interpolated
+// rather than snapped. That same 25s is wrong the moment the question changes
+// from "how did the trip look" to "where is he right now", so the pace is a
+// switch the user flips (Settings -> Map) -- and flipping it changes ONLY when
+// already-decided state reaches the screen. It is not a setting on the server,
+// nothing is re-fetched, and no ping is handled any differently. Deliberately
+// NOT a control floating over the map: the HUD's `map ~25s behind` badge is the
+// one thing the map itself has to say about the pace, and it disappears on
+// Live because a live map is not behind anything.
+
+function setMapPace(pace) {
+    mapPace = (pace === 'live') ? 'live' : 'smooth';
+    localStorage.setItem('map_pace', mapPace);
+    applyMapPace();
+}
+
+/** Paint every pace control (the Settings -> Map pills), then let the trails be
+ * redrawn from scratch: the cursor just moved 25 seconds, so what is already drawn is either too much
+ * (switching to smooth) or too little (switching to live). resetTrail is the
+ * one correct answer for both -- the same path a fresh snapshot takes -- and
+ * the next frame draws exactly what the new clock has reached. */
+function applyMapPace() {
+    document.querySelectorAll('.pace-pill').forEach(function(p) {
+        p.classList.toggle('active', p.getAttribute('data-pace') === mapPace);
+    });
+    redrawAllTracks();
+    updatePlaybackBadge();
 }
 
 function renderPlaybackFrame(dtSec) {
@@ -1496,6 +1559,11 @@ function renderSettingsMenu() {
         return '<option value="' + escapeHtml(f.name) + '"' + (userPrefs.homeFence === f.name ? ' selected' : '') + '>' + escapeHtml(f.displayName || f.name) + '</option>';
     }).join('');
     parts.push(settingsSection('map', '🗺️ Map',
+        '<div class="settings-row"><span>Map pace</span><div class="toggle-pill-group">' +
+            '<button class="pace-pill' + (mapPace === 'smooth' ? ' active' : '') + '" data-pace="smooth" onclick="setMapPace(\'smooth\')">Smooth</button>' +
+            '<button class="pace-pill' + (mapPace === 'live' ? ' active' : '') + '" data-pace="live" onclick="setMapPace(\'live\')">Live</button>' +
+        '</div></div>' +
+        '<div class="settings-hint">Smooth trails live by ' + CONFIG.PLAYBACK_LAG_SECONDS + 's so a long trip glides. Live draws the newest ping now \u2014 for finding someone, not for watching a commute. Per device, not per account.</div>' +
         '<div class="settings-row"><span>Follow zoom (8-19)</span><input id="set-follow-zoom" type="number" min="8" max="19" value="' + userPrefs.followZoom + '" style="width:60px;"></div>' +
         '<div class="settings-row"><span>Home view</span><select id="set-home-fence" class="date-input">' + fenceOptions + '</select></div>' +
         '<button class="export-btn" onclick="savePrefs()">Save map settings</button>'
@@ -2436,6 +2504,7 @@ async function boot() {
     applyHomeView();
     scheduleMidnightReset();
     startPlaybackLoop();
+    applyMapPace();   // paint the pace pills before the first frame
 
 }
 
