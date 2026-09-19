@@ -59,6 +59,10 @@ interface LiveDeviceStatus extends PingResult {
   latitude: number;
   longitude: number;
   speed: number | null; // raw instantaneous speed (km/h) -- distinct from PingResult.speedAvg
+  // Device-reported GPS accuracy (m). Informational only -- no classification,
+  // storage or notify decision reads it. Carried live because the dashboard's
+  // HUD health slot falls back to it (µlogger never reports a battery level).
+  accuracy: number | null;
 }
 
 /** A ping held back during the exit guard, awaiting the confirmed exit. */
@@ -676,6 +680,7 @@ export class FleetDO extends DurableObject<Env> {
       latitude: ping.latitude,
       longitude: ping.longitude,
       speed: ping.vel ?? null,
+      accuracy,
     };
     this.saveDeviceState(ping.deviceId, {
       motion: newMotion,
@@ -714,6 +719,7 @@ export class FleetDO extends DurableObject<Env> {
       latitude: ping.latitude,
       longitude: ping.longitude,
       speed: ping.vel ?? null,
+      accuracy,
       // The frontend must move the live dot but NOT add this to the track --
       // during the guard the point is held in exitBuffer and drawn later.
       guarding: newMotion.geoState === "EXITING",
@@ -753,6 +759,7 @@ export class FleetDO extends DurableObject<Env> {
         distance: p.distance,
         isStationary: false,
         legId: p.legId,
+        accuracy: p.accuracy,
       });
     }
   }
@@ -795,6 +802,7 @@ export class FleetDO extends DurableObject<Env> {
       speedAvg: result.speedAvg,
       distance: 0,
       isStationary: false,
+      accuracy,
     });
   }
 

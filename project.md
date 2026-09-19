@@ -555,11 +555,33 @@ points there, so the marker waits and eases the last stretch.
   `redrawAllTracks()`: the cursor just moved 25 s, so what is already drawn is
   either too much (to Smooth) or too little (to Live), and `resetTrail()` is the
   one correct answer for both.
-* **The HUD stays live.** `latestPing` (speed, cadence, battery, today's card)
+* **The HUD stays live.** `latestPing` (speed, cadence, accuracy, today's card)
   is still the newest ping; only the *drawing* is delayed, and the header says
   so (`map ~25s behind`) so a lagging map can never read as a dead device. That
   badge is Smooth-only: a live map is not behind anything, and `~0s behind`
   would look like a bug rather than a setting.
+* **The HUD's footer reads what the tracker actually sends.** The left slot is
+  battery when a tracker reports one; μlogger does not (96 of 12,077 pings ever
+  carried a level, all on the old app's first day — and the live push never
+  carried the field either), so it shows **GPS accuracy**: `±1.6 m`, present on
+  every ping, with a title saying why, and `—` when a device's stored status
+  predates the DO sending it (one ping fixes that). `accuracy` is informational
+  only — no classification, storage, notify or trail decision reads it. The
+  right slot is the ping's age, **clamped at 0**: a phone a second ahead of the
+  viewer used to print `-1s ago`, and an age can never be negative.
+* **The badge's address column is a cache, not a callback side effect.**
+  Nominatim is asked at most once per 20 s per device, and only when it moved
+  >150 m or the text is >5 min old (never while parked where it is already
+  known, never inside a fence — the fence is the answer). The resolved text is
+  stored per device (`addressCache`, persisted to `localStorage['way_addresses']`)
+  and re-applied on every render, because `renderBadges()` rebuilds each badge on
+  every ping — text written only from the fetch callback was wiped seconds later,
+  which is exactly what made the column look broken. The three lines are the
+  street (with its house number when OSM has one), the suburb, and the first
+  geographic division, each taking the next **distinct** value so a place OSM
+  has no street name for cannot print the same word twice. Cached text more than
+  400 m from the device is hidden rather than shown: a stale address looks
+  authoritative.
 * **The Trips summary is a different data path on purpose.** Monthly
 driven/walked totals come from `GET /way/api/history` (D1) and are summed
   through yesterday; today's card is computed from the **complete**

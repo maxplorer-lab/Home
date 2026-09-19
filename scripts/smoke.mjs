@@ -2,8 +2,10 @@
 // ─── Home smoke test ─────────────────────────────────────────────
 // End-to-end local checks against a RUNNING wrangler dev server.
 // No test framework, no dependencies — plain Node 18+ (fetch/getSetCookie,
-// plus node:fs to read ONE repo file: CUTOVER.md, whose post-deploy step names
-// a value the Durable Object has to report — see the build-marker check).
+// plus node:fs to read repo sources: CUTOVER.md, whose post-deploy step names
+// a value the Durable Object has to report (section 12), and the WAY Durable
+// Object, whose live push must carry the accuracy the HUD falls back to
+// (section 9b)).
 //
 //   npm run dev                 # in one terminal (or the detached recipe)
 //   npm run smoke               # in another
@@ -210,6 +212,52 @@ log('\n9. WAY basemap stays where the user put it')
   const way = await body(await req('/way/index.html'))
   check('no auto-revert timer in the served WAY document', !/scheduleTileRevert|tileRevertTimer/.test(way), 'an auto-revert to lite is back')
   check('both manual basemaps still offered', way.includes("setLayer('lite')") && way.includes("setLayer('osm')"), 'LITE / OSM buttons missing')
+}
+
+// ─── 9b. the HUD reads what the tracker actually sends ───────────
+log('\n9b. WAY HUD says only what it knows')
+// Three readouts on the same card were misleading in three different ways:
+// a battery slot that can never fill (μlogger sends no level AND the live push
+// never carried the field -> permanent "n/a"), an age that printed "-1s ago"
+// whenever a phone's clock ran a second ahead, and an address that vanished on
+// the next ping because renderBadges() rebuilds the badge it was written into.
+{
+  const way = await body(await req('/way/index.html'))
+  check('no permanent n/a readout in the served WAY document',
+    !/[:=]\s*'n\/a'/.test(way) && !way.includes('>n/a<'),
+    'the dead battery placeholder is back in the HUD')
+  check('the HUD health slot falls back to GPS accuracy',
+    way.includes('id="hud-meta"') && way.includes('function accuracyLabel') && /accuracyLabel\(p\.accuracy\)/.test(way),
+    'the accuracy fallback is gone, so the slot can only ever say n/a again')
+  check('the client maps accuracy off the wire',
+    /accuracy: \(raw\.accuracy !== undefined/.test(way),
+    'toPing drops accuracy, so the HUD fallback can never fire no matter what the server sends')
+  check("the HUD age is clamped (a phone a second ahead printed '-1s ago')",
+    /Math\.max\(0, \(Date\.now\(\) - new Date\(p\.timestamp\)\.getTime\(\)\) \/ 1000\)/.test(way),
+    'the negative clock skew is back')
+  check('address lines take the house number and never repeat a word',
+    way.includes('function describeAddress') && way.includes('house_number') && /seen\[candidates\[i\]\]/.test(way),
+    'address lines can repeat the same word or drop the street number')
+  check('a resolved address is cached as TEXT and re-applied',
+    way.includes('function cachedAddressLines') && way.includes('applyAddressLines(devId, lines)'),
+    'the address is written once and dropped by the next badge rebuild')
+  check('the address cache survives a reload',
+    way.includes("localStorage.setItem('way_addresses'"),
+    'the address vanishes on every page reload')
+  check('Nominatim stays throttled (one resolve per 20 s / 150 m, never while parked where it is known)',
+    /const parkedHere = !!last\.is_stationary/.test(way) && way.includes('>= 20 * 1000') && way.includes('movedM > 150'),
+    'the fetch gate changed shape — check the request rate before trusting it')
+
+  // Accuracy reaches the HUD live only if the Durable Object puts it in the
+  // payload: the D1 history rows already carry it, the WebSocket push did not.
+  let doSrc = ''
+  try { doSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
+  check('the live position push carries accuracy',
+    /type: "position"[\s\S]{0,400}?accuracy,/.test(doSrc),
+    'the DO drops accuracy from the live push, so the HUD can only show it after a reload')
+  check('the snapshot-on-connect (lastStatus) carries accuracy',
+    /const lastStatus: LiveDeviceStatus = \{[\s\S]{0,300}?accuracy,/.test(doSrc),
+    'the DO drops accuracy from lastStatus — a fresh page shows a dash until the next ping')
 }
 
 // ─── 10. unified settings & per-person channels ──────────────────

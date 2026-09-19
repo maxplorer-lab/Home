@@ -137,6 +137,9 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 .badge-activity-fallback { font-size: 10px; color: #9ca3af; margin-top: 1px; }
 .badge-control-row { font-size: 9px; margin-top: 3px; display: flex; gap: 4px; flex-wrap: wrap; }
 .badge-control-pill { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); color: #f59e0b; padding: 1px 6px; border-radius: 6px; font-weight: 700; }
+/* Battery OR GPS accuracy: whichever the tracker actually reports. */
+.badge-meta { font-size: 9px; color: #9ca3af; margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+.badge-meta-bar { height: 4px; border-radius: 2px; min-width: 2px; max-width: 40px; }
 .badge-right { font-size: 9px; color: #9ca3af; text-align: right; max-width: 70px; }
 .badge-right .addr-loading { opacity: 0.5; }
 
@@ -242,7 +245,7 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
             </div>
             <div style="text-align:center; font-size:10px; color:#9ca3af;" id="hud-today-dist">-- km today</div>
             <div class="hud-footer">
-                <span id="hud-battery">-- %</span>
+                <span id="hud-meta">--</span>
                 <span id="hud-cadence" class="mono" style="color:#38bdf8;">-- ago</span>
             </div>
         </div>
@@ -500,7 +503,37 @@ let notifDebug = null;    // last push outcome, from /api/debug/notify
 // Admin app settings: the ntfy server root, and which layer is supplying it
 // (setting / env / default). See the "Push server" card in renderAdminUsers.
 let serverSettings = null;
-let addressCache = {};    // devId -> { lat, lon, at } -- throttles Nominatim
+// Reverse-geocoded address per device. Holds the RESOLVED TEXT, not just the
+// point asked about: renderBadges() rebuilds every badge from scratch on each
+// ping, so text written only by a fetch callback was wiped a few seconds after
+// it arrived - and since fetches are throttled to one per 20 s, the badge sat
+// on "-" almost all the time. devId -> { lat, lon, at, text }.
+let addressCache = {};
+try { addressCache = JSON.parse(localStorage.getItem('way_addresses') || '{}') || {}; } catch (e) { addressCache = {}; }
+function saveAddressCache() {
+    try { localStorage.setItem('way_addresses', JSON.stringify(addressCache)); } catch (e) {}
+}
+// How far the device may drift before a cached address stops describing where
+// it is: past this the badge shows "—" until the next resolve lands. A stale
+// address is worse than a dash, because it looks authoritative.
+const ADDRESS_MAX_AGE_M = 400;
+function cachedAddressLines(devId, ping) {
+    const c = addressCache[devId];
+    if (!c || !c.text) return null;
+    if (ping && distanceMeters(c.lat, c.lon, ping.latitude, ping.longitude) > ADDRESS_MAX_AGE_M) return null;
+    return c.text;
+}
+function applyAddressLines(devId, lines) {
+    const set = function(id, value) {
+        const el = document.getElementById(id + '-' + devId);
+        if (!el) return;
+        el.textContent = value || '';
+        el.classList.remove('addr-loading');
+    };
+    set('primary', lines.primary);
+    set('secondary', lines.secondary);
+    set('tertiary', lines.tertiary);
+}
 let authMode = 'login';
 let ws = null;
 let wsReconnectDelay = CONFIG.WS_RECONNECT_BASE_MS;
@@ -543,6 +576,39 @@ function getBatteryColor(batt) {
     if (batt >= 50) return '#2ecc71';
     if (batt >= 20) return '#f1c40f';
     return '#e74c3c';
+}
+// The HUD's health slot shows battery when a tracker reports one. µlogger does
+// not: 96 of 12,077 pings ever carried a level, all on the old app's first day.
+// GPS accuracy IS on every ping, so that is what the slot falls back to.
+function accuracyLabel(m) {
+    if (m === null || m === undefined || isNaN(m) || m < 0) return null;
+    return '±' + (m < 10 ? m.toFixed(1) : String(Math.round(m))) + ' m';
+}
+// Nominatim's address object -> the badge's three lines: the street (with its
+// number when OpenStreetMap has one), the suburb, then the first geographic
+// division. Each line takes the next DISTINCT value, so in places OSM has no
+// street names the same word cannot print twice (the old rule printed `suburb`
+// as line 1 and then again as line 2).
+function describeAddress(addr) {
+    const pick = function(keys) {
+        for (let i = 0; i < keys.length; i++) { if (addr[keys[i]]) return String(addr[keys[i]]); }
+        return '';
+    };
+    const street = pick(['road', 'pedestrian', 'footway', 'residential', 'lane', 'path']);
+    const house = pick(['house_number']);
+    const candidates = [
+        street ? ((house ? house + ' ' : '') + street) : '',
+        pick(['suburb', 'neighbourhood', 'quarter', 'hamlet']),
+        pick(['municipality', 'city', 'town', 'village']),
+        pick(['county', 'state_district', 'state', 'region'])
+    ].filter(function(v) { return !!v; });
+    const seen = {}, lines = [];
+    for (let i = 0; i < candidates.length && lines.length < 3; i++) {
+        if (seen[candidates[i]]) continue;
+        seen[candidates[i]] = true;
+        lines.push(candidates[i]);
+    }
+    return { primary: lines[0] || '', secondary: lines[1] || '', tertiary: lines[2] || '' };
 }
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -596,6 +662,7 @@ function toPing(deviceId, raw) {
         geofence_name: (raw.geofence_name !== undefined ? raw.geofence_name : raw.geofenceName) || null,
         distance_km: (raw.distance_km !== undefined ? raw.distance_km : raw.distance) || 0,
         battery: (raw.battery !== undefined ? raw.battery : null),
+        accuracy: (raw.accuracy !== undefined ? raw.accuracy : null),
         leg_id: (raw.leg_id !== undefined && raw.leg_id !== null) ? raw.leg_id : ((raw.legId !== undefined && raw.legId !== null) ? raw.legId : null)
     };
 }
@@ -1287,7 +1354,7 @@ function followDevice(devId) {
 function updateSpeedoHUD() {
     const p = selectedDevice ? latestPing[selectedDevice] : null;
     const core = document.getElementById('hud-core');
-    const batt = document.getElementById('hud-battery');
+    const meta = document.getElementById('hud-meta');
     const cad = document.getElementById('hud-cadence');
     const fresh = document.getElementById('hud-freshness');
     const isFollowingSelected = followDeviceId === selectedDevice && !!selectedDevice;
@@ -1308,21 +1375,37 @@ function updateSpeedoHUD() {
     if (!p) {
         core.innerHTML = '<div class="spd-num mono" style="color:#9ca3af; font-size:24px;">--</div><div class="spd-unit">Waiting</div>';
         fresh.className = 'badge-idle'; fresh.textContent = 'Waiting...';
-        batt.textContent = '-- %';
+        meta.textContent = '--';
+        meta.title = '';
         cad.textContent = '-- ago';
         return;
     }
 
-    batt.textContent = p.battery !== null ? (p.battery + '%') : 'n/a';
+    // Health slot: battery when the tracker reports it, otherwise GPS accuracy
+    // (see accuracyLabel). "n/a" was neither - it was a permanent reminder that
+    // the field is empty, in a slot that could be saying something true.
+    const acc = accuracyLabel(p.accuracy);
+    if (p.battery !== null && p.battery !== undefined) {
+        meta.textContent = p.battery + '%';
+        meta.title = 'Battery';
+    } else if (acc) {
+        meta.textContent = acc;
+        meta.title = 'GPS accuracy — µlogger does not report battery';
+    } else {
+        meta.textContent = '—';
+        meta.title = 'No battery or accuracy reported';
+    }
 
-    const diffSec = (Date.now() - new Date(p.timestamp).getTime()) / 1000;
+    // Clock skew: a phone a second ahead of the viewer yields a NEGATIVE age,
+    // which printed as "-1s ago". Clamp, and call the first second "now".
+    const diffSec = Math.max(0, (Date.now() - new Date(p.timestamp).getTime()) / 1000);
     if (diffSec < 120) { fresh.className = 'badge-live'; fresh.textContent = 'Live'; }
     else {
         const mins = Math.floor(diffSec / 60);
         fresh.className = 'badge-idle';
         fresh.textContent = mins > 60 ? (Math.floor(mins/60) + 'h ago') : (mins + 'm ago');
     }
-    cad.textContent = diffSec < 60 ? (Math.round(diffSec) + 's ago') : (Math.round(diffSec/60) + 'm ago');
+    cad.textContent = diffSec < 60 ? (diffSec < 1 ? 'now' : Math.round(diffSec) + 's ago') : (Math.round(diffSec/60) + 'm ago');
 
     if (p.is_inside_geofence || p.is_stationary) {
         core.innerHTML = '<div class="spd-emoji">@</div><div class="spd-unit">' + (p.is_inside_geofence ? getDisplayName(p.geofence_name) : 'Stationary') + '</div>';
@@ -1402,7 +1485,7 @@ function renderBadges() {
                     distHtml +
                     controlHtml +
                 '</div>' +
-                '<div class="badge-right"><span class="addr-loading">-</span></div>';
+                '<div class="badge-right"><span class="addr-loading">—</span></div>';
             strip.appendChild(badge);
             continue;
         }
@@ -1430,10 +1513,28 @@ function renderBadges() {
             activityText = 'Walking'; activityClass = 'badge-activity-fallback';
         }
 
+        // Battery when the tracker reports one; otherwise GPS accuracy, which
+        // every µlogger ping carries. (The battery strip had no CSS either, so
+        // it was dead in both senses.)
         const batt = last.battery;
-        const battHtml = batt !== null
-            ? ('<div class="badge-battery"><div class="badge-battery-bar" style="width:' + Math.min(batt,100) + '%;background:' + getBatteryColor(batt) + '"></div><span class="badge-battery-text">' + batt + '%</span></div>')
-            : '';
+        const acc = accuracyLabel(last.accuracy);
+        let metaHtml = '';
+        if (batt !== null && batt !== undefined) {
+            metaHtml = '<div class="badge-meta"><div class="badge-meta-bar" style="width:' + Math.min(batt, 100) + '%;background:' + getBatteryColor(batt) + '"></div><span>' + batt + '%</span></div>';
+        } else if (acc) {
+            metaHtml = '<div class="badge-meta">' + acc + '</div>';
+        }
+
+        // The address is RE-APPLIED from the cache on every rebuild, so it
+        // survives renderBadges() being called on the next ping (see
+        // cachedAddressLines). "—" means nothing is known yet, not "loading".
+        const addr = cachedAddressLines(devId, last);
+        const rightHtml =
+            '<div class="badge-right">' +
+                '<span id="primary-' + devId + '"' + (addr ? '' : ' class="addr-loading"') + '>' + (addr ? escapeHtml(addr.primary) : '—') + '</span><br>' +
+                '<span id="secondary-' + devId + '">' + (addr ? escapeHtml(addr.secondary) : '') + '</span><br>' +
+                '<span id="tertiary-' + devId + '">' + (addr ? escapeHtml(addr.tertiary) : '') + '</span>' +
+            '</div>';
 
         badge.innerHTML =
             '<div class="badge-left">' +
@@ -1446,13 +1547,9 @@ function renderBadges() {
                 '<div class="' + activityClass + '">' + activityText + '</div>' +
                 distHtml +
                 controlHtml +
-                battHtml +
+                metaHtml +
             '</div>' +
-            '<div class="badge-right">' +
-                '<span id="primary-' + devId + '" class="addr-loading">-</span><br>' +
-                '<span id="secondary-' + devId + '"></span><br>' +
-                '<span id="tertiary-' + devId + '"></span>' +
-            '</div>';
+            rightHtml;
         strip.appendChild(badge);
 
         const eyeEl = badge.querySelector('.track-eye');
@@ -1472,28 +1569,33 @@ function renderBadges() {
             // Reverse-geocoding is THROTTLED. Nominatim asks for <=1 req/s and
             // renderBadges runs on every live ping (~5s), so re-fetch only when
             // the device actually moved >150m or the cached text is >5 min old,
-            // never more than once per 20s, and never while stationary.
+            // and never more than once per 20s. Inside a fence we never ask:
+            // the fence already says where the device is.
             const prevAddr = addressCache[devId];
             const nowMs = Date.now();
             const movedM = prevAddr ? distanceMeters(prevAddr.lat, prevAddr.lon, last.latitude, last.longitude) : Infinity;
             const stale = !prevAddr || (nowMs - prevAddr.at) > 5 * 60 * 1000;
             const coolEnough = !prevAddr || (nowMs - prevAddr.at) >= 20 * 1000;
-            if (coolEnough && !last.is_stationary && (movedM > 150 || stale)) {
-                addressCache[devId] = { lat: last.latitude, lon: last.longitude, at: nowMs };
+            // Parked where we already resolved = nothing new to ask. The old gate
+            // refused ANY fetch while stationary, so a device switched on
+            // somewhere new stayed on a dash until it moved again.
+            const parkedHere = !!last.is_stationary && movedM < 150;
+            if (coolEnough && !parkedHere && (movedM > 150 || stale)) {
+                // The point is recorded BEFORE the fetch resolves, which is what
+                // throttles; the text lands here when Nominatim answers.
+                addressCache[devId] = { lat: last.latitude, lon: last.longitude, at: nowMs, text: prevAddr ? prevAddr.text : null };
+                saveAddressCache();
                 (function(devId, last) {
-                    fetch('https://nominatim.openstreetmap.org/reverse?lat=' + last.latitude + '&lon=' + last.longitude + '&format=json&zoom=18&addressdetails=1')
+                    fetch('https://nominatim.openstreetmap.org/reverse?lat=' + last.latitude + '&lon=' + last.longitude + '&format=jsonv2&zoom=18&addressdetails=1')
                     .then(function(resp) { return resp.ok ? resp.json() : null; })
                     .then(function(data) {
-                        if (!data) return;
-                        const addr = data.address || {};
-                        const primaryEl = document.getElementById('primary-' + devId);
-                        if (!primaryEl) return;
-                        // Street name (no house number), suburb, municipality only.
-                        // region / state / county are dropped on purpose.
-                        primaryEl.textContent = addr.road || addr.suburb || addr.municipality || addr.city || 'Unknown';
-                        document.getElementById('secondary-' + devId).textContent = addr.suburb || '';
-                        document.getElementById('tertiary-' + devId).textContent =
-                            addr.municipality || addr.city || addr.town || addr.village || '';
+                        if (!data || !data.address) return;
+                        const lines = describeAddress(data.address);
+                        const entry = addressCache[devId];
+                        if (!entry) return;
+                        entry.text = lines;              // survives the next renderBadges()
+                        saveAddressCache();
+                        applyAddressLines(devId, lines); // no-op if the badge was rebuilt meanwhile
                     }).catch(function() {});
                 })(devId, last);
             }
