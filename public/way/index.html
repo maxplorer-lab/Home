@@ -1119,7 +1119,12 @@ function updatePlaybackBadge() {
 // Live because a live map is not behind anything.
 
 function setMapPace(pace) {
-    mapPace = (pace === 'live') ? 'live' : 'smooth';
+    const next = (pace === 'live') ? 'live' : 'smooth';
+    // Tapping the pill that is already active must not rebuild every trail:
+    // redrawAllTracks() empties and redraws the same geometry, which reads as a
+    // one-frame flicker of every track on screen.
+    if (next === mapPace) return;
+    mapPace = next;
     localStorage.setItem('map_pace', mapPace);
     applyMapPace();
 }

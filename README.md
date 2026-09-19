@@ -232,17 +232,37 @@ Secrets live in `.dev.vars` (never committed): `AUTH_PEPPER` (required,
 
 ## Deploy
 
+Deploying Home itself is one command — `wrangler.jsonc` already carries the real
+`home-db` id and the four production database bindings, and the databases are
+already migrated:
+
 ```bash
-# REQUIRED: wrangler.jsonc still ships the placeholder HOME_DB database_id,
-# and `npm run deploy` will NOT warn you about it.
+npm run deploy            # or connect the repo in Cloudflare; it builds from main
+```
+
+Three secrets must exist for a deploy to be usable. They are set ONCE per Worker
+and survive later deploys:
+
+```bash
+wrangler secret put SETUP_TOKEN      # FIRST — closes the /bootstrap claim window
+wrangler secret put AUTH_PEPPER      # required, ≥16 random chars
+wrangler secret put SESSION_SECRET   # signs W.A.Y device tokens / module sessions
+```
+
+`SETUP_TOKEN` first is deliberate: `/bootstrap` becomes claimable the moment a
+pepper exists, so on a public hostname the token is what stops a stranger
+becoming admin. Without `AUTH_PEPPER` the app deploys **inert, not open** —
+`/login` redirects with `err=no_pepper` and `/bootstrap` refuses.
+
+**A fresh environment** (new Cloudflare account, or a second identity database)
+is the only case that needs the schema steps — do not re-run them against the
+live `home-db`, which would create a second, empty identity database:
+
+```bash
 wrangler d1 create home-db     # paste the id into wrangler.jsonc (HOME_DB)
-wrangler d1 execute home-db    --remote --file=migrations-home/0001_identity.sql
-wrangler d1 execute home-db    --remote --file=migrations-home/0002_notifications.sql
-wrangler d1 execute home-db    --remote --file=migrations-home/0003_laoka_imports.sql
-wrangler d1 execute home-db    --remote --file=migrations-home/0004_two_channels.sql
-wrangler secret put AUTH_PEPPER      # NEW — required, ≥16 random chars
-wrangler secret put SESSION_SECRET   # reuse the old W.A.Y value
-npm run deploy
+for f in migrations-home/000{1,2,3,4}*.sql; do
+  wrangler d1 execute HOME_DB --remote --file="$f"
+done
 ```
 
 Then open `<your-worker>/bootstrap` once to create the admin, and add the

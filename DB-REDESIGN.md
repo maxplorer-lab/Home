@@ -4,7 +4,22 @@ You asked what I'd change if the schema were mine to redraw, on the constraint
 that we stay **entirely inside the Cloudflare free tier**, with all data
 disposable **except Sompitra**.
 
-This is a proposal, not a plan of record. Nothing here is built.
+This is a proposal, not a plan of record. Most of it is still unbuilt — but
+**not all of it any more**, and the difference matters when reading §4:
+
+* **§4's button exists**, in a different shape. Laoka's export sheet has
+  **Send to Sompitra**, which posts the priced week straight into a Sompitra
+  expense — no CSV, no file lifecycle. The idempotency §4 asks for is real;
+  it lives in `home-db.laoka_imports` rather than in
+  `week_shopping_lines.transaction_id`, because Sompitra's own schema stays
+  byte-identical to upstream (see §3's caveat, which is why the ledger moved to
+  Home's database).
+* **§4's `transaction_items` table does NOT exist.** An itemized expense is
+  still one `transactions.notes` string, so a single line still cannot be
+  corrected or summed on its own. The hand-off is one press; the *structure*
+  it writes is still a blob.
+* **§2's `events` ledger is not built** — the three notification paths still
+  meet at the chat/DO seam rather than in one table.
 
 ---
 

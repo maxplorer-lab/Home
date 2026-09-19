@@ -191,7 +191,8 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `could not reach …`). Never reintroduce a push helper that discards the
     response: "Test sent" over a refused push is undiagnosable, and that button
     is only ever pressed when nothing is arriving.
-17. `HOME_DB`'s `database_id` is the **real** `home-db` id (set at cutover). A
+17. `HOME_DB`'s `database_id` is the **real** `home-db` id (created at cutover).
+    A
     placeholder passes `wrangler deploy --dry-run` and then hands the deployed
     Worker a dead identity database, so never let one back in.
     **Local state is keyed to that id**: change it and `wrangler dev` reads a
@@ -309,9 +310,9 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `setMapPace` / `applyMapPace` may only repaint the pills and call
     `redrawAllTracks()` — no fetch, no server setting, `localStorage` per
     device. The pills live in Settings → Map ONLY: smoke asserts nothing named
-    `pace-switch` is in the map chrome. `npm run smoke` section 15 asserts the served page still carries
-    every frozen value, that the ping path no longer redraws, and that the pace
-    switch stays display-only.
+    `pace-switch` is in the map chrome. `npm run smoke` section 15 asserts the
+    served page still carries every frozen value, that the ping path no longer
+    redraws, and that the pace switch stays display-only.
 
 ## Smoke test (local, after any identity change)
 

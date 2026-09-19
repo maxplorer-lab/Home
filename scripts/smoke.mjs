@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // ─── Home smoke test ─────────────────────────────────────────────
 // End-to-end local checks against a RUNNING wrangler dev server.
-// No test framework, no dependencies — plain Node 18+ (fetch/getSetCookie).
+// No test framework, no dependencies — plain Node 18+ (fetch/getSetCookie,
+// plus node:fs to read ONE repo file: CUTOVER.md, whose post-deploy step names
+// a value the Durable Object has to report — see the build-marker check).
 //
 //   npm run dev                 # in one terminal (or the detached recipe)
 //   npm run smoke               # in another
@@ -23,6 +25,8 @@
 //   7. bad credentials are rejected AND set no cookie
 //   8. a jar holding ONLY home_session self-repairs on every module
 // Exit code 0 = all green, 1 = something regressed.
+
+import { readFileSync } from 'node:fs'
 
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:8787').replace(/\/$/, '')
 const USER = process.env.SMOKE_USER || 'maxx'
@@ -379,6 +383,20 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
       accepted.includes('expense') && accepted.includes('income'),
       `build=${d?.build ?? 'unreadable'} accepts=[${accepted.join(', ')}] — the DO is serving older code`
     )
+
+    // CUTOVER.md's post-deploy step tells a human to expect one specific build
+    // marker, and that sentence rots the moment the marker is bumped -- it
+    // already had (v3-system-chat -> v5-two-channels). A runbook whose
+    // verification step names the wrong value is worse than no step, because
+    // it reads as a failed deploy.
+    let docMarker = null
+    try {
+      const doc = readFileSync(new URL('../CUTOVER.md', import.meta.url), 'utf8')
+      docMarker = (doc.match(/expect build ([a-z0-9-]+)/) || [])[1] || null
+    } catch (e) {}
+    check("CUTOVER.md's DO build marker matches the DO",
+      !!docMarker && docMarker === d?.build,
+      `CUTOVER.md says "${docMarker ?? 'nothing'}", the DO reports "${d?.build ?? 'unreadable'}" — the runbook's verification step is stale`)
   }
 
   const chat = await body(await req('/chat/index.html'))

@@ -1,6 +1,13 @@
 # Cutting over to Home — production runbook
 
-Sompitra, W.A.Y and Laoka are each already live as standalone Workers, with the
+> **Status: executed.** Home is live at `https://home.maxx-lab.workers.dev`;
+> this file is kept as the record of *why* each step existed, not as a to-do
+> list. §1 and §4 describe what was done at cutover, §3's ordering still
+> applies to any future move, and §5 is the part whose value is permanent —
+> do keep it working (`npm run smoke` compares the `build` marker §5 tells you
+> to expect against the one the Durable Object actually reports).
+
+Sompitra, W.A.Y and Laoka were each already live as standalone Workers, with the
 same two people (MaxX, Niri) and real data. This is how to move to the merged
 **Home** Worker without losing the data that matters (Sompitra's) and without
 silently breaking the parts that keep working by accident.
@@ -13,7 +20,7 @@ real ids.** `wrangler.jsonc` already carries them, so no module data moves:
 | `DB` | `sompitra-db` (`701cd942-…`) | **keep — this is the real data** |
 | `WAY_DB` | `way-db` (`e098df3d-…`) | keep (or wipe; see below) |
 | `LAOKA_DB` | `laoka` (`24acf3ed-…`) | keep (or wipe) |
-| `HOME_DB` | `home-db` | **must be created** — still the placeholder id |
+| `HOME_DB` | `home-db` | created at cutover; `wrangler.jsonc` carries its real id |
 
 ---
 
@@ -36,20 +43,27 @@ module whose loss is unacceptable is Sompitra, and it is safe by construction.
 
 ## 1. Do this before deploying (each one is a real, verified failure mode)
 
-### 1a. Create the identity database
+### 1a. Create the identity database — done
 ```bash
 npx wrangler d1 create home-db
-# paste the returned database_id over the 00000000-… placeholder for HOME_DB
+# then paste the returned database_id over the 00000000-… placeholder for HOME_DB
 ```
-`wrangler deploy --dry-run` passes happily with the placeholder id, so a deploy
-with it ships a Worker whose login database does not exist. This is the single
-most likely way to break the cutover.
+`wrangler deploy --dry-run` passes happily with a placeholder id, so a deploy
+with one ships a Worker whose login database does not exist — that was the
+single most likely way to break the cutover, and rule 17 in `AGENTS.md` keeps
+the real id from going back out. With the database created, this is a one-time
+step; a later deploy must NOT re-run it (a second `home-db` would be a second,
+empty identity database).
 
-### 1b. Apply the identity + notification schema to that database
+### 1b. Apply the identity schema to that database — done
 ```bash
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0001_identity.sql
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0002_notifications.sql
+npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0003_laoka_imports.sql
+npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0004_two_channels.sql
 ```
+(0001–0004 are all applied in production. A fresh environment needs all four,
+in this order — 0004 rewrites the channel columns 0002 created.)
 The three module databases are already migrated in production (their schemas
 exist) — only the new one needs this. Do **not** blindly re-run the module
 migrations remotely; several use bare `CREATE TABLE` / `ALTER TABLE` and will
@@ -95,10 +109,17 @@ the chat round trip (Sompitra expense → chat system row).
 ## 2. Secrets
 
 ```bash
+npx wrangler secret put SETUP_TOKEN      # do this FIRST; see below
 npx wrangler secret put AUTH_PEPPER      # ≥16 chars; signs Home passwords
 npx wrangler secret put SESSION_SECRET   # signs module sessions/device tokens
 npx wrangler secret put NTFY_TOKEN       # only if the ntfy instance needs auth
 ```
+
+`SETUP_TOKEN` is not required by the Worker, but on a public hostname it is
+the difference between "the first person to find `/bootstrap` becomes admin"
+and "only someone holding the token does". Set it *before* `AUTH_PEPPER`: the
+claim route opens the moment a pepper exists, and setting the token afterwards
+leaves that window open in the meantime.
 
 - `AUTH_PEPPER` is new (Home-only). It is the reason both people set a new
   password at bootstrap. **Changing it later invalidates every Home password.**
@@ -153,11 +174,14 @@ extra "arrived" event on its first ping. Harmless — and the chat now records i
 1. Open `/bootstrap` on the new domain — the **first account becomes the
    admin**. Create **MaxX** there, using the *same username* the module
    databases already know (`MaxX`; matching is case-insensitive).
-2. As MaxX, open `/admin` and create **Niri**.
-3. Each person's ntfy channel: `/settings` → *Adopt channels from W.A.Y* keeps
-   the topics the phones already follow, so no phone has to be reconfigured. If
-   you wipe `way-db` before this, there is nothing to adopt and each phone's
-   ntfy app needs its topic re-entered.
+2. As MaxX, open `/admin` and create **Niri**.3. Each person's notification channels: **You → Notifications** shows two — 💬
+the money/chat feed and 📍 W.A.Y tracking — and each is *generated*, not
+inherited. To keep the topics the phones already follow, use **Adopt W.A.Y's
+tracking topics** there instead: W.A.Y's DO only ever pushes tracking events to
+a topic the person ticked in its own grid, and a person with no tracking topic
+hears **nothing**, chat notifications included. Money events go to the feed
+topic, unfiltered, to everyone who has one. If you wipe `way-db` before this
+there is nothing to adopt, and each phone's ntfy app needs its topic re-entered.
 4. `/bootstrap` disappears on its own once an account exists.
 
 ---
@@ -175,7 +199,8 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v3-system-chat
+#   expect build notify-v5-two-channels   (kept honest by `npm run smoke`,
+#   which reads THIS line and compares it with what the DO reports)
 
 # The chat flush completes (this is the `devices` FK check, live)
 curl -s -b /tmp/j -X POST $B/way/api/flush
