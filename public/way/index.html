@@ -2570,7 +2570,10 @@ function handleNewPing(raw) {
     if (!devicePings[devId]) devicePings[devId] = [];
     // `guarding` pings (the 30s exit guard) are held server-side and delivered
     // later as `track` messages -- adding them here too would double them up.
-    if (!raw.guarding && shouldDrawPoint(ping)) devicePings[devId].push(ping);
+    // `unwitnessed` pings (found outside a fence after a long silence) move the
+    // live dot but are no track point: the server wrote no row and counted no
+    // distance for them, so drawing one would invent a leg nobody earned.
+    if (!raw.guarding && !raw.unwitnessed && shouldDrawPoint(ping)) devicePings[devId].push(ping);
     maybeAddStationaryDot(devId, ping);
 
     // Nothing is drawn here. The ping is now IN devicePings, and the playback

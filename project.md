@@ -681,6 +681,38 @@ Every consumer already handles a missing field (`ping.vel ?? result.speedAvg`),
 and the rule is asserted by smoke section 15 with a real μlogger proof in the
 run doc.
 
+**A pair stamped in the same second is judged, not skipped.** μlogger's stamps
+resolve to whole seconds, so two genuine fixes can carry the identical
+timestamp; the gate used to read `dt <= 0` as "no elapsed time" and step aside,
+which let two same-second fixes kilometres apart pass unnoticed — a latent hole,
+now closed by `GLITCH_TIME_FLOOR_S` (1 s, the stamp resolution; this phone's
+harmless daily pairs at 7 m and 11 m still pass).
+
+**That hole was not what drew the 2026-09-19 triangle.** There the teleport
+arrived alone after a multi-hour silence, where the implied speed is ~0.5 km/h
+and no distance threshold can see anything wrong; it then sat in the exit
+guard's buffer for 65 s — longer than the guard's window — and the guard
+confirmed. The giveaway is the triangle's first row: it sits *exactly* on the
+exit radius (90.0 m for Home1) and carries the wild ping's timestamp but the
+confirming ping's accuracy, because it is `exitBoundaryPoint`'s interpolation —
+a fence crossing the app never observed.
+
+**That class is closed by a witness test on the `IN → EXITING` transition,
+because no speed limit can close it** — any wild fix paired with a gap of ~70 s
+or more passes both legs at or under the limit. An exit must walk all three
+phases: from a ping there is exactly one assignment of `OUTSIDE`, and it sits
+behind both the witness test and `EXIT_GUARD_SECONDS`, so a single ping can never
+take a device from inside a fence to outside it, and the departure event is keyed
+on the completed walk alone. The crossing may only *start* from a ping that
+measured it: `EXIT_WITNESS_GAP_S` (120 s) compares this ping with the last one
+accepted, and a longer silence means nobody watched it happen — the ping is
+dropped whole (no interpolated edge point, no leg, no distance, no chat row, no
+push, nothing drawn), the fence state resolves by position to `UNKNOWN`, and the
+next accepted ping re-anchors where the device really is, contributing zero
+distance. `UNKNOWN` is not a state events may key on: an arrival is *"the prior
+state was not inside"*, never the literal `OUTSIDE` name, or one silent crossing
+would swallow the next genuine arrival — and the push that opens the gate.
+
 **The reported speed has a second pre-filter, and it is the quiet one.** The
 limit above only catches an impossible claim; a *believable* one is the harder
 case, because it comes from a device that is genuinely parked. Indoors a phone's

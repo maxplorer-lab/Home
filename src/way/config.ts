@@ -21,6 +21,14 @@ export const WAY_CONFIG = {
   EXIT_RADIUS_BUFFER_M: 40.0,
   // Fallback entry radius (metres) for a geofence row with no radius_m set.
   DEFAULT_GEOFENCE_RADIUS_M: 50.0,
+  // Seconds. An exit may only START from a ping that is a MEASUREMENT of the
+  // departure, not an inference drawn across a silence: if the device was last
+  // heard from longer ago than this, nobody watched it leave, so the crossing
+  // stays unwitnessed -- no interpolated edge point, no exit event, no leg and
+  // no distance across the jump. The move cadence here is 2-30 s and a parked
+  // phone's gaps are minutes (the 2026-09-19 teleport came after hours), so
+  // this sits between the two.
+  EXIT_WITNESS_GAP_S: 120.0,
 
   // ---- Speed classification ----
   // Rolling average window size (number of pings) used to smooth speed
@@ -35,6 +43,16 @@ export const WAY_CONFIG = {
   // km/h -- a ping implying speed above this is treated as a GPS glitch
   // and dropped before it reaches the state machine at all.
   PRE_FILTER_SPEED_LIMIT: 120.0,
+  // Seconds. µlogger stamps every ping to whole seconds, so two genuine fixes
+  // can carry the SAME timestamp. That is not "no elapsed time" -- it means
+  // the real gap is shorter than the clock can show -- so the jitter gate
+  // judges such a pair against this floor instead of stepping aside. Without
+  // it, two same-second fixes kilometres apart were BOTH accepted: a latent
+  // hole, proven live with a two-ping upload (2 km, same second, the second
+  // one now dropped) and by mutation. At most the limit times this floor
+  // (33 m) can hide under it, so this phone's harmless daily same-second
+  // pairs (7 m, 11 m apart) still pass.
+  GLITCH_TIME_FLOOR_S: 1.0,
   // ---- Device-REPORTED speed: when to believe it ----
   // Metres the device must have MOVED since the previous ping before µlogger's
   // speed field is believed. Indoors a parked phone's GNSS reports 5-30 km/h

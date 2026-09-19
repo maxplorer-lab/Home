@@ -26,11 +26,13 @@ import { WAY_CONFIG } from "../config";
 // ============================================================
 const ENTRY_GUARD_SECONDS = WAY_CONFIG.ENTRY_GUARD_SECONDS;
 const EXIT_GUARD_SECONDS = WAY_CONFIG.EXIT_GUARD_SECONDS;
+const EXIT_WITNESS_GAP_S = WAY_CONFIG.EXIT_WITNESS_GAP_S;
 const WALKING_GUARD_SECONDS = WAY_CONFIG.WALKING_GUARD_SECONDS;
 const SPEED_BUFFER_SIZE = WAY_CONFIG.SPEED_BUFFER_SIZE;
 const WALKING_DRIVING_THRESHOLD = WAY_CONFIG.WALKING_DRIVING_THRESHOLD;
 const STATIONARY_SPEED_THRESHOLD = WAY_CONFIG.STATIONARY_SPEED_THRESHOLD;
 const PRE_FILTER_SPEED_LIMIT = WAY_CONFIG.PRE_FILTER_SPEED_LIMIT;
+const GLITCH_TIME_FLOOR_S = WAY_CONFIG.GLITCH_TIME_FLOOR_S;
 const REPORTED_SPEED_MIN_MOVE_M = WAY_CONFIG.REPORTED_SPEED_MIN_MOVE_M;
 const REPORTED_SPEED_MIN_GAP_S = WAY_CONFIG.REPORTED_SPEED_MIN_GAP_S;
 
@@ -43,7 +45,7 @@ const STOP_CONFIRM_SECONDS = WAY_CONFIG.STOP_CONFIRM_SECONDS;
 // ============================================================
 //  TYPES
 // ============================================================
-export type GeoState = "CONFIRMED_INSIDE" | "EXITING" | "OUTSIDE";
+export type GeoState = "CONFIRMED_INSIDE" | "EXITING" | "OUTSIDE" | "UNKNOWN";
 export type MotionMode = "STAYING" | "TRAVELING";
 
 /** Everything the DO needs to persist per device between pings. */
@@ -80,6 +82,10 @@ export interface MotionState {
   // legs while still drawing the whole day at once. 0 = no leg yet.
   legId: number;
   legOpen: boolean;
+  // Set by an UNWITNESSED fence crossing (see EXIT_WITNESS_GAP_S): the next
+  // accepted ping re-anchors the motion engine at ITS OWN position with zero
+  // distance, so a jump nobody watched leaves no leg and no distance behind.
+  settlePending: boolean;
 }
 
 /** A device with no history yet -- mirrors StateMachine.__init__ defaults. */
@@ -105,6 +111,7 @@ export function initialMotionState(): MotionState {
     pendingExitEdge: null,
     legId: 0,
     legOpen: false,
+    settlePending: false,
   };
 }
 
@@ -127,6 +134,12 @@ export interface PingResult {
    * boundary-crossing point. Lets the DO start the outgoing track AT the
    * fence edge instead of at the first ping past it. */
   edgePoint?: { latitude: number; longitude: number; timestamp: string; isDriving: boolean } | null;
+  /** Set when a device was found outside its fence but nobody watched it
+   * leave (see EXIT_WITNESS_GAP_S). The ping is a real measurement of WHERE
+   * the device is, not of a crossing: the DO moves the live dot but writes no
+   * row, counts no distance, announces nothing, and the fence state resolves
+   * by position (UNKNOWN) instead of inventing a departure. */
+  unwitnessed?: boolean;
   /** Which backend leg this ping belongs to (see MotionState.legId). */
   legId?: number;
 }
@@ -156,9 +169,13 @@ export function isGlitch(
   curLat: number, curLon: number, curTs: string
 ): boolean {
   const dtSec = (new Date(curTs).getTime() - new Date(prevTs).getTime()) / 1000;
-  if (dtSec <= 0) return false;
+  // A pair stamped in the same second is judged against the stamp resolution,
+  // NOT skipped: two genuine µlogger fixes in one second can be kilometres
+  // apart, and skipping them is how such a pair slipped past this gate (see
+  // GLITCH_TIME_FLOOR_S).
+  const judgedSec = dtSec > 0 ? dtSec : GLITCH_TIME_FLOOR_S;
   const distKm = haversineKm(prevLat, prevLon, curLat, curLon);
-  const speedKmh = (distKm / dtSec) * 3600;
+  const speedKmh = (distKm / judgedSec) * 3600;
   return speedKmh > PRE_FILTER_SPEED_LIMIT;
 }
 
@@ -230,6 +247,7 @@ export function processPing(
     pendingExitEdge: prior.pendingExitEdge ?? null,
     legId: prior.legId ?? 0,
     legOpen: prior.legOpen ?? false,
+    settlePending: prior.settlePending ?? false,
   };
 
   const lat = ping.latitude;
@@ -241,6 +259,9 @@ export function processPing(
   // point (see processConfirmedInside) rather than anchoring at the raw ping.
   const prevLat = s.lastLat;
   const prevLon = s.lastLon;
+  // Previous timestamp, same reason -- the exit witness test (EXIT_WITNESS_GAP_S)
+  // needs to know how long the device was silent before this ping.
+  const prevTs = s.lastTs;
 
   // ---- Instantaneous speed: prefer client-reported vel, else derive ----
   // Two things a report cannot survive: claiming more than the pre-filter
@@ -280,7 +301,7 @@ export function processPing(
   const { inside, fenceName } = isInsideGeofence(lat, lon, geofences, currentlyInside);
 
   const outcome = (s.geoState === "CONFIRMED_INSIDE" || s.geoState === "EXITING")
-    ? processConfirmedInside(s, inside, fenceName, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode, prevLat, prevLon, geofences)
+    ? processConfirmedInside(s, inside, fenceName, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode, prevLat, prevLon, prevTs, geofences)
     : processOutside(s, inside, fenceName, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode);
 
   // ---- Leg tracking (backend-only) ----
@@ -318,12 +339,14 @@ function processConfirmedInside(
   forcedMode: ForcedMode,
   prevLat: number | null,
   prevLon: number | null,
+  prevTs: string | null,
   geofences: Geofence[]
 ): { state: MotionState; result: PingResult } {
   if (inside) {
     const wasExiting = s.geoState === "EXITING";
     s.geoState = "CONFIRMED_INSIDE";
     s.exitStartTime = null;
+    s.settlePending = false;
     s.lastGeofenceName = fenceName;
     if (wasExiting) {
       // Bounced back inside the wide radius -- discard whatever the
@@ -346,6 +369,37 @@ function processConfirmedInside(
 
   // Outside the exit radius.
   if (s.geoState === "CONFIRMED_INSIDE") {
+    // ---- WITNESS TEST ----------------------------------------------------
+    // An exit may only START from a ping that MEASURED the departure. If the
+    // device was last heard from longer ago than EXIT_WITNESS_GAP_S, nobody
+    // watched it leave: the crossing point below would be interpolated (that
+    // is the synthetic row that sat exactly on the exit radius after the
+    // 2026-09-19 parked-phone teleport), the guard would then confirm on wall
+    // time, and the track would gain a leg nobody earned. Resolve the fence
+    // state by POSITION instead, silently: no edge point, no exit event, no
+    // leg and no distance across the jump (settlePending re-anchors the next
+    // accepted ping at its own position).
+    const gapS = prevTs === null
+      ? Number.POSITIVE_INFINITY
+      : (new Date(dt).getTime() - new Date(prevTs).getTime()) / 1000;
+    if (gapS > EXIT_WITNESS_GAP_S) {
+      s.geoState = "UNKNOWN";
+      s.exitStartTime = null;
+      s.pendingExitEdge = null;
+      s.lastGeofenceName = null;
+      s.settlePending = true;
+      return {
+        state: s,
+        result: {
+          // NOT "stationary": that flag draws a stationary dot on the map and
+          // fires the parked/moving pushes. This ping is simply unwitnessed --
+          // the DO and the dashboard both skip it by that flag alone.
+          isInside: false, geofenceName: null, isDriving: false,
+          speedAvg: avgSpeed, distance: 0.0, isStationary: false,
+          unwitnessed: true,
+        },
+      };
+    }
     s.geoState = "EXITING";
     s.exitStartTime = dt;
     // Anchor the motion engine AT the fence edge (where the segment from
@@ -411,6 +465,7 @@ function processOutside(
   forcedMode: ForcedMode
 ): { state: MotionState; result: PingResult } {
   if (inside) {
+    s.settlePending = false;
     if (s.entryStartTime === null || s.pendingFenceName !== fenceName) {
       s.entryStartTime = dt;
       s.pendingFenceName = fenceName;
@@ -510,6 +565,20 @@ function processMotion(
   avgSpeed: number, impliedSpeedKmh: number,
   forcedMode: ForcedMode
 ): { state: MotionState; result: PingResult } {
+  // First ping after an unwitnessed crossing: it becomes the new anchor, so
+  // the jump nobody watched contributes no leg and no distance. Persisted as a
+  // normal moving point (the trail resumes where the device really is).
+  if (s.settlePending) {
+    s.settlePending = false;
+    resetMotionAnchor(s, lat, lon, dt);
+    return {
+      state: s,
+      result: {
+        isInside: false, geofenceName: null, isDriving: false,
+        speedAvg: avgSpeed, distance: 0.0, isStationary: false,
+      },
+    };
+  }
   if (s.anchor === null) {
     resetMotionAnchor(s, lat, lon, dt);
     return { state: s, result: stayResult(avgSpeed) };

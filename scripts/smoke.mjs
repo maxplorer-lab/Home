@@ -1179,6 +1179,27 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     doCode.indexOf('isGlitch(') < doCode.indexOf('processPing(stored.motion'),
     'the glitch filter no longer precedes processPing, so an impossible jump would be classified as movement')
 
+  // ── …and a pair stamped in the SAME SECOND is judged, not skipped. That
+  // branch (dt <= 0 -> "not a glitch") let two same-second fixes kilometres
+  // apart pass unnoticed — a latent hole, not the 2026-09-19 triangle's cause
+  // (there the wild ping arrived alone after a multi-hour silence). The floor
+  // is the stamp resolution (1 s), so at most 33 m at the 120 limit can hide
+  // under it.
+  const floorMatch = /GLITCH_TIME_FLOOR_S:\s*([0-9.]+)/.exec(cfgSrc)
+  const limitMatch = /PRE_FILTER_SPEED_LIMIT:\s*([0-9.]+)/.exec(cfgSrc)
+  const floorS = floorMatch ? Number(floorMatch[1]) : NaN
+  const limitKmh = limitMatch ? Number(limitMatch[1]) : NaN
+  const sameSecondKmh = (distKm) => (distKm / floorS) * 3600
+  check('a same-second pair is judged against the stamp floor, never skipped',
+    /dtSec > 0 \? dtSec : GLITCH_TIME_FLOOR_S/.test(smSrc) &&
+    !/if \(dtSec <= 0\) return false/.test(smSrc) &&
+    /const GLITCH_TIME_FLOOR_S = WAY_CONFIG\.GLITCH_TIME_FLOOR_S/.test(smSrc) &&
+    /GLITCH_TIME_FLOOR_S/.test(cfgSrc),
+    'the jitter gate steps aside for same-second pings again — a same-second teleport rides through the 120 limit unnoticed')
+  check('the floor separates a harmless same-second pair from the teleport',
+    sameSecondKmh(0.007) <= limitKmh && sameSecondKmh(2.360) > limitKmh,
+    `at a ${floorS} s floor a 7 m same-second pair must pass and a 2.36 km one must fail (limit ${limitKmh})`)
+
   // ── The other half of "is this number real?": a REPORTED speed is believed
   // only when the coordinates corroborate it. A parked phone indoors reports
   // 5-30 km/h from its GNSS chip while its fixes stay inside a few metres — and
@@ -1211,6 +1232,83 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   check('a stationary device reads Stationary in the HUD, not a phantom number',
     /is_inside_geofence \|\| p\.is_stationary/.test(way) && /Stationary/.test(way),
     'the speedo has no stationary branch, so the phantom number would be printed')
+
+  // ── An exit can only START from a crossing the app WATCHED. This is the
+  // 2026-09-19 parked-phone triangle: the wild fix arrived ALONE after a
+  // multi-hour silence, where the implied speed is ~0.5 km/h, so no distance
+  // threshold can see it. It still started an exit, `exitBoundaryPoint`
+  // interpolated a crossing nobody observed (that row sat exactly on the exit
+  // radius, carrying the wild ping's timestamp but the confirming ping's
+  // accuracy), and the guard then confirmed on wall time -- "left Home" at
+  // 14:21:10, a 2.36 km leg and 2.146 km of phantom distance. The witness gap
+  // must be checked BEFORE the EXITING transition, and everything about an
+  // unwitnessed crossing must stay unwritten, undrawn and unannounced.
+  const witnessGapMatch = /EXIT_WITNESS_GAP_S:\s*([0-9.]+)/.exec(cfgSrc)
+  const witnessGapS = witnessGapMatch ? Number(witnessGapMatch[1]) : NaN
+  const exitAt = smSrc.indexOf('s.geoState = "EXITING"')
+  const witnessAt = smSrc.indexOf('gapS > EXIT_WITNESS_GAP_S')
+  check('an exit can only start from a crossing the app watched leave',
+    witnessAt > -1 && exitAt > -1 && witnessAt < exitAt &&
+    /const EXIT_WITNESS_GAP_S = WAY_CONFIG\.EXIT_WITNESS_GAP_S/.test(smSrc) &&
+    /EXIT_WITNESS_GAP_S:\s*120(\.0)?\b/.test(cfgSrc),
+    'the exit transition no longer tests how long the device was silent — an interpolated fence crossing can start a track and a departure event again')
+  check('the witness gap sits between the move cadence and a parked silence',
+    witnessGapS >= 60 && witnessGapS <= 600,
+    `EXIT_WITNESS_GAP_S = ${witnessGapS}: too tight (a real departure at a 15-30 s cadence would be unwitnessed) or too loose (a parked phone's multi-minute gaps would be)`)
+  check('an unwitnessed crossing fabricates nothing and stays silent',
+    /s\.geoState = "UNKNOWN"/.test(smSrc) &&
+    /s\.pendingExitEdge = null/.test(smSrc) &&
+    /s\.settlePending = true/.test(smSrc) &&
+    /unwitnessed: true/.test(smSrc),
+    'the unwitnessed branch must resolve to UNKNOWN, drop the stashed edge point and arm the settle re-anchor — otherwise a crossing nobody saw still draws and announces itself')
+  check('the next ping after an unwitnessed crossing re-anchors with zero distance',
+    /if \(s\.settlePending\)/.test(smSrc) &&
+    /resetMotionAnchor\(s, lat, lon, dt\)/.test(smSrc) &&
+    /distance: 0\.0, isStationary: false/.test(smSrc),
+    'a jump nobody watched would keep its leg and its distance')
+  check('the DO writes, announces and counts nothing for an unwitnessed ping',
+    /!unwitnessed && this\.shouldPersistTrackPoint\(result\)/.test(doCode) &&
+    /if \(!unwitnessed\) this\.maybeNotifyApproach/.test(doCode) &&
+    /stored\.lastStatus && !unwitnessed/.test(doCode),
+    'an unwitnessed ping can reach history, the approach timer or the movement pushes')
+  // Scoped to the event function's own body (declaration -> the method after
+  // it), so a later edit anywhere else in the DO cannot satisfy this check.
+  const evAt = doCode.indexOf('private maybeLogGeofenceEvent(')
+  const evEndAt = doCode.indexOf('private handleChatMessage(')
+  const evBlock = evAt === -1 ? '' : doCode.slice(evAt, evEndAt > evAt ? evEndAt : evAt + 2000)
+  check('no fence event fires from an unwitnessed crossing',
+    evBlock.length > 0 &&
+      !/UNKNOWN|unwitnessed/.test(evBlock) &&
+      /next\.geoState === "CONFIRMED_INSIDE"/.test(evBlock) &&
+      /prior\.geoState === "EXITING" && next\.geoState === "OUTSIDE"/.test(evBlock),
+    'the arrival/departure branches must stay keyed on witnessed transitions only — an entry comes from outside, a departure is the completed EXITING -> OUTSIDE walk')
+  check('the dashboard does not draw an unwitnessed ping either',
+    /!raw\.unwitnessed && shouldDrawPoint\(ping\)/.test(way),
+    'the live map adds the unwitnessed point to the trail — a leg nobody earned')
+
+  // ── An exit must WALK all three phases: CONFIRMED_INSIDE -> EXITING ->
+  // OUTSIDE. This is the phase rule itself, checked structurally: OUTSIDE has
+  // exactly one assignment in the state machine, and it sits behind both the
+  // witness test above and the 30 s exit guard, so no single ping can move a
+  // device from "in" to "out". The only other OUTSIDE assignment in the whole
+  // module is the DO's deleted-fence sweep -- a fence lifecycle reset, which
+  // announces nothing.
+  const outAssigns = (smSrc.match(/geoState = "OUTSIDE"/g) || []).length
+  const outAt = smSrc.indexOf('geoState = "OUTSIDE"')
+  const exitGuardAt = smSrc.indexOf('if (elapsed < EXIT_GUARD_SECONDS)')
+  check('an exit walks all three phases — in, exiting, out',
+    outAssigns === 1 && outAt > -1 && exitGuardAt > -1 && witnessAt > -1 &&
+      outAt > witnessAt && outAt > exitGuardAt,
+    'OUTSIDE is reachable without the witness test and the exit guard — one ping can skip the EXITING phase')
+  const doOutAt = doCode.indexOf('geoState = "OUTSIDE"')
+  check('the only other OUTSIDE assignment is the deleted-fence sweep',
+    (doCode.match(/geoState = "OUTSIDE"/g) || []).length === 1 &&
+      doOutAt > doCode.indexOf('reloadGeofences'),
+    'a ping path assigns OUTSIDE outside the fence-deletion sweep — that is the in -> out shortcut the phase rule forbids')
+  check('an unwitnessed crossing does not swallow the next arrival',
+    /const wasInside =\s*prior\.geoState === "CONFIRMED_INSIDE" \|\| prior\.geoState === "EXITING"/.test(doCode) &&
+      /if \(!wasInside && next\.geoState === "CONFIRMED_INSIDE"\)/.test(doCode),
+    'the arrival is keyed on the literal OUTSIDE name, so after a silent crossing the next real arrival — and its gate push — is never announced')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────

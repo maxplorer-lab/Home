@@ -489,6 +489,48 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     2 km/h stationary threshold, 831 of them classified driving, 7.78 km added
     to the driven totals — all of it a phone on a table.
 
+27. **Two pings stamped in the SAME SECOND are judged, never skipped.** μlogger
+    stamps every fix to whole seconds, so two genuine pings can carry the
+    identical timestamp — and that is not "no elapsed time": it means the real
+    gap is shorter than the clock can show. `isGlitch` used to return false for
+    `dt <= 0`, so two same-second fixes kilometres apart were BOTH accepted; a
+    latent hole, proven with a real two-ping upload (the second, 2 km out, is
+    now dropped) and certified by mutation. The fix is a floor, not a ban:
+    `GLITCH_TIME_FLOOR_S` (1 s — the stamp resolution) is what such a pair is
+    judged against, so at most 33 m at the 120 limit can hide under it while
+    this phone's harmless daily pairs (7 m, 11 m apart) still pass.
+    **This was NOT the cause of the parked-phone triangle of 2026-09-19.** There
+    the teleport arrived ALONE after a multi-hour silence (0.5 km/h implied, so
+    no speed gate can see it) and then sat in the exit guard's buffer for 65 s,
+    long enough for the guard to confirm. The tell is that the triangle's first
+    row sits EXACTLY on the exit radius (90.0 m) and carries the wild ping's
+    timestamp but the confirming ping's accuracy: it is `exitBoundaryPoint`'s
+    interpolation — a crossing the app never observed. That class needs a
+    witness test on the exit transition, not a distance limit.
+28. **An exit WALKS three phases — inside → EXITING → OUTSIDE — and a crossing
+    nobody watched never becomes one.** From a ping there is exactly ONE
+    assignment of `OUTSIDE` in `state-machine.ts`, and it sits behind both the
+    witness test and `EXIT_GUARD_SECONDS`: no single ping can move a device from
+    inside a fence to outside it, and the departure event is keyed on the
+    completed walk (`EXITING → OUTSIDE`) alone — nothing else announces a leave.
+    The crossing may only *start* from a ping that MEASURED it: if the device had
+    been silent longer than `EXIT_WITNESS_GAP_S` (120 s — between the 2–30 s move
+    cadence and a parked phone's multi-minute gaps), the ping is dropped whole
+    (no interpolated edge point on the exit radius, no leg, no distance, no chat
+    row, no push, nothing drawn), the fence state resolves by position, and
+    `settlePending` re-anchors the next accepted ping where the device really is,
+    contributing zero distance. That is what silenced the 2026-09-19 triangle.
+    **`UNKNOWN` is where an unwitnessed crossing lands, and it is not a state
+    events may key on**: an arrival is *"the prior state was not inside"*
+    (`CONFIRMED_INSIDE`/`EXITING`), never the literal name `OUTSIDE` — keying it
+    on `OUTSIDE` lets one silent crossing swallow the NEXT real arrival, and with
+    it the push that opens the gate. Guards: smoke section 15 (the walk, the
+    single `OUTSIDE` assignment, the departure key, the arrival key), each
+    falsified by mutation. Proven live 2026-09-19: the DO's own state file read
+    `geoState = UNKNOWN`, a returning drive confirmed the entry, and
+    `MaxX arrived at Home` was written — a row the literal-`OUTSIDE` key can
+    never produce.
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -566,6 +608,7 @@ have their own separate repositories and their own history.
 | The HUD (or a stored row, or a Trips total) shows an impossible speed | the **reported** half of rule 25: `FleetDO.handleIngest` must null `ping.vel` above `PRE_FILTER_SPEED_LIMIT` *before* `processPing`, and `state-machine.ts` must refuse it too. A believable-but-wrong number (90 km/h on a parked device) is NOT filtered — the rule is only about the limit, so look elsewhere for that |
 | A phone that has not moved draws a track, or a Trips total grows on its own | the **reported-speed** half of rule 26 — the speed field lies, not the coordinates. Check `reportedSpeedIsCredible` + `REPORTED_SPEED_MIN_MOVE_M` and the replacement block in `FleetDO.handleIngest`. Look at the fence too: a phone parked *outside* its home fence is never "inside" either, so nothing gets dropped by the inside rule (Home1 sits ~305 m from where the household's phones actually stop) |
 | A device's track teleports, or a synthetic ping seems to be ignored | the **position** half of rule 25 — `isGlitch` drops a ping implying >120 km/h silently and the upload still answers success. Check the speed your test generated before suspecting the pipeline (a 5 s gap and a 1 km step is 720 km/h, no matter what the `speed` field says) |
+| A track spikes out and back from a geofence while the phone is parked | two separate causes, and the rows tell them apart. **Same-second pair?** judged against `GLITCH_TIME_FLOOR_S`, never skipped (rule 27) — a pre-floor DO accepts it unseen. **First row of the pair exactly on the exit radius?** that is the guard's interpolated edge point, so read the ping that STARTS the exit: a far-out ping after a long silence passed every speed gate (0.5 km/h implied over hours) and the guard then confirmed on wall time. `pingsFlushed` counts only accepted pings, so it is the first honest number to read |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |
 | Someone is ticked in W.A.Y's grid and still receives nothing | they have no **tracking** topic: the grid says yes, the events are addressed to a topic that does not exist, and nothing else complains. `/settings`' household card warns about exactly this, and `GET /way/api/debug/notify` reports `niri has no topic` |
@@ -597,6 +640,8 @@ have their own separate repositories and their own history.
 | The Chat tab shows a red dot, but the chat has nothing new in it | the dot is a **watermark**, not a count: `localStorage['chat_last_seen']` (an ISO instant) against the DO's newest `chat_messages.created_at`, polled from `/way/api/chat/latest` on every page. It never shows while you are ON `/chat` (that poll advances the watermark instead). A device seeing the dot for the first time adopts the whole backlog — if it is lit on a fresh device, the watermark was set by hand or the DO's timestamps are not ISO |
 | A badge pulses (or keeps pulsing after the car has parked) | that is the **approach pulse**: the DO arms it from the same 60 s / 30 s thresholds that send the entry-timer push (`notify-v7-approach-chat`), yellow at 60 s and red at 30 s. It expires on **wall time** — 60 s from the 60 s trigger with no 30 s, 60 s from the 30 s trigger with no entry — and on arrival or turn-away (`clearApproachPulse`). Nothing pulsing means no threshold was crossed: the push, the pulse and the chat row are one decision, so a missing pulse is a missing notification, and `/way/api/debug/notify` says whether the per-event-type recipient count is 0 |
 | The 60 s / 30 s push arrives but there is no row for it in the chat | the row is written by the same block that pushes (`maybeNotifyApproach`), so a missing row means the running Durable Object is **pre-`notify-v7`** code — a DO keeps its old instance until evicted, and the chat row is the one part of that block a browser-side check cannot see. `GET /way/api/debug/notify` reports `build`; a settings save forces the restart. If the build is v7 and the row is still absent, look for a `handleChatMessage` failure in the DO's logs (the flush writes `way-db` nightly, so the row will also be missing from `messages` until then) |
+| A drive home never announces `arrived at Home` (no chat row, no push) while `left Home` still works | the entry was never CONFIRMED, and the usual cause is the **rolling average**, not the dwell: `processOutside` restarts `entryStartTime` on every ping whose `speedBuffer` average is ≥ `WALKING_DRIVING_THRESHOLD` (10 km/h), and that buffer holds only `SPEED_BUFFER_SIZE` (3) samples — after a 30 km/h approach the first stationary pings each reset the clock, so the 30 s `ENTRY_GUARD_SECONDS` cannot mature. Three stationary pings on a ~40 s cadence is what settles it (measured 2026-09-19). The second cause is the arrival key: if `maybeLogGeofenceEvent` is keyed on the literal `OUTSIDE` again, a device sitting in `UNKNOWN` (unwitnessed crossing, rule 28) can never announce its arrival |
+| A `left Home` row plus a multi-km spike appear while the phone never left the fence | the exit started from a ping that did not witness the crossing (rule 28). Check `EXIT_WITNESS_GAP_S` against the move cadence, and that `s.geoState = "OUTSIDE"` is still the only `OUTSIDE` assignment — smoke section 15 fails on both, and on the DO drawing or storing an `unwitnessed` ping |
 | The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |
 
 ### What is actually served

@@ -706,6 +706,14 @@ export class FleetDO extends DurableObject<Env> {
     const geofences = await this.getGeofences();
     const { state: newMotion, result } = processPing(stored.motion, ping, geofences, stored.forcedMode);
 
+    // An UNWITNESSED ping: the device was found outside its fence, but it was
+    // last heard from so long ago that nobody watched it leave (see
+    // EXIT_WITNESS_GAP_S). The position is real, the crossing is not -- so it
+    // moves the live dot and nothing else: no history row, no distance, no
+    // event, no push. The fence state resolved to UNKNOWN, and the next ping
+    // re-anchors with zero distance (settlePending).
+    const unwitnessed = result.unwitnessed === true;
+
     // If the device just crossed a fence's exit radius, start the outgoing
     // track AT the boundary instead of the first ping past it.
     if (result.edgePoint) {
@@ -741,12 +749,14 @@ export class FleetDO extends DurableObject<Env> {
       exitBuffer = [];
     } else if (newMotion.geoState === "CONFIRMED_INSIDE") {
       exitBuffer = []; // bounced back inside (or never left) -- nothing to keep
+    } else if (unwitnessed) {
+      exitBuffer = []; // unseen crossing: nothing held, nothing to flush later
     }
 
     // ---- stationary / moving events (push notification only, never chat) ----
     // Only fires outside a geofence: inside one the status is "at <place>",
     // which is what the entry/exit events already cover.
-    if (stored.lastStatus) {
+    if (stored.lastStatus && !unwitnessed) {
       const wasStationary = stored.lastStatus.isStationary === true;
       const isStationaryNow = result.isStationary === true;
       if (!wasStationary && isStationaryNow) {
@@ -761,11 +771,11 @@ export class FleetDO extends DurableObject<Env> {
     }
 
     // ---- "Entry timer": 60s / 30s from a Home fence, while driving at it ----
-    this.maybeNotifyApproach(ping, stored.motion, result, geofences);
+    if (!unwitnessed) this.maybeNotifyApproach(ping, stored.motion, result, geofences);
 
     // recordingPaused overrides everything else -- no history writes at all
     // while paused.
-    const shouldPersist = !stored.recordingPaused && this.shouldPersistTrackPoint(result);
+    const shouldPersist = !stored.recordingPaused && !unwitnessed && this.shouldPersistTrackPoint(result);
 
     // device_state updates on every ping regardless of the throttle or
     // the pause flag -- it's a single UPSERT row, not a growing table,
@@ -819,7 +829,9 @@ export class FleetDO extends DurableObject<Env> {
       speed: ping.vel ?? null,
       accuracy,
       // The frontend must move the live dot but NOT add this to the track --
-      // during the guard the point is held in exitBuffer and drawn later.
+      // during the guard the point is held in exitBuffer and drawn later, and
+      // an unwitnessed point (the `...result` carries the flag) is no track
+      // point at all: no leg, no distance, no event.
       guarding: newMotion.geoState === "EXITING",
       ...result,
     });
@@ -941,12 +953,24 @@ export class FleetDO extends DurableObject<Env> {
     result: PingResult,
     timestamp: string
   ) {
-    // "arrived" only on a CONFIRMED entry (OUTSIDE -> CONFIRMED_INSIDE), and
-    // "left" only on a CONFIRMED exit (EXITING -> OUTSIDE). The intermediate
+    // "arrived" only on a CONFIRMED entry, and "left" only on a CONFIRMED exit
+    // -- and a confirmed exit means the full three-phase walk, EXITING ->
+    // OUTSIDE. A single ping can never move a device from "in" to "out":
+    // OUTSIDE has exactly one assignment in the state machine and it sits
+    // behind both the witness test and the exit guard. The intermediate
     // CONFIRMED_INSIDE <-> EXITING transitions are just hysteresis wiggle and
     // must NOT emit events -- that was what caused ghost "left"/"arrived"
     // pairs from GPS jitter near the fence boundary.
-    if (prior.geoState === "OUTSIDE" && next.geoState === "CONFIRMED_INSIDE") {
+    //
+    // The arrival test is "was NOT inside", not the literal OUTSIDE name: an
+    // UNWITNESSED crossing (EXIT_WITNESS_GAP_S) resolves to UNKNOWN, and that
+    // device is genuinely not at home -- the ping which resolved it measured a
+    // position outside the exit radius. Keying on OUTSIDE alone would let one
+    // silent crossing also swallow the NEXT real arrival, and with it the push
+    // that opens the gate.
+    const wasInside =
+      prior.geoState === "CONFIRMED_INSIDE" || prior.geoState === "EXITING";
+    if (!wasInside && next.geoState === "CONFIRMED_INSIDE") {
       const place = this.displayNameFor(result.geofenceName);
       console.log(`event ${deviceId}: entry (${place})`);
       this.handleChatMessage(null, `${deviceId} arrived at ${place}`, {
