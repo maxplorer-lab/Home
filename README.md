@@ -176,11 +176,13 @@ phone is actually following rather than to the one it replaced.
 The map is drawn on a **playback clock** rather than ping by ping: the marker
 trails live by ~25 s and glides between positions instead of hopping to each
 one, and the camera works in **cycles** rather than chasing it — the device
-roams out from the middle of the screen while the map sits still, shoves a beat
-past the edge of its box, and is then drawn back to the centre in one elastic
-pull (it keeps being drawn while it is pulled, so its heading is never lost).
-The map is therefore still most of the time, and the device is never left
-parked against the edge. What W.A.Y records is
+roams a **circle** in the middle of the screen (70% of the width on a phone)
+while the map sits still, shoves a beat past that circle's edge, and is then
+swept across to the **opposite edge** in one elastic pull. It keeps being drawn
+while it is swept, so its heading is never lost, and because it lands on the far
+side it has the whole diameter to cross before the camera moves again — the map
+is therefore still for most of every cycle, and the device is never left parked
+against the edge. What W.A.Y records is
 unaffected — the same points, the same classifications, the same colours, dash
 and stationary dots, the same **Flush now**. The HUD is live while the map is
 behind, and the one line that names the lag sits under the pace pills in

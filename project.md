@@ -549,45 +549,66 @@ points there, so the marker waits and eases the last stretch.
   live "tail" that grows with it. `resetTrail()` is the rare full rebuild — a
   fresh snapshot, the track eye switched back on, or a late `track` point that
   slots in *before* the cursor and shifts every commit index.
-* **A follow camera that works in cycles.** The device roams the **middle half
-  of the screen** while the map sits still (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`),
-  then leaves that box; the map holds for `FOLLOW_PUSH_MS` (380 ms) while the
-  device shoves a few pixels past the edge, and then the camera draws it back to
-  the **centre** over `FOLLOW_PULL_DURATION` (1.6 s) with an ease that
-  overshoots by `FOLLOW_PULL_SPRING`'s few percent and settles — a spring, not a
-  slide. Four phases, one at a time: DRIFT → PUSH → PULL → DRIFT.
+* **A follow camera that works in cycles.** Four phases, one at a time:
+  DRIFT → PUSH → PULL → DRIFT. The device roams a **circle** in the middle of
+  the screen (`FOLLOW_ZONE_DIAMETER_FRACTION` of the shorter side) while the map
+  sits still; the map holds for `FOLLOW_PUSH_MS` (380 ms) while the device
+  shoves a few pixels past the edge; and then the camera **sweeps it to the
+  opposite edge** of that circle, with an ease that overshoots its aim by
+  `FOLLOW_PULL_SPRING`'s few percent and settles — a spring, not a slide.
 
-  The pull closes the gap the device had when the pull began **while still
-  following where the device is**, so a device that keeps driving, turns or
-  stops is drawn correctly throughout and lands on the centre either way; that
-  is what makes the camera move with the device instead of aiming at a point.
-  Every frame is a `panBy` of a pixel or two — which is what Leaflet's own
-  animated pan does internally — and deliberately not `panTo` (it would pick a
-  landing point and stop moving with the device) or `setView` (it fires
-  `viewreset` and re-projects every layer).
+  **A circle, not a box.** The eye judges "too far from the middle" as a
+  *distance*, not as two independent axis limits, so a diagonal drift deserves
+  the same room as a straight one — and a circle leaves the four corners of the
+  screen alone, which is exactly where the HUD (top-left) and the badge strip
+  (bottom-right) live. On a 423×768 map the circle's lowest point is 55 px clear
+  of a two-badge strip where the old box's corner was 11 px from it. The radius
+  comes off the **shorter** side so the circle always fits: on a portrait phone
+  that is exactly "70% of the screen width", and on a wide desktop map it is
+  the height, which is the side that would otherwise push the device off-screen.
+
+  **Sweeping to the opposite edge, not back to the middle.** This is what makes
+  a cycle worth having: the device then has the whole diameter to cross before
+  the camera reacts again, so the map is still for twice as long and the
+  recentres are half as frequent. Note what does NOT change: the camera's total
+  travel is the same either way, because it has to end up wherever the device
+  went. The only two things there are to choose are how OFTEN it moves (this
+  circle) and how FAST (the ratio).
+
+  **A ratio, not a duration.** The pull lasts `FOLLOW_PULL_RATIO` (3) of the
+  drift it just watched, so it crosses the same distance in a third of the time
+  and the device is swept back at 3× the rate it drifted out (the camera itself
+  runs at 4×, since the device keeps moving while it is carried). A fixed
+  duration — the 1.6 s, then 4.8 s, of the first two attempts — is wrong at both
+  ends of the speed range: the sweep that reads as a calm slide at 80 km/h is a
+  violent one at walking pace, where the device has barely covered the same
+  distance, and a long fixed sweep at driving speed keeps the camera moving for
+  most of a cycle. `FOLLOW_PULL_MIN_MS` (1.5 s) is the floor for the one case
+  with no drift to measure — the device was *placed* outside the circle (a pace
+  switch, a fresh follow, a reconnect) rather than drifting out of it.
+
+  **It lands just inside the circle** (`FOLLOW_PULL_LANDING` = 0.93 of the
+  opposite extreme), and that hair of hysteresis is load-bearing: at exactly the
+  opposite edge the device is still outside the circle on the frame the pull
+  ends, so the trigger would fire again immediately and forever.
+
+  The pull sweeps from the offset the device had when it began to -0.93 of it
+  **while still following where the device is**, so a device that keeps driving,
+  turns or stops is drawn correctly throughout and lands on the far edge either
+  way; that is what makes the camera move with the device instead of aiming at a
+  fixed point. Every frame is a `panBy` of a pixel or two — which is what
+  Leaflet's own animated pan does internally — and deliberately not `panTo` (it
+  would pick a landing point and stop moving with the device) or `setView` (it
+  fires `viewreset` and re-projects every layer).
 
   This replaced a camera that re-centred **only by the overshoot**, which left
-  the device pinned to the edge of the box for as long as it kept moving — and
-  the edge is where the HUD and the badge strip live, so the tracker spent a
-  long drive half-hidden and the road ahead was off-screen. Landing on the
-  centre makes the edge a moment rather than a place: measured on a 423×768 map
-  at 100 km/h, ~8.5 s of still map, ~0.3 s of shove, ~1.5 s of pull that returns
-  the device to **0.5 px of the centre** having crossed it by 5.5 px.
-
-  Sizing this was a judgement call, and the reasoning is worth keeping:
-  a "numpad 5" ninth (a third of each axis) is only ~140 px wide on a phone at
-  follow zoom, so a device at town speed crosses it in a few seconds — the
-  camera would be moving most of the time, which is the judder this replaces —
-  and every wobble near a corner would trigger it. Half the screen
-  (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`, so the device drifts at most a quarter
-  of each axis) is the comfortable middle ground: the map is still for the
-  whole drift — measured **one cycle per ~10.3 s** at 100 km/h, of which 8.5 s
-  is a motionless map — where the old per-ping pan moved it on all 20 pings of
-  those 20 s. It is deliberately a SCREEN
-  fraction and not a distance — a metre-based box is a handful of pixels when
-  zoomed out, so the camera starts moving on every ping there instead, and how
-  far the eye tolerates the device drifting depends on the screen, not the
-  ground. One number to tune, like the lag.
+  the device pinned to the edge of the box for as long as it kept moving — so
+  the tracker spent a long drive half-hidden behind the HUD and the badge strip,
+  with the road ahead off-screen. Measured on a 423×768 map at 120 km/h: a
+  296 px circle, the marker entering it at 149 px and leaving the sweep at
+  **-142 px** (the far edge, a hair inside), the camera moving **0 px** for the
+  whole drift, and one cycle per **26.5 s** of which 19.6 s is a motionless map
+  — where the per-ping pan this all replaced moved the map 20 times in 20 s.
 * **The lag is also the pace, and the pace is the user's.** The lag above is
   what makes a commute watchable, and it is also 25 s of "wrong" whenever the
   question changes from *how did the trip look* to *where is he right now*. So
@@ -641,7 +662,22 @@ driven/walked totals come from `GET /way/api/history` (D1) and are summed
 **Invariants this rewrite is not allowed to break:** the geometry, colours
 (`SPEED_COLOR_STOPS`), walking dash, gap rule, stationary dots (colour, radius,
 20 m clustering), the glitch filter / state machine / `shouldDrawPoint`
-filters, the 21:00 flush and the **Flush now** button. `npm run smoke` section
+filters, the 21:00 flush and the **Flush now** button.
+
+**The 120 km/h law, in both halves.** `WAY_CONFIG.PRE_FILTER_SPEED_LIMIT` is
+what counts as GPS jitter, and it is applied twice because the number can arrive
+two ways. A ping whose **position** implies more is dropped whole and silently
+before the state machine (`isGlitch`) — the upload still answers success, like
+the Python receiver it was ported from. A ping whose **reported** μlogger speed
+claims more keeps its position and loses only that field: the phone captures
+that speed independently of the coordinates it travels with, so the position
+check cannot see it, and a 250 km/h claim would otherwise reach the
+classification, the rolling average, the live HUD, the stored row,
+`pending_sync` and the approach ETA. It is **discarded** (null — "not reported")
+rather than clamped: a clamp would invent a 120 km/h drive out of a jitter ping.
+Every consumer already handles a missing field (`ping.vel ?? result.speedAvg`),
+and the rule is asserted by smoke section 15 with a real μlogger proof in the
+run doc. `npm run smoke` section
 15 asserts the served page still carries every one of those values and that the
 ping path no longer redraws; the equivalence itself was verified by running the
 OLD segmentation against the same committed points and diffing layer by layer

@@ -881,25 +881,56 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     ping ? 'handleNewPing still redraws or pans' : 'handleNewPing is not in the page')
 
   const cam = fnBody(way, 'updateFollowCamera')
-  const zone = fnBody(way, 'followDeadZonePx')
+  const zone = fnBody(way, 'followZoneRadiusPx')
+  const landing = Number((way.match(/FOLLOW_PULL_LANDING: ([0-9.]+)/) || [])[1])
   check('the camera is the only thing that moves the map',
-    !!cam && cam.includes('panBy(') && !!zone && zone.includes('FOLLOW_DEAD_ZONE_SCREEN_FRACTION') &&
+    !!cam && cam.includes('panBy(') && !!zone && zone.includes('FOLLOW_ZONE_DIAMETER_FRACTION') &&
+    // A circle, off the SHORTER side, so it can never reach the corners the
+    // HUD and the badge strip own.
+    zone.includes('Math.min(size.x, size.y)') &&
     (way.match(/map\.panBy\(/g) || []).length === 1 &&
     // The per-ping pan is the bug this replaced: it must not come back anywhere.
     !/map\.panTo\(/.test(way),
-    'the camera should be one panBy() from updateFollowCamera, off a screen-fraction box, and panTo() should be gone')
+    'the camera should be one panBy() from updateFollowCamera, off a screen-fraction CIRCLE, and panTo() should be gone')
 
-  // The camera is a CYCLE, and the cycle's whole point is where it LANDS: the
-  // box edge is a moment on the way, not a place to sit. The shape this
-  // replaced only undid the overshoot, which pinned the device to that edge
-  // for as long as it kept moving -- where the HUD and the badge strip are.
-  check('the camera roams, shoves through the edge, then springs back to the CENTRE',
+  // The camera is a CYCLE, and the cycle has three load-bearing parts: the zone
+  // is a circle, the sweep goes to the OPPOSITE edge (the whole point of it --
+  // twice the drift per recentre), and it lands a hair INSIDE that edge, since
+  // landing exactly on it would re-arm the trigger on the same frame.
+  check('the camera roams a circle, shoves through its edge, then sweeps to the far side',
     !!cam && /followCam\.phase = 'push'/.test(cam) && /followCam\.phase = 'pull'/.test(cam) &&
-    cam.includes('followCam.pushUntil') && cam.includes('at.subtract(center)') &&
-    cam.includes('center.add(gap.multiplyBy(1 - pullEase(t)))') &&
-    // the old edge-pinned shape must be gone, not merely unused
-    !/dx - zone\.halfX|dy - zone\.halfY/.test(cam) && !way.includes('FOLLOW_GLIDE_DURATION'),
-    'the camera should run drift -> push -> pull TO THE CENTRE, with the old undo-the-overshoot glide gone')
+    cam.includes('followCam.pushUntil') && cam.includes('at.distanceTo(center) <= radius') &&
+    cam.includes('at.subtract(center)') &&
+    // the sweep runs from the edge crossed to the aim, one eased step at a time
+    cam.includes('gap.add(aim.subtract(gap).multiplyBy(pullEase(t)))') &&
+    // WHERE it lands, numerically: strictly inside the circle (a landing ON it
+    // leaves the device outside on the frame the pull ends, and the trigger
+    // then fires forever) and not so far inside that the sweep barely moves.
+    landing > 0.6 && landing < 1 &&
+    // the old box/edge-pinned shapes must be gone, not merely unused
+    !/halfX|halfY/.test(way) && !way.includes('FOLLOW_GLIDE_DURATION') &&
+    !way.includes('FOLLOW_DEAD_ZONE_SCREEN_FRACTION'),
+    'the camera should run drift -> push -> sweep to the OPPOSITE edge of a circle, with the old box and its undo-the-overshoot glide gone')
+
+  // A device that was TELEPORTED out of the circle -- a pace switch, a fresh WS
+  // snapshot -- must land back INSIDE it, or the pull repeats for ever. The aim
+  // is pinned to the circle for exactly that reason, and it is not the exit
+  // offset mirrored.
+  check('a teleported device lands back inside the circle, not outside it again',
+    !!cam && cam.includes('followCam.aim = followCam.gap.multiplyBy(-(radius * CONFIG.FOLLOW_PULL_LANDING) / out)') &&
+    cam.includes('const jump = out > radius * 2') && cam.includes('followCam.gap.distanceTo(L.point(0, 0))') &&
+    // and a jump is not allowed to time the sweep as if it were a drift
+    cam.includes('jump ? CONFIG.FOLLOW_PULL_MIN_MS'),
+    'the sweep should aim at the point opposite the crossing ON the circle (never the mirrored exit offset, which a jump lands outside again), and a jump should not time it')
+
+  // The sweep's LENGTH is measured, not configured: a ratio off the drift it
+  // just watched, so the sweep looks the same relative to the movement at every
+  // device speed. A fixed duration is what this replaced.
+  check('the sweep is timed by the drift, not by a fixed number of seconds',
+    !!cam && cam.includes('driftMs / CONFIG.FOLLOW_PULL_RATIO') &&
+    cam.includes('CONFIG.FOLLOW_PULL_MIN_MS') && cam.includes('followCam.driftFrom = nowMs') &&
+    !way.includes('FOLLOW_PULL_DURATION'),
+    'the sweep should derive its duration from the drift it watched (FOLLOW_PULL_RATIO, floored by FOLLOW_PULL_MIN_MS), not a fixed FOLLOW_PULL_DURATION')
 
   check('the pull moves with the device instead of aiming at a point',
     !!cam && cam.includes('at.subtract(want)') &&
@@ -1111,6 +1142,42 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   check('the approach chat row is written even when nobody subscribed',
     !!thresholdBlock && !/if \([^)]*subscriptions[^)]*\)[\s\S]{0,200}handleChatMessage/.test(thresholdBlock),
     'the chat row is inside a subscription guard — a quiet-hours or unsubscribed threshold would vanish from the record')
+
+  // ── Anything above 120 km/h is GPS jitter, in BOTH directions the number can
+  // arrive. The position check (isGlitch) catches a ping that MOVED impossibly
+  // far; μlogger's speed field travels with the ping independently of the
+  // coordinates it was captured at, so a device claiming 250 km/h while moving
+  // plausibly slips past it — and that number then reaches the classification,
+  // the rolling average, the live HUD, the stored row and the approach ETA.
+  // Both halves must read ONE constant, and the report must be DISCARDED (null)
+  // rather than clamped: a clamp would invent a 120 km/h drive out of jitter.
+  // (Comments stripped first — the explaining comment here names the same
+  // strings, which is how a source guard passes on its own prose.)
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  let cfgSrc = '', smSrc = '', doCode = ''
+  try { cfgSrc = strip(readFileSync(new URL('../src/way/config.ts', import.meta.url), 'utf8')) } catch (e) {}
+  try { smSrc = strip(readFileSync(new URL('../src/way/lib/state-machine.ts', import.meta.url), 'utf8')) } catch (e) {}
+  try { doCode = strip(doSrc) } catch (e) {}
+  check('the 120 km/h jitter limit lives in config and reaches both halves from there',
+    /PRE_FILTER_SPEED_LIMIT:\s*120(\.0)?\b/.test(cfgSrc) &&
+    /const PRE_FILTER_SPEED_LIMIT = WAY_CONFIG\.PRE_FILTER_SPEED_LIMIT/.test(doCode) &&
+    /PRE_FILTER_SPEED_LIMIT/.test(smSrc),
+    'the limit is missing from config.ts, from the DO\'s alias, or from the state machine — so the halves can drift apart')
+  check('a reported speed above the limit is discarded before the state machine sees it',
+    /reportedVel > PRE_FILTER_SPEED_LIMIT/.test(doCode) &&
+    doCode.includes('ping.vel = null') &&
+    doCode.indexOf('ping.vel = null') < doCode.indexOf('processPing(stored.motion'),
+    'the intake keeps an impossible report (or filters it after processPing), so 250 km/h can reach the HUD and the stored rows')
+  check('the report is discarded, not clamped into a 120 km/h drive',
+    !/Math\.min\([^)]*PRE_FILTER_SPEED_LIMIT/.test(doCode),
+    'the report is being clamped instead of dropped — that invents a fast drive out of a jitter ping')
+  check('the state machine also refuses an impossible reported speed',
+    /ping\.vel <= PRE_FILTER_SPEED_LIMIT/.test(smSrc),
+    'a caller of processPing can still inject a >120 km/h report into the classification and the average')
+  check('the position-implied jitter check still runs before the state machine',
+    doCode.indexOf('isGlitch(') > -1 &&
+    doCode.indexOf('isGlitch(') < doCode.indexOf('processPing(stored.motion'),
+    'the glitch filter no longer precedes processPing, so an impossible jump would be classified as movement')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────

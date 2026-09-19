@@ -50,6 +50,7 @@ import {
   PingResult,
   ForcedMode,
 } from "../lib/state-machine";
+import { WAY_CONFIG } from "../config";
 
 /** Household ntfy server, in home-db (the unified settings own it). */
 const NTFY_SERVER_HOME_KEY = "ntfy_server";
@@ -92,6 +93,13 @@ interface IngestBody {
   accuracy: number | null;
   altitude: number | null;
 }
+
+// Anything above this (km/h) is GPS jitter, in BOTH of the ways the number can
+// arrive: a ping whose POSITION implies it is dropped whole by
+// state-machine.isGlitch, and one whose REPORTED speed claims it keeps its
+// position and loses only the speed field (see handleIngest). One constant
+// feeds both halves, so they cannot drift apart.
+const PRE_FILTER_SPEED_LIMIT = WAY_CONFIG.PRE_FILTER_SPEED_LIMIT;
 
 // Push-notification policy. A per-(source, event type, geofence) cooldown
 // keeps GPS jitter / fence flapping from becoming a notification storm, and
@@ -635,6 +643,25 @@ export class FleetDO extends DurableObject<Env> {
   private async handleIngest(body: IngestBody) {
     const { ping, accuracy, altitude } = body;
     const stored = this.loadDeviceState(ping.deviceId);
+
+    // ---- Reported-speed pre-filter ---------------------------------------
+    // The position check below catches a ping that MOVED impossibly far, but
+    // μlogger's speed field travels with the ping and is independent of the
+    // coordinates it was captured at -- so a device reporting 250 km/h while
+    // moving plausibly slips past it, and that number then reaches the state
+    // machine's classification, the rolling average, the live HUD, the stored
+    // row, pending_sync and the approach ETA. Above the limit the report is
+    // jitter by the same rule, so it is DISCARDED rather than clamped: null
+    // means "not reported", which is the case every consumer already handles
+    // (`ping.vel ?? result.speedAvg`), and the position-derived speed then
+    // serves it.
+    const reportedVel = ping.vel;
+    if (
+      reportedVel !== null && reportedVel !== undefined &&
+      (!Number.isFinite(reportedVel) || reportedVel > PRE_FILTER_SPEED_LIMIT)
+    ) {
+      ping.vel = null;
+    }
 
     // ---- Glitch pre-filter, using the last known raw position ----
     if (

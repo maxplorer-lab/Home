@@ -453,35 +453,35 @@ const CONFIG = {
     FOLLOW_FLY_DURATION: 1.2,
 
     // ── Follow camera (VISUAL ONLY) ──────────────────────────────
-    // The camera does not trail the device and it does not pin it: it lets the
-    // device roam and then springs it back to the middle of the screen. One
-    // cycle is DRIFT (map still, the device walks away from the centre) ->
-    // PUSH (it leaves its box and keeps going while the map still holds, so the
-    // edge is something it shoves through for a beat) -> PULL (the camera moves
-    // so the device is drawn back to the CENTRE, still travelling with it) ->
-    // DRIFT. Side effect worth having: while someone is parked the map no
-    // longer wanders, because GPS jitter stays inside the box.
+    // The camera does not trail the device and it does not pin it: the device
+    // roams a CIRCLE in the middle of the screen while the map holds still, and
+    // then the camera carries it across that circle to the OPPOSITE edge. One
+    // cycle is DRIFT (map still, the device walks away from the middle in any
+    // direction) -> PUSH (it keeps going for a beat while the map still holds,
+    // so the edge is something it shoves through) -> PULL (the camera sweeps it
+    // to the far side, still travelling with it) -> DRIFT. Side effect worth
+    // having: while someone is parked the map no longer wanders, because GPS
+    // jitter stays inside the circle.
     //
-    // The camera this replaces only undid the overshoot, which pinned the
-    // device to the edge of the box for as long as it kept moving -- exactly
-    // where the HUD and the badge strip are, and the road ahead was off-screen.
-    // Landing on the CENTRE makes the box edge a moment, not a place.
+    // Why a CIRCLE and not the box this used to be: the eye judges "too far
+    // from the middle" as a DISTANCE, not as two axis limits, so a diagonal
+    // drift gets the same room as a straight one -- and a circle leaves the
+    // four corners of the screen alone, which is exactly where the HUD and the
+    // badge strip live. On a 423x768 map the circle's lowest point sits 55px
+    // clear of a two-badge strip, where the box's corner sat 11px from it.
     //
-    // This fraction is how much of the viewport the device may roam, so 0.5
-    // means "the middle half": it can drift a quarter of the screen in any
-    // direction before the camera reacts. Why not the numpad's middle ninth (a
-    // third of each axis)? On a phone that box is ~140px wide at follow zoom,
-    // and a device at town speed crosses it in a few seconds -- the camera
-    // would be moving most of the time, and every wobble near a corner would
-    // trigger it. Half is the comfortable middle ground: at ~50km/h a quarter
-    // of the screen is ~20s of driving, so the map sits still for most of a
-    // cycle and moves in one elastic pull.
+    // Why the sweep goes to the OPPOSITE edge instead of back to the middle:
+    // the device then has the whole diameter to cross before the camera reacts
+    // again, so the map is still for twice as long and the recentres are half as
+    // frequent. The camera's TOTAL travel is the same either way -- it has to
+    // end up wherever the device went -- so the only things to choose are how
+    // often it moves (this circle) and how fast (the ratio below).
     //
-    // Deliberately a SCREEN fraction and not a distance: a metre-based box is
-    // a handful of pixels when zoomed out, so the camera would move on every
+    // Deliberately a SCREEN fraction and not a distance: a metre-based circle
+    // is a handful of pixels when zoomed out, so the camera would move on every
     // ping there instead -- and how far the eye tolerates the device drifting
     // depends on the screen, not on the ground.
-    FOLLOW_DEAD_ZONE_SCREEN_FRACTION: 0.5,
+    FOLLOW_ZONE_DIAMETER_FRACTION: 0.7,
     // PUSH: how long the device keeps travelling past the edge before the pull
     // starts. This is the beat that reads as "shoving through" -- without it
     // the pull begins the instant the edge is crossed and the edge never
@@ -489,14 +489,34 @@ const CONFIG = {
     // pace that beat is a couple of pixels of travel, and what the eye sees is
     // the pause, not the distance.
     FOLLOW_PUSH_MS: 380,
-    // PULL: how long the camera takes to draw the device from the edge back to
-    // the centre. Long enough to read as a movement rather than a jump, short
-    // enough that the device is never left sitting off-centre for a whole ping.
-    FOLLOW_PULL_DURATION: 1.6,
-    // The pull's easing overshoots the centre and settles back onto it
+    // PULL: how long the camera takes to carry the device from the edge it just
+    // crossed to the opposite one -- expressed as a fraction of the DRIFT it
+    // just watched. 3 means the pull crosses the same distance in a third of
+    // the time, so the device is swept back at 3x the rate it drifted out (the
+    // camera itself runs at 4x, because the device keeps moving while it is
+    // carried). The camera is therefore moving a quarter of every cycle, at
+    // every speed.
+    //
+    // A RATIO and not a duration on purpose: a fixed one is wrong at both ends
+    // of the speed range. The 4.8s pull that read as a calm slide at 80km/h is
+    // a violent one at walking pace, where the device has barely covered the
+    // same distance -- and a fixed long pull at driving speed keeps the camera
+    // moving for most of a cycle.
+    FOLLOW_PULL_RATIO: 3,
+    // The pull's floor, for the one case where there is no drift to measure: the
+    // device was put outside the circle by something other than a drift (a pace
+    // switch, a fresh follow, a reconnect), so the time being measured is not a
+    // drift at all and the camera should just re-centre quickly.
+    FOLLOW_PULL_MIN_MS: 1500,
+    // The pull comes to rest this far short of the opposite extreme. Landing
+    // exactly ON the circle would leave the device outside it the moment the
+    // pull stopped, so the trigger would fire again immediately and forever;
+    // just inside it, the next pull has to be earned by another whole drift.
+    FOLLOW_PULL_LANDING: 0.93,
+    // The pull's easing overshoots its aim and settles back onto it
     // (easeOutBack), which is the whole difference between a spring and a
-    // slide: 1.2 is a few percent of the gap past the centre. Larger flings,
-    // smaller barely registers.
+    // slide: 1.2 is a few percent past the aim. Larger flings, smaller barely
+    // registers.
     FOLLOW_PULL_SPRING: 1.2,
     // A stale follow-zoom preference used to be re-checked on every ping,
     // which is what made the camera swoop mid-drive. It can only really be
@@ -576,7 +596,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-19.5-superapp';
+const WAY_BUILD = '2026-09-19.6-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -660,11 +680,13 @@ let tipClassByDevice = {};   // devId -> the tip-dot class currently drawn
 let markerPositions = {};    // devId -> where its marker actually is (playback clock)
 let trailState = {};         // devId -> append-only trail drawing state
 // The follow camera's cycle: phase is 'drift' (the map is still), 'push' (the
-// device has left its box and keeps going while the map holds) or 'pull' (the
-// camera is drawing it back to the centre). `gap` is the device's offset from
-// the centre when the pull began, so the pull closes THAT gap rather than
-// aiming at a fixed point -- the device keeps being drawn while it closes.
-let followCam = { lastZoomFix: 0, flyUntil: 0, phase: 'drift', pushUntil: 0, pullFrom: 0, gap: null };
+// device has left the circle and keeps going while the map holds) or 'pull'
+// (the camera is carrying it across to the far edge). `gap` is the device's
+// offset from the middle when the pull began and `aim` is where the sweep ends
+// -- both offsets from the middle, so the sweep is gap + (aim - gap) * ease and
+// the camera keeps drawing the device the whole way. `driftFrom`..`pullTo` are
+// the drift that timed the pull.
+let followCam = { lastZoomFix: 0, flyUntil: 0, phase: 'drift', pushUntil: 0, pullFrom: 0, pullTo: 0, driftFrom: 0, gap: null, aim: null };
 // devId -> the badge "radar" for a device driving at a Home fence:
 // { level: 'yellow'|'red', place, threshold, until }. Armed by the DO — the
 // SAME thresholds that send the push — and cleared on arrival, on turning
@@ -1338,21 +1360,22 @@ function startPlaybackLoop() {
     requestAnimationFrame(playbackTick);
 }
 
-// ── The follow camera (the bounce cycle) ─────────────────────────
+// ── The follow camera (the roaming circle + the sweep) ───────────
 
-/** Half-extents of the box the device may roam before the camera reacts, in
- * pixels: half of FOLLOW_DEAD_ZONE_SCREEN_FRACTION of each side of the map. */
-function followDeadZonePx() {
+/** The radius of the circle the device may roam before the camera reacts:
+ * FOLLOW_ZONE_DIAMETER_FRACTION of the SHORTER side of the map, so the circle
+ * always fits inside it. On a portrait phone the shorter side is the width, so
+ * this is exactly a diameter of 70% of the screen width; on a wide desktop map
+ * it is the height, which is the side that would otherwise push the device off
+ * the screen. */
+function followZoneRadiusPx() {
     const size = map.getSize();
-    return {
-        halfX: (size.x * CONFIG.FOLLOW_DEAD_ZONE_SCREEN_FRACTION) / 2,
-        halfY: (size.y * CONFIG.FOLLOW_DEAD_ZONE_SCREEN_FRACTION) / 2
-    };
+    return (Math.min(size.x, size.y) * CONFIG.FOLLOW_ZONE_DIAMETER_FRACTION) / 2;
 }
 
 /** One pull's easing (easeOutBack): it leaves slowly -- the device has just
- * been shoving at the edge -- then closes the gap, crosses the centre by a few
- * percent and settles back onto it. The overshoot is the whole difference
+ * been shoving at the edge -- then closes most of the gap, crosses its aim by a
+ * few percent and settles back onto it. The overshoot is the whole difference
  * between a spring and a slide. */
 function pullEase(t) {
     const s = CONFIG.FOLLOW_PULL_SPRING;
@@ -1361,22 +1384,27 @@ function pullEase(t) {
 }
 
 /**
- * The camera, as a cycle rather than a chase. It never TRAILS the device -- it
- * lets the device roam, then springs it back to the middle of the screen:
+ * The camera, as a cycle rather than a chase. It never TRAILS the device:
  *
- *   DRIFT  the map is still. The device walks away from the centre.
- *   PUSH   it has left its box and keeps going for FOLLOW_PUSH_MS while the
- *          map still holds, so the edge registers as something it shoves
- *          through instead of a place it gets pinned to.
- *   PULL   the camera moves so the device is DRAWN BACK TO THE CENTRE over
- *          FOLLOW_PULL_DURATION, overshooting it by a few percent.
+ *   DRIFT  the map is still. The device walks away from the middle of the
+ *          screen, in any direction, until it leaves the roaming circle.
+ *   PUSH   it keeps going for FOLLOW_PUSH_MS while the map still holds, so the
+ *          edge registers as something it shoves through instead of a place it
+ *          gets pinned to.
+ *   PULL   the camera carries it from the edge it crossed to the OPPOSITE edge
+ *          of the circle, overshooting its landing by a few percent.
  *
- * The pull moves WITH the device: it closes the gap the device had when the
- * pull began, so whatever the device does while it is being drawn back -- keeps
- * driving, turns, stops -- is still drawn, and it lands on the centre either
- * way. The camera this replaced undid only the overshoot, which pinned the
- * device to the box edge for as long as it kept moving, and the box edge is
- * where the HUD and the badge strip live.
+ * The pull moves WITH the device: the point it aims at travels with the device
+ * (the device's screen position sweeps from the edge it crossed to that aim),
+ * so whatever the device does while it is carried -- keeps driving, turns,
+ * stops -- is still drawn, and it lands on the far edge either way. The aim is
+ * the point OPPOSITE the crossing on the circle, a hair inside it
+ * (FOLLOW_PULL_LANDING); landing exactly on the circle is load-bearing to
+ * avoid, since the device would still be outside it on the frame the pull
+ * ended and the trigger would fire again immediately, for ever. Its DURATION is
+ * FOLLOW_PULL_RATIO of the drift just watched, not a fixed number of seconds,
+ * so the sweep always looks the same relative to the movement it is undoing:
+ * it crosses the same distance in a third of the time.
  *
  * Every per-frame correction is a `panBy` of a pixel or two, which is exactly
  * how Leaflet's own animated pan works internally. Deliberately not `panTo`
@@ -1395,6 +1423,8 @@ function updateFollowCamera() {
         followCam.flyUntil = nowMs + CONFIG.FOLLOW_FLY_DURATION * 1000;
         followCam.phase = 'drift';       // the flight re-centres on its own
         followCam.gap = null;
+        followCam.aim = null;
+        followCam.driftFrom = nowMs;
         ignoreMapEvents();
         map.flyTo([pos.lat, pos.lng], userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
         return;
@@ -1404,37 +1434,55 @@ function updateFollowCamera() {
     // Everything is measured in screen pixels: how far the eye tolerates the
     // device drifting depends on the screen, not on the ground.
     const size = map.getSize();
-    const zone = followDeadZonePx();
+    const radius = followZoneRadiusPx();
     const center = size.divideBy(2);
     const at = map.latLngToContainerPoint([pos.lat, pos.lng]);
 
-    // PUSH: the device is out of the box and the map holds still on purpose.
+    // PUSH: the device is out of the circle and the map holds still on purpose.
     if (followCam.phase === 'push') {
         if (nowMs < followCam.pushUntil) return;
         followCam.phase = 'pull';
         followCam.pullFrom = nowMs;
         followCam.gap = at.subtract(center);
+        // Where the sweep ends: the point on the circle OPPOSITE the one it
+        // crossed, a hair inside it (FOLLOW_PULL_LANDING). Deliberately NOT the
+        // exit offset mirrored: a device that was TELEPORTED far outside the
+        // circle -- a pace switch, a fresh WS snapshot -- would land outside it
+        // again, and the pull would then repeat for ever. Pinned to the circle,
+        // the landing is inside it whatever happened out there.
+        const out = Math.max(followCam.gap.distanceTo(L.point(0, 0)), 1);
+        followCam.aim = followCam.gap.multiplyBy(-(radius * CONFIG.FOLLOW_PULL_LANDING) / out);
+        // The sweep is timed off the drift, so it covers the same distance at
+        // FOLLOW_PULL_RATIO the speed -- at any device speed. The floor is for
+        // the one case with no drift to time: a device that was PLACED out here
+        // (2x the radius inside the 380ms push would be 1.7km/s) rather than
+        // drifting out here.
+        const jump = out > radius * 2;
+        const driftMs = nowMs - (followCam.driftFrom || nowMs);
+        followCam.pullTo = nowMs + (jump ? CONFIG.FOLLOW_PULL_MIN_MS
+            : Math.max(driftMs / CONFIG.FOLLOW_PULL_RATIO, CONFIG.FOLLOW_PULL_MIN_MS));
     }
 
-    // DRIFT: nothing moves until the device has LEFT the box. GPS jitter and a
-    // parked phone stay inside it, so the map sits still for those on its own.
+    // DRIFT: nothing moves until the device has LEFT the circle. GPS jitter and
+    // a parked phone stay inside it, so the map sits still for those on its own.
     if (followCam.phase === 'drift') {
-        const outX = Math.abs(at.x - center.x) > zone.halfX;
-        const outY = Math.abs(at.y - center.y) > zone.halfY;
-        if (!outX && !outY) return;
+        if (at.distanceTo(center) <= radius) return;
         followCam.phase = 'push';
         followCam.pushUntil = nowMs + CONFIG.FOLLOW_PUSH_MS;
         return;
     }
 
-    // PULL: drive the device's SCREEN position from the edge to the centre
-    // along `gap`, while the camera keeps up with where the device actually is.
-    const t = Math.min((nowMs - followCam.pullFrom) / (CONFIG.FOLLOW_PULL_DURATION * 1000), 1);
+    // PULL: sweep the device's SCREEN position from the edge it crossed to the
+    // opposite one, while the camera keeps up with where the device actually is.
+    const t = Math.min((nowMs - followCam.pullFrom) / Math.max(followCam.pullTo - followCam.pullFrom, 1), 1);
     const gap = followCam.gap || L.point(0, 0);
-    const want = center.add(gap.multiplyBy(1 - pullEase(t)));
+    const aim = followCam.aim || L.point(0, 0);
+    // The device's screen position sweeps from the edge it crossed to the aim,
+    // one spring-eased step at a time: gap + (aim - gap) * ease(t).
+    const want = center.add(gap.add(aim.subtract(gap).multiplyBy(pullEase(t))));
     const delta = at.subtract(want);
     if (delta.x || delta.y) map.panBy(delta, { animate: false, noMoveStart: true });
-    if (t >= 1) { followCam.phase = 'drift'; followCam.gap = null; }
+    if (t >= 1) { followCam.phase = 'drift'; followCam.gap = null; followCam.aim = null; followCam.driftFrom = nowMs; }
 }
 
 /** Rebuild every device's drawn trail from its first point. This is the old
@@ -1494,12 +1542,14 @@ function followDevice(devId) {
     if (target && map) {
         // Following STARTS on the centre of the screen: that is the position
         // the cycle assumes at its start, and it is where you want the device
-        // when you ask to follow it. The box is measured from the middle of the
-        // screen every time, so centring the view IS the target; the flight
+        // when you ask to follow it. The circle is measured from the middle of
+        // the screen every time, so centring the view IS the target; the flight
         // just has to finish before the cycle may touch the camera.
         followCam.flyUntil = Date.now() + CONFIG.FOLLOW_FLY_DURATION * 1000;
         followCam.phase = 'drift';
         followCam.gap = null;
+        followCam.aim = null;
+        followCam.driftFrom = Date.now();   // the first drift is timed from here
         ignoreMapEvents();
         map.flyTo([target.lat, target.lng], userPrefs.followZoom, { duration: CONFIG.FOLLOW_FLY_DURATION });
     }

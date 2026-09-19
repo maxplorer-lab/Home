@@ -193,7 +193,15 @@ export function processPing(
   const prevLon = s.lastLon;
 
   // ---- Instantaneous speed: prefer client-reported vel, else derive ----
-  const velAvailable = ping.vel !== null && ping.vel !== undefined && ping.vel >= 0;
+  // A report ABOVE the pre-filter limit is jitter by the same rule the position
+  // check uses (isGlitch, above) -- and it is the half that check cannot see,
+  // since the field travels with the ping independently of the coordinates.
+  // Unusable, so it falls through to the derived value below. The DO also
+  // discards it at intake, which keeps the RAW field (live HUD, stored row,
+  // pending_sync, approach ETA) honest; this is the same rule at the library
+  // boundary, so no caller can bypass it.
+  const velAvailable = ping.vel !== null && ping.vel !== undefined && ping.vel >= 0
+    && ping.vel <= PRE_FILTER_SPEED_LIMIT;
   let impliedSpeedKmh: number;
   if (velAvailable) {
     impliedSpeedKmh = ping.vel as number;

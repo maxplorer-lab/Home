@@ -327,19 +327,23 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     (`commitTrail` / `drawTail` / `resetTrail`), moves persistent markers
     instead of rebuilding them per ping, and lets `updateFollowCamera` — the
     only thing that moves the camera, and the only caller of `map.panBy` — run
-    the follow CYCLE: the device roams the middle half of the screen
-    (`FOLLOW_DEAD_ZONE_SCREEN_FRACTION`) while the map holds still, keeps going
-    for `FOLLOW_PUSH_MS` past the edge, and is then drawn back to the **centre**
-    over `FOLLOW_PULL_DURATION` with a spring ease (`FOLLOW_PULL_SPRING`, a few
-    percent of overshoot past the centre). Two halves of that are load-bearing:
-    the pull must keep moving WITH the device (it closes the gap the device had
-    when the pull began, so a device that drives on, turns or stops is still
-    drawn) and it must LAND ON THE CENTRE — a camera that only undoes the
-    overshoot pins the device to the box edge for as long as it keeps moving,
-    and the edge is where the HUD and the badge strip are. The box size is a
-    judgement call — see `project.md`, a third of each axis is too small to be
-    comfortable. The old per-ping `redrawAllTracks()` + `panTo` lived in
-    `handleNewPing`; nothing there may come back. Frozen: the
+    the follow CYCLE: the device roams a CIRCLE
+    (`FOLLOW_ZONE_DIAMETER_FRACTION` of the shorter side, so it is 70% of the
+    screen width on a phone and can never reach the corners the HUD and the
+    badge strip own) while the map holds still, keeps going for
+    `FOLLOW_PUSH_MS` past that edge, and is then SWEPT to the OPPOSITE edge of
+    the circle with a spring ease (`FOLLOW_PULL_SPRING`, a few percent of
+    overshoot). Three parts of that are load-bearing: the pull must keep moving
+    WITH the device (it sweeps from the offset the device had when the pull
+    began to -0.93 of it, so a device that drives on, turns or stops is still
+    drawn); it must LAND JUST INSIDE the circle (`FOLLOW_PULL_LANDING`) — on it,
+    the device would still be out on the frame the pull ended and the trigger
+    would fire forever; and it must be TIMED BY THE DRIFT it just watched
+    (`FOLLOW_PULL_RATIO`, floored by `FOLLOW_PULL_MIN_MS`), never by a fixed
+    number of seconds, so the sweep crosses the same distance at the same
+    relative speed whatever the device is doing. The old per-ping
+    `redrawAllTracks()` + `panTo` lived in `handleNewPing`; nothing there may
+    come back. Frozen: the
     speed ramp, walking dash, gap rule, stationary dots, `shouldDrawPoint`,
     the state machine, `pending_sync` → `gps_pings`/`messages`, the 21:00 cron
     and the Flush button. `devicePings` stays the COMPLETE ordered record the
@@ -438,6 +442,26 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     instant. The dot is asserted for BOTH bars and for a real watermark answer
     in smoke section 5.
 
+25. **Anything above 120 km/h is GPS jitter — in BOTH directions the number can
+    arrive.** `PRE_FILTER_SPEED_LIMIT` (`src/way/config.ts`) is the single
+    source, and the two halves are enforced at different layers on purpose:
+    * a ping whose **position** implies more than the limit is dropped WHOLE,
+      silently, before the state machine (`isGlitch`, called in
+      `FleetDO.handleIngest`). The upload still answers `{"error":false}`, so a
+      test ping that "did not move the marker" was probably just over the
+      limit. Smokes's rule: keep every synthetic ping at or below the limit.
+    * a ping whose **reported** μlogger speed claims more keeps its position and
+      loses only that field (`ping.vel = null` at intake, plus the same check
+      inside `processPing` so no library caller can bypass it). It is the one
+      number the position check CANNOT see, since it travels with the ping
+      independently of the coordinates — and it otherwise reaches the
+      classification, the rolling speed average, the live HUD, the stored row,
+      `pending_sync` and the approach ETA.
+    It is **discarded, never clamped**: a clamp would invent a 120 km/h drive
+    out of a jitter ping. `npm run smoke` section 15 asserts both halves and
+    that they read one constant; the run doc carries the real end-to-end proof
+    (three μlogger uploads: 200 km/h claimed, 720 km/h implied, 90 km/h honest).
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -512,6 +536,8 @@ have their own separate repositories and their own history.
 | Identity/login behaves oddly after a schema change | `migrations-home/0001_identity.sql` + the local D1 in `.wrangler/state` |
 | A notification never arrives | the right column in **home-db** — `ntfy_topic` for money, `way_topic` for W.A.Y activity (not the app it came from). An empty channel is skipped silently; also check `home_settings.ntfy_server` |
 | A topic receives nothing | in W.A.Y, a topic nobody subscribes to can never fire: `GET /way/api/debug/notify` lists recipient counts per event type. In Sompitra, check the person's `ntfy_topic` is set — and remember a person is NOT sent their own W.A.Y events by design |
+| The HUD (or a stored row, or a Trips total) shows an impossible speed | the **reported** half of rule 25: `FleetDO.handleIngest` must null `ping.vel` above `PRE_FILTER_SPEED_LIMIT` *before* `processPing`, and `state-machine.ts` must refuse it too. A believable-but-wrong number (90 km/h on a parked device) is NOT filtered — the rule is only about the limit, so look elsewhere for that |
+| A device's track teleports, or a synthetic ping seems to be ignored | the **position** half of rule 25 — `isGlitch` drops a ping implying >120 km/h silently and the upload still answers success. Check the speed your test generated before suspecting the pipeline (a 5 s gap and a 1 km step is 720 km/h, no matter what the `speed` field says) |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |
 | Someone is ticked in W.A.Y's grid and still receives nothing | they have no **tracking** topic: the grid says yes, the events are addressed to a topic that does not exist, and nothing else complains. `/settings`' household card warns about exactly this, and `GET /way/api/debug/notify` reports `niri has no topic` |
@@ -530,8 +556,9 @@ have their own separate repositories and their own history.
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
 | A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth is **case-sensitive** on `users.username` (`MaxX`, lowercase `niri` — a lowercase login works for the dashboard, not for a phone), and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h) |
 | The WAY marker is 25 s behind the device, or the map keeps moving | **not a bug** — the viewer draws on a delayed playback cursor and a follow camera that cycles on purpose. The HUD stays live, and the lag is named by the one blue line under the pace pills in **Settings → Map** (shown on Smooth, removed on Live). If you need the newest ping now, switch the pace to **Live**. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
-| The map drifts while the device is clearly inside the box, or the device is left sitting at the edge after the camera moves | the follow cycle is DRIFT (map **still** while the device roams a quarter of each axis) → PUSH (map still for `FOLLOW_PUSH_MS` while the device shoves past the edge) → PULL (drawn back to the **centre** over `FOLLOW_PULL_DURATION`). A camera that moves during the drift, or that stops at the box edge instead of the centre, means `updateFollowCamera` was changed: smoke section 15 asserts the phases, that the pull drives a live offset (`panBy`, never `panTo`/`setView`) and — by evaluating `pullEase` — that it lands exactly on the centre with a small overshoot |
-| A page you changed still looks old on a phone — the deploy is fine, the number did not move | first check WHICH build the phone is on: **WAY → Settings** prints `build 2026-09-19.5-superapp` under Log out (the marker only bumps when the WAY document itself changes). Each tab is a **fresh server-rendered page**, so switching tabs (or reopening the installed app) reloads it — but a tab that was already open through the deploy keeps its old document until you do. Assets are served `must-revalidate`, so it is never the HTTP cache. This is how the HUD's size change looked like it had not shipped: it had, and on a ≤420 px viewport it is only 33 px vs 30 px (the larger 42 px branch starts above 420 px, which is why a phone and a 423 px iframe render differently) |
+| The map drifts while the device is clearly inside the circle, or the device is left sitting at the edge after the camera moves | the follow cycle is DRIFT (map **still** while the device roams `FOLLOW_ZONE_DIAMETER_FRACTION` of the shorter side) → PUSH (map still for `FOLLOW_PUSH_MS` while the device shoves past the edge) → PULL (swept to the **opposite** edge, timed at `FOLLOW_PULL_RATIO` of the drift just watched). A camera that moves during the drift, that lands near the **middle** instead of the far edge, or that takes a fixed time regardless of speed, means `updateFollowCamera` was changed: smoke section 15 asserts all of it, that the sweep drives a live offset (`panBy`, never `panTo`/`setView`), and — by evaluating `pullEase` — that it overshoots its aim slightly on the way |
+| The map keeps pulling, over and over, on a device that is standing still just outside the circle | the sweep must come to rest just INSIDE the circle (`FOLLOW_PULL_LANDING` = 0.93). At exactly the opposite extreme the device is still outside on the frame the pull ends, so the trigger fires again on the next frame and it loops forever — one degree of hysteresis is what ends it |
+| A page you changed still looks old on a phone — the deploy is fine, the number did not move | first check WHICH build the phone is on: **WAY → Settings** prints `build 2026-09-19.6-superapp` under Log out (the marker only bumps when the WAY document itself changes). Each tab is a **fresh server-rendered page**, so switching tabs (or reopening the installed app) reloads it — but a tab that was already open through the deploy keeps its old document until you do. Assets are served `must-revalidate`, so it is never the HTTP cache. This is how the HUD's size change looked like it had not shipped: it had, and on a ≤420 px viewport it is only 33 px vs 30 px (the larger 42 px branch starts above 420 px, which is why a phone and a 423 px iframe render differently) |
 | The HUD/speed readout is smaller than the desktop screenshot | `.spd-num` is 42 px, and the `@media (max-width: 420px)` block in `public/way/index.html` drops it to 33 px with a 138 px card — a 1 px width change across that boundary is a 9 px jump. Change the branch, not the desktop value, when tuning for phones |
 | A cached page appeared for the wrong account, or an offline load showed a signed-in screen | a service worker cached a DOCUMENT. There are two (`public/sw.js` at `/`, `public/way/sw.js` at `/way/`) and the narrower scope wins for a /way/ URL, so both must keep the assets-only policy: no page in the precache list, and `req.mode === 'navigate' || req.destination === 'document'` returns before any cache is consulted. A policy change must also bump the cache name — that is what evicts the old entries. Smoke section 16 fails on both files |
 | A Kiné payment does not show up as budget income | the sync resolves its account (`kineIncomeAccount` in `src/routes/kine.tsx`): the signed-in person's own account whose name starts with `Kin%` first, then any `Kiné Privée`. No such account → the "Sync to Budget Income" checkbox is not even offered. It used to look for `username='niri'` specifically, which quietly broke the feature for anyone else |
