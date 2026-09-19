@@ -424,7 +424,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
     halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v8-witnessed-exit`).
+    (`notify-v9-accuracy-gate`).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -531,6 +531,28 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `MaxX arrived at Home` was written — a row the literal-`OUTSIDE` key can
     never produce.
 
+29. **Accuracy is gated SERVER-side, at the same 10 m the phone's own uploader
+    uses.** µlogger drops worse-than-10 m fixes before uploading, and that
+    client filter works (production: 0 over-limit rows from Niri in 10,960;
+    exactly one in all 14,353, from 2026-08-27, before the setting) — but it is
+    a PHONE setting, one config change (or a different client) away from off,
+    and the backend would then trust whatever arrives. The gate is
+    `PRE_FILTER_MAX_ACCURACY_M` (config) → `accuracyIsAcceptable()`
+    (state-machine) → one call at the TOP of `FleetDO.handleIngest`, BEFORE the
+    speed filters (a nonexistent measurement cannot be asked what it implies
+    about speed). An over-limit fix is dropped WHOLE — no row, no distance, no
+    broadcast, no event — and the upload still answers success, exactly the
+    120 km/h contract. `<=` on purpose (µlogger itself accepts 10 m) and an
+    ABSENT field is accepted: an omitted measurement is not a bad one. Know
+    its limits: the 2026-09-19 wild fix claimed **9.6 m** and the parked
+    scribble's fixes are 1–8 m, so this is a floor on a receiver's
+    self-assessment, not a cure for a wrong position — it does not replace
+    rules 25–28. Guards: smoke section 15 (config → alias, the call before
+    `processPing`, null accepted, the `<=` boundary), each falsified by
+    mutation. Proven live 2026-09-19: acc 25 m and 10.1 m dropped (the 10.1 m
+    at the SAME coordinates as an accepted 10 m ping, so only the field
+    differed), acc 9 m / 10 m / absent kept.
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -608,6 +630,7 @@ have their own separate repositories and their own history.
 | The HUD (or a stored row, or a Trips total) shows an impossible speed | the **reported** half of rule 25: `FleetDO.handleIngest` must null `ping.vel` above `PRE_FILTER_SPEED_LIMIT` *before* `processPing`, and `state-machine.ts` must refuse it too. A believable-but-wrong number (90 km/h on a parked device) is NOT filtered — the rule is only about the limit, so look elsewhere for that |
 | A phone that has not moved draws a track, or a Trips total grows on its own | the **reported-speed** half of rule 26 — the speed field lies, not the coordinates. Check `reportedSpeedIsCredible` + `REPORTED_SPEED_MIN_MOVE_M` and the replacement block in `FleetDO.handleIngest`. Look at the fence too: a phone parked *outside* its home fence is never "inside" either, so nothing gets dropped by the inside rule (Home1 sits ~305 m from where the household's phones actually stop) |
 | A device's track teleports, or a synthetic ping seems to be ignored | the **position** half of rule 25 — `isGlitch` drops a ping implying >120 km/h silently and the upload still answers success. Check the speed your test generated before suspecting the pipeline (a 5 s gap and a 1 km step is 720 km/h, no matter what the `speed` field says) |
+| A ping with a silly accuracy (say 50 m) still moves the dashboard | the gate is the FIRST thing in `FleetDO.handleIngest` (rule 29) — check `accuracyIsAcceptable` is still called before the speed filters and still reads `PRE_FILTER_MAX_ACCURACY_M` from config. And note the other direction: a client that sends NO accuracy always passes by design (null is accepted), so first check whether the field was sent at all |
 | A track spikes out and back from a geofence while the phone is parked | two separate causes, and the rows tell them apart. **Same-second pair?** judged against `GLITCH_TIME_FLOOR_S`, never skipped (rule 27) — a pre-floor DO accepts it unseen. **First row of the pair exactly on the exit radius?** that is the guard's interpolated edge point, so read the ping that STARTS the exit: a far-out ping after a long silence passed every speed gate (0.5 km/h implied over hours) and the guard then confirmed on wall time. `pingsFlushed` counts only accepted pings, so it is the first honest number to read |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |

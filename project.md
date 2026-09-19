@@ -638,7 +638,8 @@ points there, so the marker waits and eases the last stretch.
   carried the field either), so it shows **GPS accuracy**: `±1.6 m`, present on
   every ping, with a title saying why, and `—` when a device's stored status
   predates the DO sending it (one ping fixes that). `accuracy` is informational
-  only — no classification, storage, notify or trail decision reads it. The
+  in every decision — no classification, storage, notify or trail decision
+  reads it — with exactly one exception: the intake's accuracy gate below. The
   right slot is the ping's age, **clamped at 0**: a phone a second ahead of the
   viewer used to print `-1s ago`, and an age can never be negative.
 * **The badge's address column is a cache, not a callback side effect.**
@@ -735,6 +736,21 @@ again inside `processPing`. In the household's own history this cost 900 rows,
 ping path no longer redraws; the equivalence itself was verified by running the
 OLD segmentation against the same committed points and diffing layer by layer
 (same order, same styles, same coordinates).
+
+**The accuracy gate is the server-side half of a phone setting.** μlogger's own
+uploader drops fixes its receiver rates worse than 10 m, and it works —
+production holds exactly ONE over-limit row in 14,353 (2026-08-27, 15 m, before
+the setting) and Niri's stored maximum is exactly 10.0. It is enforced again at
+the intake all the same, because a phone setting is one config change — or a
+different client — away from off, and a fix whose own receiver says it is off by
+more than the limit is not a measurement of where the phone is:
+`PRE_FILTER_MAX_ACCURACY_M` + `accuracyIsAcceptable()` drop it whole, silently,
+before any speed filter runs. `<=` on purpose (µlogger itself accepts exactly
+10 m) and a missing field is accepted, because an omitted measurement is not a
+bad one. Stated plainly, what it does NOT fix: the 2026-09-19 wild fix claimed
+**9.6 m**, and the parked-phone scribble's fixes are 1–8 m — this gates a
+receiver's self-assessment, not a wrong position, and it replaces none of the
+rules above.
 
 **Debug recipe** (no data written): in the dashboard console, feed synthetic
 pings through the real handler — `handleNewPing({deviceId:'MaxX', timestamp:new

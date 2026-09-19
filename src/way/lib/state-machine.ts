@@ -32,6 +32,7 @@ const SPEED_BUFFER_SIZE = WAY_CONFIG.SPEED_BUFFER_SIZE;
 const WALKING_DRIVING_THRESHOLD = WAY_CONFIG.WALKING_DRIVING_THRESHOLD;
 const STATIONARY_SPEED_THRESHOLD = WAY_CONFIG.STATIONARY_SPEED_THRESHOLD;
 const PRE_FILTER_SPEED_LIMIT = WAY_CONFIG.PRE_FILTER_SPEED_LIMIT;
+const PRE_FILTER_MAX_ACCURACY_M = WAY_CONFIG.PRE_FILTER_MAX_ACCURACY_M;
 const GLITCH_TIME_FLOOR_S = WAY_CONFIG.GLITCH_TIME_FLOOR_S;
 const REPORTED_SPEED_MIN_MOVE_M = WAY_CONFIG.REPORTED_SPEED_MIN_MOVE_M;
 const REPORTED_SPEED_MIN_GAP_S = WAY_CONFIG.REPORTED_SPEED_MIN_GAP_S;
@@ -177,6 +178,21 @@ export function isGlitch(
   const distKm = haversineKm(prevLat, prevLon, curLat, curLon);
   const speedKmh = (distKm / judgedSec) * 3600;
   return speedKmh > PRE_FILTER_SPEED_LIMIT;
+}
+
+// ============================================================
+//  ACCURACY PRE-FILTER
+//  The server-side half of µlogger's own "minimum accuracy" setting. Call
+//  this BEFORE processPing: a fix whose own receiver rates it worse than the
+//  limit is not a measurement of where the phone is, so it is dropped whole
+//  -- silently, like isGlitch above (the upload still answers success).
+//  Absence is ACCEPTED: null means the field was not sent, which is not the
+//  same as a bad measurement, and every real µlogger ping sets it. The
+//  comparison is `<=` because µlogger itself accepts exactly the limit.
+// ============================================================
+export function accuracyIsAcceptable(accuracy: number | null): boolean {
+  if (accuracy === null) return true;
+  return accuracy <= PRE_FILTER_MAX_ACCURACY_M;
 }
 
 // ============================================================

@@ -45,6 +45,7 @@ import {
   processPing,
   initialMotionState,
   isGlitch,
+  accuracyIsAcceptable,
   reportedSpeedIsCredible,
   speedFromPositions,
   MotionState,
@@ -62,9 +63,11 @@ interface LiveDeviceStatus extends PingResult {
   latitude: number;
   longitude: number;
   speed: number | null; // raw instantaneous speed (km/h) -- distinct from PingResult.speedAvg
-  // Device-reported GPS accuracy (m). Informational only -- no classification,
-  // storage or notify decision reads it. Carried live because the dashboard's
-  // HUD health slot falls back to it (µlogger never reports a battery level).
+  // Device-reported GPS accuracy (m). The intake GATES on it (a fix worse
+  // than PRE_FILTER_MAX_ACCURACY_M never reaches here), but nothing else
+  // classifies, stores or notifies from it -- it is carried live because the
+  // dashboard's HUD health slot falls back to it (µlogger never reports a
+  // battery level).
   accuracy: number | null;
 }
 
@@ -425,7 +428,9 @@ export class FleetDO extends DurableObject<Env> {
             // v7 = the same approach decision also writes the chat row.
             // v8 = an exit starts only from a witnessed departure, and an
             //      unwitnessed crossing is silent (rule 28).
-            build: "notify-v8-witnessed-exit",
+            // v9 = the intake gates on receiver accuracy before anything else
+            //      (rule 29).
+            build: "notify-v9-accuracy-gate",
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
             // "does the RUNNING instance know about income yet?" without
@@ -651,6 +656,19 @@ export class FleetDO extends DurableObject<Env> {
   private async handleIngest(body: IngestBody) {
     const { ping, accuracy, altitude } = body;
     const stored = this.loadDeviceState(ping.deviceId);
+
+    // ---- Accuracy pre-filter ---------------------------------------------
+    // The household's phones filter this client-side (µlogger's "minimum
+    // accuracy"), so this gate should never fire for them -- and it exists
+    // because that filter is a PHONE setting, one config change (or a
+    // different client) away from off. A fix its own receiver rates worse
+    // than the limit is not a measurement of where the phone is, so it is
+    // dropped whole, silently, exactly like the glitch filter below. It runs
+    // BEFORE the speed filters on purpose: a nonexistent measurement cannot
+    // be asked what it implies about speed.
+    if (!accuracyIsAcceptable(accuracy)) {
+      return; // dropped silently, same as the glitch filter
+    }
 
     // ---- Reported-speed pre-filter ---------------------------------------
     // The position check below catches a ping that MOVED impossibly far, but

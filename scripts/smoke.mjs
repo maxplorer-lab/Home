@@ -1200,6 +1200,28 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     sameSecondKmh(0.007) <= limitKmh && sameSecondKmh(2.360) > limitKmh,
     `at a ${floorS} s floor a 7 m same-second pair must pass and a 2.36 km one must fail (limit ${limitKmh})`)
 
+  // ── …and the ACCURACY gate: the server-side half of µlogger's own
+  // minimum-accuracy setting. The client filter works (production: 0 rows over
+  // 10 m from Niri in 10,960, exactly one in all 14,353, from before the
+  // setting), but it is a phone setting -- one config change, or a different
+  // client, and the backend would trust whatever arrives. Note honestly what
+  // it would NOT have caught: the 2026-09-19 wild fix claimed 9.6 m.
+  check('the accuracy limit lives in config and reaches the gate from there',
+    /PRE_FILTER_MAX_ACCURACY_M:\s*10(\.0)?\b/.test(cfgSrc) &&
+    /const PRE_FILTER_MAX_ACCURACY_M = WAY_CONFIG\.PRE_FILTER_MAX_ACCURACY_M/.test(smSrc),
+    'the accuracy limit is missing from config.ts or the state machine — only the phone-side setting would enforce it')
+  check('an over-limit fix is dropped before the state machine sees it',
+    doCode.indexOf('accuracyIsAcceptable(') > -1 &&
+    doCode.indexOf('accuracyIsAcceptable(') < doCode.indexOf('processPing(stored.motion'),
+    'the intake no longer refuses a fix its own receiver rated worse than the limit, or checks it after processPing')
+  check('the accuracy gate accepts an omitted field (null is not a bad measurement)',
+    /if \(accuracy === null\) return true/.test(smSrc),
+    'a ping without the accuracy field is now dropped — an omitted measurement is not a bad one, and every real µlogger ping sets it')
+  check('the accuracy gate keeps a fix at exactly the limit, not only below it',
+    /accuracy <= PRE_FILTER_MAX_ACCURACY_M/.test(smSrc) &&
+    !/accuracy < PRE_FILTER_MAX_ACCURACY_M/.test(smSrc),
+    'the comparison is strict, so a fix µlogger itself accepts (exactly 10 m) would be dropped server-side')
+
   // ── The other half of "is this number real?": a REPORTED speed is believed
   // only when the coordinates corroborate it. A parked phone indoors reports
   // 5-30 km/h from its GNSS chip while its fixes stay inside a few metres — and

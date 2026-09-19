@@ -43,6 +43,17 @@ export const WAY_CONFIG = {
   // km/h -- a ping implying speed above this is treated as a GPS glitch
   // and dropped before it reaches the state machine at all.
   PRE_FILTER_SPEED_LIMIT: 120.0,
+  // Metres. The SERVER-side half of µlogger's own minimum-accuracy setting.
+  // That client filter drops worse-than-10 m fixes before they are uploaded,
+  // and it works (production: 0 over-limit rows from Niri in 10,960, exactly
+  // one in all 14,353, from 2026-08-27 before the setting), but it is a PHONE
+  // setting -- one config change, or a different client, and the backend
+  // trusts whatever arrives. A fix whose own receiver rates it worse than
+  // this is not a measurement of where the phone is, so it is dropped whole,
+  // silently, like the speed gate. `<=` on purpose: µlogger itself accepts
+  // exactly 10 m. Null (field absent) is ACCEPTED -- an omitted measurement
+  // is not a bad one, and every real µlogger ping sets the field.
+  PRE_FILTER_MAX_ACCURACY_M: 10.0,
   // Seconds. µlogger stamps every ping to whole seconds, so two genuine fixes
   // can carry the SAME timestamp. That is not "no elapsed time" -- it means
   // the real gap is shorter than the clock can show -- so the jitter gate
