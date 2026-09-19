@@ -6,6 +6,12 @@
 > applies to any future move, and §5 is the part whose value is permanent —
 > do keep it working (`npm run smoke` compares the `build` marker §5 tells you
 > to expect against the one the Durable Object actually reports).
+>
+> **Two gaps found after the cutover** (2026-09-19, fixed on production):
+> `way-db` had no `devices` table, so the FK on `messages.device_id` made every
+> chat insert fail, and `messages` was missing migration 0007's reaction
+> columns, which did the same. The chat/activity history was therefore frozen
+> at 2026-08-27 while the live chat looked healthy. §1d now covers both.
 
 Sompitra, W.A.Y and Laoka were each already live as standalone Workers, with the
 same two people (MaxX, Niri) and real data. This is how to move to the merged
@@ -91,11 +97,27 @@ into `messages` fails and the DO's whole flush aborts. The symptom looks nothing
 like a schema problem: `POST /way/api/flush` returns
 `D1_ERROR: no such table: main.devices`, `/way/api/chat/history` is
 permanently empty, map history is empty, and unsynced rows pile up inside the
-DO. The row list also has to contain every `device_id` used in auto events
-(`MaxX`, `Niri`), because WAY's arrival/departure messages set it.
+DO. The row list also has to contain every `device_id` used in auto events —
+which is the person's `way-db.users.username` **verbatim, case included**
+(`deviceId = user.username`). Production's people are `MaxX` and lowercase
+`niri`, so a `devices` row named `Niri` fixes MaxX's arrivals and leaves niri's
+still failing.
 
 If it is missing, restore it with `scripts/repair-way-messages-fk.sql`
-(idempotent; safe on a populated database).
+(idempotent; safe on a populated database, and it derives the rows from
+`gps_pings`/`users` rather than hardcoding names).
+
+**Check the columns too, not just the parent.** D1 rejects an insert that names
+a column its table lacks — at *prepare* time, so the flush aborts before writing
+anything — and a module database can be missing an `ALTER TABLE` migration
+entirely. Production was: `messages` had no `reactions`, `reaction_users` or
+`reaction_updated_at` because `0007_chat_reactions.sql` had never been applied,
+which kept the chat frozen even once `devices` was back. Compare both sides:
+```bash
+npx wrangler d1 execute WAY_DB --remote --command "PRAGMA table_info(messages)"
+```
+and apply whatever is missing (`0007` is single-use: a "duplicate column" error
+means it already applied).
 
 ### 1e. Local dry run first
 ```bash

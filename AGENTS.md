@@ -243,10 +243,21 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `flushToD1` aborts as a whole. That breaks chat history, map history/tracks
     and lets unsynced rows pile up in the DO while the live chat keeps working,
     so nothing looks wrong in the UI. The `devices` table must also hold a row
-    for every `device_id` used in auto events (`MaxX`, `Niri`), because WAY's
-    arrival/departure messages set it. Repair locally or remotely with
-    `scripts/repair-way-messages-fk.sql` (idempotent). `npm run smoke` asserts
-    `POST /way/api/flush` returns a real count and not `{error:true}`.
+    for every `device_id` used in auto events, and that id is the person's
+    `way-db.users.username` **verbatim, case included** (`deviceId =
+    user.username` in `src/way/routes/ingest.ts`) — production's people are
+    `MaxX` and lowercase `niri`, so a row named `Niri` satisfies MaxX's arrivals
+    and still fails niri's. Repair locally or remotely with
+    `scripts/repair-way-messages-fk.sql` (idempotent; it derives the rows from
+    `gps_pings` and `users` instead of hardcoding names).
+    **Check the whole table, not just the parent**: D1 also fails to *prepare*
+    an insert that names a column the table lacks, so a database missing a
+    migration's `ALTER TABLE` breaks the same flush with a different error —
+    production was missing `0007_chat_reactions.sql` (no `reactions`,
+    `reaction_users`, `reaction_updated_at`). Compare `PRAGMA table_info(...)`
+    on both sides when a flush is failing and the parent table is present.
+    `npm run smoke` asserts `POST /way/api/flush` returns a real count and not
+    `{error:true}`.
 20. **Laoka's shopping list becomes ONE Sompitra expense, keyed by the week.**
     The button in Laoka's export sheet calls Sompitra's `POST /budget/import-laoka`
     (`GET /budget/laoka-import?week=N` is its status). `home-db.laoka_imports`

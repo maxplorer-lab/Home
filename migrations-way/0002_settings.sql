@@ -31,10 +31,22 @@ CREATE TABLE invite_codes (
 
 -- ============================================================
 --  devices: dropped. gps_pings.device_id and messages.device_id now hold
---  usernames. `messages` still carries a dangling
---  REFERENCES devices(device_id) left over from 0001; SQLite does not
---  enforce FKs by default (D1 does not enable PRAGMA foreign_keys), so it
---  is inert and harmless.
+--  usernames.
+--
+--  !! The "inert and harmless" reasoning that used to sit here was WRONG, and
+--  !! this drop silently broke the chat flush for weeks. `messages` keeps its
+--  !! REFERENCES devices(device_id) from 0001; in D1 the FK parent is resolved
+--  !! when the statement is PREPARED, so with `devices` gone every insert the
+--  !! flush makes into `messages` fails ("no such table: main.devices"), the
+--  !! flush aborts, chat history freezes and unsynced rows pile up in the
+--  !! Durable Object -- while the live chat keeps working, so nothing looks
+--  !! wrong in the UI.
+--
+--  The SQL above stays exactly as it ran (migrations are history). Any
+--  database built from this history needs
+--  `scripts/repair-way-messages-fk.sql` to re-create the parent table -- with
+--  a row per person whose device_id is their way-db username, verbatim and
+--  case-sensitively. See AGENTS.md rule 19.
 -- ============================================================
 DROP TABLE IF EXISTS devices;
 

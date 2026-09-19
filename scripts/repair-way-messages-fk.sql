@@ -36,6 +36,25 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at      TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- The two rows a fresh 0001_init.sql seeds, for the names it assumed.
 INSERT OR IGNORE INTO devices (device_id, tid, display_name, emoji, color, username, password_hash) VALUES
   ('MaxX', 'M1', 'MaxX', '🏍️', '#3498db', 'CHANGE_ME_maxx_device_user', 'CHANGE_ME_hash'),
   ('Niri', 'M2', 'Niri', '🛵', '#e67e22', 'CHANGE_ME_niri_device_user', 'CHANGE_ME_hash');
+
+-- …and then the rows that actually MATTER, derived from the data rather than
+-- guessed. A hardcoded list is only correct by accident: the DO stamps an auto
+-- arrival/departure with the SAME device_id the ping carried, and the ingest
+-- sets that from the username verbatim (`deviceId = user.username`,
+-- src/way/routes/ingest.ts). Case counts. So on a database whose people are
+-- `MaxX` and lowercase `niri`, the row named `Niri` above matches nothing: the
+-- FK is satisfied for MaxX's events and still violated for niri's, which reads
+-- exactly like the original bug on one phone only. Both sources are unioned
+-- because a person's first ping is not in `gps_pings` until the 21:00 flush,
+-- while their first arrival event happens the moment they move.
+INSERT OR IGNORE INTO devices (device_id, display_name, username, password_hash)
+SELECT device_id, device_id, device_id, 'CHANGE_ME_fk_parent_only'
+FROM (
+  SELECT DISTINCT device_id FROM gps_pings WHERE device_id IS NOT NULL AND device_id <> ''
+  UNION
+  SELECT DISTINCT username  FROM users      WHERE username  IS NOT NULL AND username  <> ''
+);
