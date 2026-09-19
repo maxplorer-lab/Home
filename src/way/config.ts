@@ -35,6 +35,20 @@ export const WAY_CONFIG = {
   // km/h -- a ping implying speed above this is treated as a GPS glitch
   // and dropped before it reaches the state machine at all.
   PRE_FILTER_SPEED_LIMIT: 120.0,
+  // ---- Device-REPORTED speed: when to believe it ----
+  // Metres the device must have MOVED since the previous ping before µlogger's
+  // speed field is believed. Indoors a parked phone's GNSS reports 5-30 km/h
+  // while its coordinates jitter inside a few metres, and a report claiming
+  // movement the coordinates do not show is what makes a phone on a table look
+  // like it is driving: the point is persisted as a track dot, its distance
+  // lands in the driven totals and the approach ETA is computed from it.
+  // Deliberately the same order as ANCHOR_RADIUS_M -- this is the app's
+  // existing unit of "that was real movement", not a new threshold.
+  REPORTED_SPEED_MIN_MOVE_M: 20.0,
+  // Seconds. Below this gap the coordinates cannot separate a crawl from a
+  // jittering fix (5 m of jitter in 1 s IS 18 km/h), so the report stands:
+  // there the phone is the better signal, not the positions.
+  REPORTED_SPEED_MIN_GAP_S: 5.0,
   // Seconds a dip below WALKING_DRIVING_THRESHOLD must persist before a
   // driving leg is reclassified as walking (absorbs traffic/potholes).
   WALKING_GUARD_SECONDS: 30,

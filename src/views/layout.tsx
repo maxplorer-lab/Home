@@ -74,10 +74,16 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
         {/* ── App Header — THE one chrome (app-chrome.tsx) ── */}
         <HomeHeader displayName={user?.display_name ?? null} active={activeTab} badge={badge} />
 
-        {/* ── Sub-nav (desktop / tablet): Money section pages ── */}
+        {/* ── Sub-nav: Money section pages ──
+            Visible at EVERY width. It used to be `hidden sm:block`, which left
+            Kiné, Debts and Sales with no route at all from the Sompitra tab on
+            a phone — the sections live only here, and the phone is the shape
+            most of this app is used in. Four short labels fit a 360px screen;
+            the strip scrolls sideways if one cannot (`shrink-0` on the items,
+            so a label is never squashed or clipped instead). */}
         {user && moneyTabs.includes(activeTab as string) && (
-          <nav class="hidden sm:block sticky top-12 z-40 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
-            <div class={`${SHELL_WIDTH} mx-auto px-2 flex gap-1 py-1`}>
+          <nav class="sticky top-12 z-40 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
+            <div class={`${SHELL_WIDTH} mx-auto px-2 flex gap-1 py-1 overflow-x-auto`}>
               {[
                 { href: '/budget', label: 'Budget', tab: 'budget' },
                 { href: '/kine',   label: 'Kiné',   tab: 'kine'   },
@@ -87,7 +93,7 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
                 <a
                   href={item.href}
                   style={activeTab === item.tab ? { backgroundColor: 'var(--accent-ink)' } : undefined}
-                  class={`whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${activeTab === item.tab ? 'text-white font-semibold shadow-sm' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                  class={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${activeTab === item.tab ? 'text-white font-semibold shadow-sm' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
                 >
                   {item.label}
                 </a>

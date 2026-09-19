@@ -45,6 +45,8 @@ import {
   processPing,
   initialMotionState,
   isGlitch,
+  reportedSpeedIsCredible,
+  speedFromPositions,
   MotionState,
   RawPing,
   PingResult,
@@ -661,6 +663,31 @@ export class FleetDO extends DurableObject<Env> {
       (!Number.isFinite(reportedVel) || reportedVel > PRE_FILTER_SPEED_LIMIT)
     ) {
       ping.vel = null;
+    }
+
+    // ---- Reported-speed pre-filter, the other half: corroboration --------
+    // A report claiming movement the coordinates do not show is noise -- a
+    // parked phone indoors reports 5-30 km/h from its GNSS chip while its fixes
+    // stay inside a few metres -- and believing it is what makes a device on a
+    // table look like it is driving: the point is persisted as a track dot, its
+    // distance lands in the driven totals, and the approach ETA is built from
+    // it. It is the one lie the position checks cannot see, because the field
+    // travels with the ping independently of the coordinates. REPLACED by what
+    // the positions imply, not nulled: the device is real and merely parked, and
+    // a null prints "-- No signal" in the HUD's speed readout.
+    const prev = stored.motion;
+    if (
+      ping.vel !== null &&
+      prev.lastLat !== null && prev.lastLon !== null && prev.lastTs !== null &&
+      !reportedSpeedIsCredible(
+        prev.lastLat, prev.lastLon, prev.lastTs,
+        ping.latitude, ping.longitude, ping.timestamp
+      )
+    ) {
+      ping.vel = speedFromPositions(
+        prev.lastLat, prev.lastLon, prev.lastTs,
+        ping.latitude, ping.longitude, ping.timestamp
+      );
     }
 
     // ---- Glitch pre-filter, using the last known raw position ----

@@ -462,6 +462,33 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     that they read one constant; the run doc carries the real end-to-end proof
     (three μlogger uploads: 200 km/h claimed, 720 km/h implied, 90 km/h honest).
 
+26. **A REPORTED speed is only believed when the coordinates corroborate it.**
+    μlogger's `speed` field is captured by the phone's GNSS chip, independently
+    of the coordinates it travels with — and indoors a parked phone reports
+    **5–30 km/h** while its fixes stay inside a few metres. Those fixes are often
+    accurate to a couple of metres, which is exactly why μlogger's own accuracy
+    filter cannot catch this: that filter judges the FIX, never the movement.
+    Believed, the number makes a device on a table look like it is driving, and
+    three things follow: the ping is persisted as a track dot (it is outside any
+    fence and "not stationary"), its distance lands in the driven totals, and
+    the approach ETA is computed from it — so a parked phone can be announced as
+    "~60s from Home".
+    `reportedSpeedIsCredible()` is the test: the device must have MOVED
+    `REPORTED_SPEED_MIN_MOVE_M` (20 m — deliberately the same order as
+    `ANCHOR_RADIUS_M`, this app's existing unit of "that was real movement")
+    since the previous ping. Like rule 25 it is applied twice: at the DO's
+    intake, where an uncorroborated report is **replaced by the speed the
+    positions imply** (`speedFromPositions` — replaced, NOT nulled: the device is
+    real and merely parked, and a null prints "No signal" in the HUD's speed
+    readout), and inside `processPing`, so no library caller can bypass it.
+    Under `REPORTED_SPEED_MIN_GAP_S` (5 s) the coordinates cannot tell a crawl
+    from a jittering fix — 5 m of jitter in one second IS 18 km/h — so a short
+    gap keeps the report.
+    This is not hypothetical: in the household's own history, 900 stored rows
+    sat within 400 m of Home1 across three days with **every one** above the
+    2 km/h stationary threshold, 831 of them classified driving, 7.78 km added
+    to the driven totals — all of it a phone on a table.
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -537,6 +564,7 @@ have their own separate repositories and their own history.
 | A notification never arrives | the right column in **home-db** — `ntfy_topic` for money, `way_topic` for W.A.Y activity (not the app it came from). An empty channel is skipped silently; also check `home_settings.ntfy_server` |
 | A topic receives nothing | in W.A.Y, a topic nobody subscribes to can never fire: `GET /way/api/debug/notify` lists recipient counts per event type. In Sompitra, check the person's `ntfy_topic` is set — and remember a person is NOT sent their own W.A.Y events by design |
 | The HUD (or a stored row, or a Trips total) shows an impossible speed | the **reported** half of rule 25: `FleetDO.handleIngest` must null `ping.vel` above `PRE_FILTER_SPEED_LIMIT` *before* `processPing`, and `state-machine.ts` must refuse it too. A believable-but-wrong number (90 km/h on a parked device) is NOT filtered — the rule is only about the limit, so look elsewhere for that |
+| A phone that has not moved draws a track, or a Trips total grows on its own | the **reported-speed** half of rule 26 — the speed field lies, not the coordinates. Check `reportedSpeedIsCredible` + `REPORTED_SPEED_MIN_MOVE_M` and the replacement block in `FleetDO.handleIngest`. Look at the fence too: a phone parked *outside* its home fence is never "inside" either, so nothing gets dropped by the inside rule (Home1 sits ~305 m from where the household's phones actually stop) |
 | A device's track teleports, or a synthetic ping seems to be ignored | the **position** half of rule 25 — `isGlitch` drops a ping implying >120 km/h silently and the upload still answers success. Check the speed your test generated before suspecting the pipeline (a 5 s gap and a 1 km step is 720 km/h, no matter what the `speed` field says) |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |

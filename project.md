@@ -143,8 +143,10 @@ you are in.
     per-person channel are needed for the household to see activity in the
     app. ntfy is for reaching someone who is not looking; the chat is the
     record.
-* Sompitra (budget/kine/debts/sales) is one tab with its own desktop sub-nav;
-  `/settings` is the You tab; `/admin` stays a Sompitra-style page.
+* Sompitra (budget/kine/debts/sales) is one tab with its own sub-nav, shown at
+  **every** width — it was `hidden sm:block`, which left Kiné, Debts and Sales
+  with no route from the Sompitra tab on a phone, where most of this app is
+  used. `/settings` is the You tab; `/admin` stays a Sompitra-style page.
 
 ## The brand system (one typeface, one accent per screen, brand glyphs)
 
@@ -677,7 +679,26 @@ classification, the rolling average, the live HUD, the stored row,
 rather than clamped: a clamp would invent a 120 km/h drive out of a jitter ping.
 Every consumer already handles a missing field (`ping.vel ?? result.speedAvg`),
 and the rule is asserted by smoke section 15 with a real μlogger proof in the
-run doc. `npm run smoke` section
+run doc.
+
+**The reported speed has a second pre-filter, and it is the quiet one.** The
+limit above only catches an impossible claim; a *believable* one is the harder
+case, because it comes from a device that is genuinely parked. Indoors a phone's
+GNSS chip reports 5–30 km/h while its coordinates stay inside a few metres — and
+those coordinates are often accurate to a couple of metres, which is precisely
+why μlogger's own accuracy filter cannot catch it: that filter judges the fix,
+never the movement. Trusting that report is what turns a phone on a table into a
+{"driving"} device: the ping is persisted as a track dot, its distance lands in
+the driven totals, and the approach ETA is computed from it, so a parked phone
+can be announced as "~60s from Home". `reportedSpeedIsCredible()` therefore asks
+the one question the report cannot answer for itself — did the device actually
+MOVE `REPORTED_SPEED_MIN_MOVE_M` (20 m) since the previous ping? — and an
+uncorroborated report is **replaced by the speed the positions imply**, not
+nulled (the device is real and merely parked; a null would print "No signal" in
+the HUD). Under 5 s a gap cannot tell a crawl from a jittering fix, so a short
+gap keeps the report. Same shape as the limit: applied at the DO's intake and
+again inside `processPing`. In the household's own history this cost 900 rows,
+831 of them counted as driving, inside 400 m of home over three days. `npm run smoke` section
 15 asserts the served page still carries every one of those values and that the
 ping path no longer redraws; the equivalence itself was verified by running the
 OLD segmentation against the same committed points and diffing layer by layer

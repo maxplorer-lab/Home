@@ -1178,6 +1178,39 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     doCode.indexOf('isGlitch(') > -1 &&
     doCode.indexOf('isGlitch(') < doCode.indexOf('processPing(stored.motion'),
     'the glitch filter no longer precedes processPing, so an impossible jump would be classified as movement')
+
+  // ── The other half of "is this number real?": a REPORTED speed is believed
+  // only when the coordinates corroborate it. A parked phone indoors reports
+  // 5-30 km/h from its GNSS chip while its fixes stay inside a few metres — and
+  // those fixes are accurate to a couple of metres, which is exactly why
+  // ulogger's accuracy filter cannot catch it. Believed, that number makes a
+  // device on a table look like it is driving: the point is persisted as a
+  // track dot, its distance lands in the driven totals, and the approach ETA is
+  // built from it.
+  const flat = (s) => s.replace(/\s+/g, ' ')
+  check('a reported speed is only used when the device actually moved',
+    (smSrc.match(/reportedSpeedIsCredible\(/g) || []).length >= 2 &&
+    /reportedSpeedIsCredible\(s\.lastLat, s\.lastLon, s\.lastTs/.test(flat(smSrc)),
+    'processPing believes any report again, so a parked phone counts as driving')
+  check('the movement threshold lives in config and the helper reads it',
+    /REPORTED_SPEED_MIN_MOVE_M:\s*20(\.0)?\b/.test(cfgSrc) &&
+    /const REPORTED_SPEED_MIN_MOVE_M = WAY_CONFIG\.REPORTED_SPEED_MIN_MOVE_M/.test(smSrc) &&
+    />= REPORTED_SPEED_MIN_MOVE_M/.test(smSrc),
+    'the threshold is missing from config.ts, or copied into the helper instead of read from it')
+  const corrobAt = doCode.indexOf('!reportedSpeedIsCredible(')
+  const corrob = corrobAt === -1 ? '' : doCode.slice(corrobAt, corrobAt + 600)
+  check('the intake replaces an uncorroborated report before the state machine sees it',
+    corrobAt > -1 && corrobAt < doCode.indexOf('processPing(stored.motion') &&
+    /ping\.vel = speedFromPositions\(/.test(corrob),
+    'the intake trusts the report (or filters it after processPing): a parked phone then draws a track and inflates the driven totals')
+  check('…replaced, not blanked, so a parked device never reads "No signal"',
+    // The assignment specifically: the `!== null` guards in the same block
+    // contain "= null" too, so a loose regex passes while the field is dropped.
+    !!corrob && /ping\.vel = speedFromPositions\(/.test(corrob) && !/ping\.vel = null/.test(corrob),
+    'the uncorroborated report is discarded, which blanks the HUD speed on a device that is merely parked')
+  check('a stationary device reads Stationary in the HUD, not a phantom number',
+    /is_inside_geofence \|\| p\.is_stationary/.test(way) && /Stationary/.test(way),
+    'the speedo has no stationary branch, so the phantom number would be printed')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────
@@ -1478,6 +1511,22 @@ log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
     check(`${p}: a filled surface uses the darker ink variant`,
       /^#[0-9a-f]{6}$/.test(ink) && ink !== accent,
       `--accent-ink=${ink || '(none)'} — using the tint as a button background is a contrast bug`)
+
+    // The Sompitra sub-nav is the ONLY route to Kiné / Debts / Sales, so it must
+    // not be width-gated: `hidden sm:block` on it left three of the four money
+    // sections unreachable from the Sompitra tab on a phone — the shape most of
+    // this app is used in — while looking perfectly fine on a desktop window.
+    if (p === '/budget') {
+      const kine = html.indexOf('href="/kine"')
+      const around = kine === -1 ? '' : html.slice(Math.max(0, kine - 700), kine + 700)
+      check('/budget: the Sompitra sub-nav renders at EVERY width',
+        kine > -1 && !/hidden\s+sm:block/.test(around),
+        kine === -1 ? 'the sub-nav is gone — Kiné/Debts/Sales have no route on any width'
+          : 'the sub-nav is width-gated again, so Kiné/Debts/Sales are unreachable on a phone')
+      check('/budget: the sub-nav offers all four money sections',
+        ['/budget', '/kine', '/debts', '/sales'].every((h) => around.includes(`href="${h}"`)),
+        'a Sompitra section is missing from the sub-nav')
+    }
 
     // The themed chrome: a module tab runs in a framed stage, and the ring is
     // what makes it a panel of Home rather than a second app underneath it.

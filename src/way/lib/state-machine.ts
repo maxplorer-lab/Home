@@ -31,6 +31,8 @@ const SPEED_BUFFER_SIZE = WAY_CONFIG.SPEED_BUFFER_SIZE;
 const WALKING_DRIVING_THRESHOLD = WAY_CONFIG.WALKING_DRIVING_THRESHOLD;
 const STATIONARY_SPEED_THRESHOLD = WAY_CONFIG.STATIONARY_SPEED_THRESHOLD;
 const PRE_FILTER_SPEED_LIMIT = WAY_CONFIG.PRE_FILTER_SPEED_LIMIT;
+const REPORTED_SPEED_MIN_MOVE_M = WAY_CONFIG.REPORTED_SPEED_MIN_MOVE_M;
+const REPORTED_SPEED_MIN_GAP_S = WAY_CONFIG.REPORTED_SPEED_MIN_GAP_S;
 
 const ENTRY_CONFIRM_SPEED_KMH = WALKING_DRIVING_THRESHOLD;
 
@@ -161,6 +163,54 @@ export function isGlitch(
 }
 
 // ============================================================
+//  REPORTED-SPEED PRE-FILTER
+//  The other half of "is this number real?" -- see
+//  reportedSpeedIsCredible. Call it before trusting ping.vel.
+// ============================================================
+
+/** The speed the coordinates imply between two pings, in km/h -- the honest
+ *  answer to "how fast is this device actually going?". 0 when the gap is too
+ *  short to divide by (µlogger can report two fixes in the same second) or when
+ *  the movement is inside the 3 m dead zone GPS jitter alone produces. This was
+ *  always computed inline in processPing; it lives here so the Durable Object's
+ *  intake can give the SAME answer when it replaces a report it cannot
+ *  corroborate, instead of inventing a second formula. */
+export function speedFromPositions(
+  prevLat: number, prevLon: number, prevTs: string,
+  curLat: number, curLon: number, curTs: string
+): number {
+  const dtSec = (new Date(curTs).getTime() - new Date(prevTs).getTime()) / 1000;
+  if (!(dtSec > 1.0)) return 0.0;
+  const distKm = haversineKm(prevLat, prevLon, curLat, curLon);
+  return distKm < 0.003 ? 0.0 : (distKm / dtSec) * 3600.0;
+}
+
+/** May this ping's DEVICE-REPORTED speed be believed?
+ *
+ *  Only when the coordinates corroborate it: the device actually MOVED
+ *  REPORTED_SPEED_MIN_MOVE_M since the previous ping. A parked phone indoors
+ *  reports 5-30 km/h from its GNSS chip while its fixes stay inside a few
+ *  metres, and believing that is what makes a device on a table look like it is
+ *  driving -- the point is then persisted as a track dot, its distance lands in
+ *  the driven totals, and the approach ETA is computed from it. Note the fixes
+ *  are often accurate to a couple of metres, which is exactly why µlogger's own
+ *  accuracy filter cannot catch this: that filter judges the FIX, never the
+ *  movement.
+ *
+ *  Under REPORTED_SPEED_MIN_GAP_S the coordinates cannot tell either way (5 m
+ *  of jitter in one second IS 18 km/h), so a short gap keeps the report: there
+ *  the phone is the better signal, not the positions. */
+export function reportedSpeedIsCredible(
+  prevLat: number, prevLon: number, prevTs: string,
+  curLat: number, curLon: number, curTs: string
+): boolean {
+  const dtSec = (new Date(curTs).getTime() - new Date(prevTs).getTime()) / 1000;
+  if (!(dtSec > 0)) return true;
+  if (dtSec < REPORTED_SPEED_MIN_GAP_S) return true;
+  return haversineKm(prevLat, prevLon, curLat, curLon) * 1000 >= REPORTED_SPEED_MIN_MOVE_M;
+}
+
+// ============================================================
 //  MAIN ENTRY POINT
 // ============================================================
 export function processPing(
@@ -193,27 +243,28 @@ export function processPing(
   const prevLon = s.lastLon;
 
   // ---- Instantaneous speed: prefer client-reported vel, else derive ----
-  // A report ABOVE the pre-filter limit is jitter by the same rule the position
-  // check uses (isGlitch, above) -- and it is the half that check cannot see,
-  // since the field travels with the ping independently of the coordinates.
-  // Unusable, so it falls through to the derived value below. The DO also
-  // discards it at intake, which keeps the RAW field (live HUD, stored row,
-  // pending_sync, approach ETA) honest; this is the same rule at the library
+  // Two things a report cannot survive: claiming more than the pre-filter
+  // limit, and claiming movement the coordinates since the last ping do not
+  // corroborate (a parked phone's GNSS says 5-30 km/h while its fixes stay
+  // inside a few metres). The field travels with the ping independently of the
+  // coordinates, so no position check can see it -- this is that half. Either
+  // way it falls through to the speed the POSITIONS imply, which is the same
+  // number whenever the report was true. The DO applies the same two rules at
+  // intake, which is what keeps the RAW field (live HUD, stored row,
+  // pending_sync, approach ETA) honest; this is the rule at the library
   // boundary, so no caller can bypass it.
-  const velAvailable = ping.vel !== null && ping.vel !== undefined && ping.vel >= 0
-    && ping.vel <= PRE_FILTER_SPEED_LIMIT;
   let impliedSpeedKmh: number;
-  if (velAvailable) {
+  if (
+    ping.vel !== null && ping.vel !== undefined && ping.vel >= 0 &&
+    ping.vel <= PRE_FILTER_SPEED_LIMIT &&
+    (s.lastLat === null || s.lastLon === null || s.lastTs === null ||
+      reportedSpeedIsCredible(s.lastLat, s.lastLon, s.lastTs, lat, lon, dt))
+  ) {
     impliedSpeedKmh = ping.vel as number;
+  } else if (s.lastLat !== null && s.lastLon !== null && s.lastTs !== null) {
+    impliedSpeedKmh = speedFromPositions(s.lastLat, s.lastLon, s.lastTs, lat, lon, dt);
   } else {
     impliedSpeedKmh = 0.0;
-    if (s.lastLat !== null && s.lastLon !== null && s.lastTs !== null) {
-      const dtSec = (new Date(dt).getTime() - new Date(s.lastTs).getTime()) / 1000;
-      if (dtSec > 1.0) {
-        const distKm = haversineKm(s.lastLat, s.lastLon, lat, lon);
-        impliedSpeedKmh = distKm < 0.003 ? 0.0 : (distKm / dtSec) * 3600.0;
-      }
-    }
   }
   s.lastLat = lat;
   s.lastLon = lon;
