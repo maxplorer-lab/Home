@@ -12,6 +12,13 @@
 > chat insert fail, and `messages` was missing migration 0007's reaction
 > columns, which did the same. The chat/activity history was therefore frozen
 > at 2026-08-27 while the live chat looked healthy. §1d now covers both.
+>
+> **Step 3.3 is done** (2026-09-19): all three standalone Workers are deleted.
+> They had received zero requests for days, the phones were verified to be
+> posting to Home's `/ulogger`, and the old `way` DO's chat backlog was flushed
+> into `way-db` first (466 messages, reaching back to 2026-09-07) — deleting a
+> Worker destroys its Durable Object storage, so that flush is the one step
+> that must not be skipped. Its pings were already in D1 from the nightly cron.
 
 Sompitra, W.A.Y and Laoka were each already live as standalone Workers, with the
 same two people (MaxX, Niri) and real data. This is how to move to the merged
@@ -244,7 +251,13 @@ it is evicted, so "did my DO change take effect?" is a real question here.
 
 ## 6. Rollback
 
-The old Workers were only *disabled*, and all three module databases are
-untouched, so rolling back is: re-enable them, point the phones back. Data
-written through Home is in the same databases, so nothing needs migrating back —
-only `home-db` becomes unused. This is why step 3.3 comes **after** step 3.2.
+The old Workers are **deleted** (step 3.3, 2026-09-19), but rollback is still
+cheap: all three module databases are untouched, and each old Worker is one
+`wrangler deploy` from its own repo — D1 is bound by id, never owned by a
+Worker, so a redeploy finds every row exactly where Home left it. Then point the
+phones back (`ulogger` lives on whichever host you tell μlogger). Nothing needs
+migrating either way; the only thing a rollback would strand is `home-db`.
+
+What you cannot get back is a deleted Durable Object's storage — which is why
+step 3.3 comes **after** step 3.2, and why the old `way` DO was flushed into
+`way-db` (466 chat messages, `POST /way/api/flush`) before it was deleted.

@@ -348,9 +348,12 @@ the three module repos, with `origin` =
 `git@github.com:maxplorer-lab/Home.git`. Use `git diff` / `git status`
 freely. `main` is pushed and tracks `origin/main`.
 
-**Home is deployed**, at `https://home.<subdomain>.workers.dev`, alongside the
-three original Workers (`sompitra-…`, `way`, `laoka`), which are still live and
-are the rollback. It is built by the Cloudflare Git integration on `main` (the
+**Home is deployed**, at `https://home.<subdomain>.workers.dev`, and is now the
+ONLY host: the three original Workers (`sompitra`, `way`, `laoka`) were deleted
+on 2026-09-19, so `sompitra.<sub>`, `way.<sub>` and `laoka.<sub>` all answer
+404/1042 and the module repos hold the rollback (each is one `wrangler deploy`
+away, and no data was ever in them — D1 is bound by name, not owned by a
+Worker). It is built by the Cloudflare Git integration on `main` (the
 default `npx wrangler deploy`; `.npmrc` carries `legacy-peer-deps=true` because
 wrangler 4.x wants `@cloudflare/workers-types` v5 while this project pins v4).
 Secrets (`AUTH_PEPPER`, `SESSION_SECRET`, `SETUP_TOKEN`) go in with `wrangler
