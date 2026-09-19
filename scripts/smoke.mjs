@@ -504,6 +504,12 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
   check('chat styles expense events', /AUTO_STYLE[\s\S]{0,600}expense\s*:/.test(chat) && chat.includes('.system-msg.expense .text'), 'expense event type has no styling')
   check('chat styles income events', /AUTO_STYLE[\s\S]{0,600}income\s*:/.test(chat) && chat.includes('.system-msg.income .text'), 'income event type has no styling')
   check('chat styles kine events', /AUTO_STYLE[\s\S]{0,600}kine\s*:/.test(chat) && chat.includes('.system-msg.kine .text'), 'kine event type has no styling')
+  // The entry timer ("MaxX is ~30s from Home") is an activity row like entry and
+  // exit. Without a style it still renders -- as a plain grey system line,
+  // which reads as "some event" rather than "someone is about to arrive".
+  check('chat styles the WAY approach timer like the other activity rows',
+    /AUTO_STYLE[\s\S]{0,900}approach\s*:/.test(chat) && chat.includes('.system-msg.approach .text'),
+    'the "~30s from Home" row has no style or no entry in AUTO_STYLE')
   // Money IN must not look like money OUT. Two separate classes alone is not
   // proof -- the whole point is that they render differently, so require the
   // income rules to differ from the expense rules.
@@ -1048,6 +1054,25 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   check('the snapshot carries in-flight pulses with their age',
     /approaches/.test(doSrc) && /ageMs/.test(doSrc),
     'a reload mid-approach would either lose the pulse or restart its window')
+  // One crossed threshold has THREE effects and they must all come from the
+  // same place: the badge pulse, the chat row, and the ntfy push. The chat row
+  // is the one the family reads afterwards -- the push can be missed, muted or
+  // eaten by quiet hours, so a threshold that only pushes is a threshold the
+  // household cannot see. (Entry/exit have always written a row; the timer
+  // never did, which is why the 60/30s push looked "missing" in the chat.)
+  const thresholdBlock = (doSrc.match(/for \(const threshold of APPROACH_THRESHOLDS\) \{([\s\S]*?)break;/) || [])[1] || ''
+  check('a crossed threshold arms the pulse, writes the chat row and pushes',
+    !!thresholdBlock &&
+    thresholdBlock.includes('setApproachPulse(') &&
+    thresholdBlock.includes('handleChatMessage(') &&
+    /eventType: "approach"/.test(thresholdBlock) &&
+    thresholdBlock.includes('notifyEvent('),
+    thresholdBlock ? 'the threshold block is missing one of its three effects (pulse / chat row / push)' : 'maybeNotifyApproach no longer loops APPROACH_THRESHOLDS')
+  // And the row is UNCONDITIONAL, like entry/exit: it must not sit behind the
+  // subscription check that notifyEvent does its own filtering inside.
+  check('the approach chat row is written even when nobody subscribed',
+    !!thresholdBlock && !/if \([^)]*subscriptions[^)]*\)[\s\S]{0,200}handleChatMessage/.test(thresholdBlock),
+    'the chat row is inside a subscription guard — a quiet-hours or unsubscribed threshold would vanish from the record')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────

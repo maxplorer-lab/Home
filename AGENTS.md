@@ -336,11 +336,24 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     served page still carries every frozen value, that the ping path no longer
     redraws, and that the pace switch stays display-only.
 
-23. **"Someone is nearly home" is announced TWICE, from ONE decision.** The
-    entry timer is a push, and a push can be missed — so the same thresholds
-    that send it (`APPROACH_THRESHOLDS` = 60 s / 30 s, category `home` only,
-    driving ≥ 15 km/h, heading at the fence) also arm a **badge pulse** the map
-    shows. It is deliberately NOT computed in the browser: the DO broadcasts
+23. **"Someone is nearly home" is announced THREE ways, from ONE decision.**
+    The entry timer is a push (`APPROACH_THRESHOLDS` = 60 s / 30 s, category
+    `home` only, driving ≥ 15 km/h, heading at the fence), and a push can be
+    missed — so the same crossing also (a) writes a **row in the chat** and
+    (b) arms a **badge pulse** the map shows. All three are decided in the
+    `for (const threshold of APPROACH_THRESHOLDS)` block inside
+    `maybeNotifyApproach`, and smoke fails if one of the three goes missing.
+    **The chat row is the record; the push is the alert.** Entry/exit have
+    always written one (`maybeLogGeofenceEvent`), and the timer never did —
+    which is exactly why the family read the 60 s / 30 s push as "missing from
+    the chat": the notification arrived, the history did not. It is written
+    **unconditionally**, before `notifyEvent` does its own per-recipient
+    filtering, so a quiet-hours or unsubscribed crossing still lands in the
+    record (`eventType: "approach"`, ⏳ amber, `.system-msg.approach`); the
+    stationary / moving pushes stay push-only on purpose — those fire on every
+    trip segment and would bury the rows that matter. Note the chat is the
+    Durable Object's scrollback (the flush is nightly), so the row appears at
+    once but reaches `way-db` with the next flush. It is deliberately NOT computed in the browser: the DO broadcasts
     `{type: "approach", threshold, place}` / `{cleared: true}` from
     `maybeNotifyApproach` itself, so the pulse and the notification can never
     disagree about whether a threshold was crossed. It is armed on the CROSSING,
@@ -386,7 +399,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
     halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v6-approach-pulse`).
+    (`notify-v7-approach-chat`).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -501,7 +514,8 @@ have their own separate repositories and their own history.
 | A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker, or switch the pace to **Live** |
 | The pace switch is there but the marker does not look any fresher | check `localStorage.getItem('map_pace')` and `playbackLagSeconds()` in the console; the pills and the pace line only repaint through `applyMapPace()` → `updatePaceNote()`, and a device whose newest ping is in the FUTURE (clock skew) is drawn from its `latestPing` either way |
 | The Chat tab shows a red dot, but the chat has nothing new in it | the dot is a **watermark**, not a count: `localStorage['chat_last_seen']` (an ISO instant) against the DO's newest `chat_messages.created_at`, polled from `/way/api/chat/latest` on every page. It never shows while you are ON `/chat` (that poll advances the watermark instead). A device seeing the dot for the first time adopts the whole backlog — if it is lit on a fresh device, the watermark was set by hand or the DO's timestamps are not ISO |
-| A badge pulses (or keeps pulsing after the car has parked) | that is the **approach pulse**: the DO arms it from the same 60 s / 30 s thresholds that send the entry-timer push (`notify-v6-approach-pulse`), yellow at 60 s and red at 30 s. It expires on **wall time** — 60 s from the 60 s trigger with no 30 s, 60 s from the 30 s trigger with no entry — and on arrival or turn-away (`clearApproachPulse`). Nothing pulsing means no threshold was crossed: the push and the pulse are the same decision, so a missing pulse is a missing notification, and `/way/api/debug/notify` says whether the per-event-type recipient count is 0 |
+| A badge pulses (or keeps pulsing after the car has parked) | that is the **approach pulse**: the DO arms it from the same 60 s / 30 s thresholds that send the entry-timer push (`notify-v7-approach-chat`), yellow at 60 s and red at 30 s. It expires on **wall time** — 60 s from the 60 s trigger with no 30 s, 60 s from the 30 s trigger with no entry — and on arrival or turn-away (`clearApproachPulse`). Nothing pulsing means no threshold was crossed: the push, the pulse and the chat row are one decision, so a missing pulse is a missing notification, and `/way/api/debug/notify` says whether the per-event-type recipient count is 0 |
+| The 60 s / 30 s push arrives but there is no row for it in the chat | the row is written by the same block that pushes (`maybeNotifyApproach`), so a missing row means the running Durable Object is **pre-`notify-v7`** code — a DO keeps its old instance until evicted, and the chat row is the one part of that block a browser-side check cannot see. `GET /way/api/debug/notify` reports `build`; a settings save forces the restart. If the build is v7 and the row is still absent, look for a `handleChatMessage` failure in the DO's logs (the flush writes `way-db` nightly, so the row will also be missing from `messages` until then) |
 | The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |
 
 ### What is actually served

@@ -409,7 +409,7 @@ export class FleetDO extends DurableObject<Env> {
             // v5 = tracking events publish to the TRACKING channel
             //      (home-db users.way_topic), not the money feed.
             // v6 = approach thresholds also drive the dashboard's badge pulse.
-            build: "notify-v6-approach-pulse",
+            build: "notify-v7-approach-chat",
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
             // "does the RUNNING instance know about income yet?" without
@@ -440,6 +440,14 @@ export class FleetDO extends DurableObject<Env> {
             })),
             lastNotify: this.lastNotify,
             cooldowns: Array.from(this.notifyCooldowns.entries()),
+            // The map's in-flight badge pulses. Reported here because a pulse is
+            // deliberately never persisted and expires on the client's clock: if
+            // the badge is not sweeping, this is the only way to tell "the DO
+            // never armed it" from "the browser dropped it".
+            approachPulses: Array.from(this.approachPulses.entries()).map(([deviceId, p]) => ({
+              deviceId, fence: p.fence, threshold: p.threshold,
+              ageMs: Math.max(0, Date.now() - p.at),
+            })),
           },
           null,
           2
@@ -1354,6 +1362,14 @@ export class FleetDO extends DurableObject<Env> {
         // worked out in the browser so the pulse can never disagree with the
         // push about whether a threshold was crossed.
         this.setApproachPulse(ping.deviceId, f.name, place, threshold);
+        // And into the CHAT, which is the household's activity record. The push
+        // reaches whoever subscribed and can be missed, muted or eaten by quiet
+        // hours; the chat row is what the family reads afterwards and is why
+        // entry/exit have always been written here too. Same rule as those:
+        // written unconditionally, independent of subscriptions.
+        this.handleChatMessage(null, `${ping.deviceId} is ~${threshold}s from ${place}`, {
+          deviceId: ping.deviceId, isAuto: true, eventType: "approach", gpsTimestamp: ping.timestamp,
+        });
         this.ctx.waitUntil(
           this.notifyEvent(
             ping.deviceId,

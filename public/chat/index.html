@@ -139,6 +139,11 @@ body {
 .system-msg.expense .text { color: #fb7185; background: rgba(244,63,94,0.12); border: 1px solid rgba(244,63,94,0.28); padding: 4px 10px; border-radius: 9999px; }
 .system-msg.income .text { color: #4ade80; background: rgba(34,197,94,0.13); border: 1px solid rgba(34,197,94,0.3); padding: 4px 10px; border-radius: 9999px; }
 .system-msg.kine .text { color: #c084fc; background: rgba(168,85,247,0.13); border: 1px solid rgba(168,85,247,0.27); padding: 4px 10px; border-radius: 9999px; }
+/* WAY's "~30s from Home1" entry timer, in the same amber the map pulses with,
+   so the row in the chat and the card on the map read as one event. It is an
+   arrival IN PROGRESS, not an arrival: entry (green) is the row that means the
+   gate should already be open. */
+.system-msg.approach .text { color: #fbbf24; background: rgba(245,158,11,0.13); border: 1px solid rgba(245,158,11,0.3); padding: 4px 10px; border-radius: 9999px; }
 
 .chat-input-bar { display: flex; gap: 8px; padding: 10px 0 calc(10px + env(safe-area-inset-bottom, 0px)) 0; border-top: 1px solid rgba(255,255,255,0.1); }
 .chat-input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 9px 12px; font-size: 12px; color: #fff; outline: none; font-family: inherit; }
@@ -179,6 +184,9 @@ const CONFIG = {
 const AUTO_STYLE = {
     arrived: { cls: 'entry',   icon: CONFIG.ENTRY_ICON },   // 📍 green
     left:    { cls: 'exit',    icon: CONFIG.EXIT_ICON },    // 🚪 grey
+    // The entry timer (60s / 30s out from a category="home" fence). Amber
+    // hourglass: on the way, not there — see the CSS note above.
+    approach: { cls: 'approach', icon: '⏳' },
     expense: { cls: 'expense', icon: '💸' },                // red   — money out
     income:  { cls: 'income',  icon: '💰' },                // green — money in
     kine:    { cls: 'kine',    icon: '🩺' },                // violet

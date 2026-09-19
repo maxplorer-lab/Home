@@ -228,8 +228,10 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v6-approach-pulse   (kept honest by `npm run smoke`,
-#   which reads THIS line and compares it with what the DO reports)
+#   expect build notify-v7-approach-chat   (kept honest by `npm run smoke`,
+#   which reads THIS line and compares it with the DO's source AND with what
+#   the running DO reports — otherwise "the DO is stale" and "this doc is
+#   stale" look identical from the outside)
 
 # The chat flush completes (this is the `devices` FK check, live)
 curl -s -b /tmp/j -X POST $B/way/api/flush

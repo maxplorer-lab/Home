@@ -200,6 +200,14 @@ the card, so they are drawn in their own layer over the map rather than inside
 the scrollable badge strip, which clipped the first version down to a ~170 px
 smudge.
 
+The same crossing **also writes a row in the chat** (`⏳ MaxX is ~30s from Home`,
+amber, `eventType: approach`), because that is the household's record of what
+happened — the push is the alert, the row is what you can still read after it
+has scrolled off a phone. It is written unconditionally, like the `arrived` and
+`left` rows, so an approach during quiet hours still leaves a trace. (The
+`moving again` and `stopped at …` pushes stay push-only on purpose: they fire on
+every trip segment and would bury the rows that matter.)
+
 ## One login, how it works
 
 * An admin creates each person at **`/admin`** (username + password + role).

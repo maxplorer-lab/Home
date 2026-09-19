@@ -640,9 +640,13 @@ the follow it had just started.
   pulse** is the one addition that crosses that line, and it crosses it in one
   place only: the DO broadcasts the threshold it was ALREADY notifying about
   (`maybeNotifyApproach`), and the browser decides nothing except how the pulse
-  looks and when its window closes. Same thresholds, one decision, two
+  looks and when its window closes. Same thresholds, one decision, three
   deliveries — a push for when nobody is looking, a badge ring for when they
-  are. The visual is deliberately two parts: the card says **which** device — a
+  are, and a **chat row** for the record afterwards. The row is the part the
+  household reads later, so it is written unconditionally (before
+  `notifyEvent` filters per recipient), exactly like `arrived` / `left`;
+  `moving again` and `stopped at …` remain push-only because they fire on every
+  trip segment. The visual is deliberately two parts: the card says **which** device — a
   3px band drawn **inward** (so nothing is painted outside a card) and its one
   status line handed over to the countdown — and a **radar layer over the map**
   says **how close** — rings that leave the card, cross the map and fade out. That split is forced by the layout: `#badge-strip` is an
