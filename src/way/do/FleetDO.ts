@@ -409,17 +409,23 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(
         JSON.stringify(
           {
-            // Bump this whenever the DO's own code changes. Durable Objects are
-            // NOT replaced by a plain deploy in the way a Worker is: an
-            // instance can keep running older code until it is evicted, so
-            // "did my DO change actually take effect?" is a real question --
-            // especially at cutover. GET /way/api/debug/notify answers it.
+            // Bump this ENTIRE line list whenever the DO's own code changes.
+            // A deploy does shut Durable Objects down, but eventually
+            // consistently: an instance can keep serving old code until the
+            // rollout reaches it (or it goes idle and is evicted after 70-140
+            // s), so "did my DO change actually take effect?" is a real
+            // question -- especially at cutover. GET /way/api/debug/notify
+            // answers it; a settings save does NOT (that only reloads this
+            // instance's notify cache).
             // v3 = accepts /system-chat (Sompitra's activity in the chat).
             // v4 = splits that into expense/income so they read differently.
             // v5 = tracking events publish to the TRACKING channel
             //      (home-db users.way_topic), not the money feed.
             // v6 = approach thresholds also drive the dashboard's badge pulse.
-            build: "notify-v7-approach-chat",
+            // v7 = the same approach decision also writes the chat row.
+            // v8 = an exit starts only from a witnessed departure, and an
+            //      unwitnessed crossing is silent (rule 28).
+            build: "notify-v8-witnessed-exit",
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
             // "does the RUNNING instance know about income yet?" without
