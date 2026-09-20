@@ -169,6 +169,10 @@
      map loads: the share draws what that map draws, so there is nothing to keep
      in step by hand. -->
 <script src="/shared/playback.js"></script>
+<!-- The basemaps, shared with the household's map — and the reason this page
+     does NOT name a tile server of its own: the hardcoded OSM URL that used to
+     sit below is what got this app blocked (2026-09-20). -->
+<script src="/shared/basemaps.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function () {
@@ -458,12 +462,28 @@
     var at = [state.lat, state.lng];
     if (!map) {
       map = L.map('map', { zoomControl: true, attributionControl: true });
-      // OpenStreetMap standard tiles, and nothing else: this view has no layer
-      // switch, no satellite, no hillshade. The household's map is the one with
-      // a choice to make; an outsider gets the map that always works.
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-      }).addTo(map);
+      // One background and no switch: this view has no layer menu, no
+      // satellite, no hillshade. The household's map is the one with a choice
+      // to make; an outsider gets the map that always works — the labelled
+      // street raster, from the shared basemap module rather than a URL typed
+      // here. A tile server named in this file is how /live ended up asking
+      // OpenStreetMap's donated hardware for tiles until it blocked the app
+      // (see /shared/basemaps.js), and the fix is not "a nicer URL": it is
+      // having no URL of our own to get wrong.
+      var base = window.HomeBasemaps && window.HomeBasemaps.streets;
+      if (base) {
+        L.tileLayer(base.url, {
+          maxZoom: 19, maxNativeZoom: base.maxNativeZoom, attribution: base.attribution
+        }).addTo(map);
+      } else {
+        // It is a separate request, so it can fail on its own — and a silent
+        // grey square reads as "she has not moved". The footer cannot carry
+        // this: it is rebuilt from live state on every poll. `npm run smoke`
+        // asserts the module is actually served, which is the check that
+        // catches the real cause (a missing asset), so this is for the person
+        // holding the phone when that happens.
+        console.error('HomeBasemaps is missing: /shared/basemaps.js did not load, so the map has no background');
+      }
       // The device starts in the MIDDLE of the screen, which is the position
       // the camera's cycle assumes at its start.
       map.setView(at, 14);

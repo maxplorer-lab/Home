@@ -27,7 +27,10 @@ import {
 } from "../db/queries";
 import { buildCsv, buildKml } from "../lib/export";
 import { findHomeUserByName, getHomeUserFromCookie, listNtfyChannels, setWayTopic, HOME_COOKIE } from "../../identity";
-import { WAY_SHARE_KIND, createShare, listShares, revokeShare, timeUntil } from "../../lib/share";
+import {
+  WAY_SHARE_KIND, createShare, listShares, revokeShare, replaceOpenShares, timeUntil, shareErrorText,
+  shareErrorStatus, listShareTargets, resolveShareTarget,
+} from "../../lib/share";
 import type { Env as HomeEnv } from "../../env";
 import {
   NOTIFY_EVENT_TYPES, NotifyEventType, generateNtfyTopic,
@@ -317,6 +320,11 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
       : [];
     return jsonSuccess({
       device,
+      // The people who can be shared, so the row can let the admin PICK one
+      // instead of inheriting whatever device the map happens to be following.
+      // Same list as the console's, from the same function, because a picker that
+      // offers someone the mint then refuses is the bug this replaced.
+      deviceOptions: await listShareTargets(shareEnv),
       // Reported for ANY signed-in person, so a non-admin is told why the
       // button is not there instead of being shown one that fails.
       canShare: !!miner,
@@ -335,19 +343,31 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     try { body = (await request.json()) as Record<string, unknown>; } catch { /* empty body */ }
     const device = String(body.device || "").trim();
     if (!device) return jsonError("A device is required", 400);
-    // The subject must be a device this household actually has: minting a grant
-    // for a typo would hand out a link that can never answer.
-    const known = (await getUsers(env.WAY_DB)).some((u) => u.username === device);
-    if (!known) return jsonError("Unknown device", 400);
+    // The subject must be someone this household can actually share: a device
+    // that HAS AN ACCOUNT. Checked through the same function the picker is built
+    // from, so the two can never disagree — and so the leftover `Niri` device row
+    // (no account, no pings, ever) is refused here instead of being offered in a
+    // dropdown. A TYPO is refused by the same answer, which is why the message
+    // names the real fault rather than saying "unknown device".
+    // `body.label` is deliberately not read: the name comes from the subject.
+    const name = await resolveShareTarget(shareEnv, device);
+    if (!name) return jsonError("That device has no account to share", 400);
     const created = await createShare(shareEnv, {
       kind: WAY_SHARE_KIND, subject: device,
-      label: String(body.label || "").trim() || device,
       createdBy: miner,
     });
-    if (!created.ok) return jsonError("Could not create that code", 500);
+    // The reason is NAMED, not swallowed: "Could not create that code" is what
+    // a missing migration looks like from the outside, and it sends the reader
+    // hunting in the wrong place. shareErrorText says which file to run.
+    if (!created.ok) return jsonError(shareErrorText(created.error), shareErrorStatus(created.error));
+    // ONE live code per device, so "who is shared" has exactly one answer: the
+    // code just minted replaces whatever was open for this device. Done AFTER the
+    // create, so a failed mint leaves a working code alone rather than revoking
+    // it and then failing.
+    const replaced = await replaceOpenShares(shareEnv, device, created.share.id);
     // The ONE response that ever carries the pin.
     return jsonSuccess({
-      pin: created.pin, device, label: created.share.label,
+      pin: created.pin, device, label: created.share.label, replaced,
       createdAt: created.share.created_at, expiresAt: created.share.expires_at,
       expiresIn: timeUntil(created.share.expires_at),
     });

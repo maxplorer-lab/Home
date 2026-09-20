@@ -84,6 +84,9 @@ const EXTRA_DOT_COLORS = [
 ]
 
 export function userAccentColor(displayName: string | null | undefined): string {
+  // Folded first, so these two comparisons are names, not spellings: `Niri`
+  // reaches the orange branch without the literal below ever holding a name
+  // that is written anywhere else (AGENTS.md rule 33).
   const n = (displayName || '').toLowerCase()
   if (n === 'niri') return 'bg-orange-500'
   if (n === 'maxx') return 'bg-blue-500'

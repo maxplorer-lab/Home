@@ -21,8 +21,8 @@
 > that must not be skipped. Its pings were already in D1 from the nightly cron.
 
 Sompitra, W.A.Y and Laoka were each already live as standalone Workers, with the
-same two people (`MaxX`, lowercase `niri` — and the case matters, see §1d) and
-real data. This is how to move to the merged
+same two people (`MaxX`, and `Niri` — the platform spelled hers lowercase until
+2026-09-20, when the two spellings were merged into one; §1f) and real data. This is how to move to the merged
 **Home** Worker without losing the data that matters (Sompitra's) and without
 silently breaking the parts that keep working by accident.
 
@@ -78,14 +78,40 @@ npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0004_two_channel
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0005_diagnostics.sql
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0006_share_links.sql
 ```
-(0001–0004 are applied in production, and **0005 was applied on 2026-09-20**
-(the diagnostics ledger — without it `/admin/diagnostics` renders an honest "the
-ledger is unreadable" and nothing is recorded). **0006 is the one still to
-apply**, before the release that ships `/live`: without it the admin card lists
-no shares and a minted code goes nowhere (`listShares` returns an empty list
-rather than 500ing the console, so the console's own silence is the symptom).
+(0001–0004 are applied in production, **0005 on 2026-09-20** (the diagnostics
+ledger — without it `/admin/diagnostics` renders an honest "the ledger is
+unreadable" and nothing is recorded), and **0006 on 2026-09-20** — see the
+correction below, because it is the one that got missed and it cost a day of
+"could not generate a code" in production.
 A fresh environment needs all six, in this order — 0004 rewrites the channel
 columns 0002 created.)
+
+**0006 was shipped without being applied anywhere but local, and the symptom was
+NOT the one this file used to predict.** The reads swallow their error on purpose
+(the console must keep working on an unmigrated database), so `GET
+/way/api/share` answered `{"canShare":true,"open":[]}` and looked completely
+healthy. Only the WRITE failed — and `createShare`'s `INSERT` had no `try/catch`,
+so it left the Worker as a 500 with **no body at all**. A page reading JSON cannot
+parse that, so the map's row fell back to its generic sentence ("Could not
+generate a code."), which names nothing to act on. Fixed the same day, both ways:
+the migration was applied, and `createShare` now catches that throw and names the
+file to run (`lib/share.ts` → `shareErrorText`), through **both** doors.
+
+So the lesson to keep: **a hand-applied migration is invisible until a write
+fails, and the schema is never part of the code you deploy.** After adding a
+`migrations-*/*.sql`, apply it to every environment and then PROVE it landed —
+read-only, safe against production, exits 1 on a gap:
+```bash
+npm run audit:remote      # every remote db vs its migrations-* directory
+```
+It compares all four databases in one go and names what is missing
+(`HOME_DB 9 tables on remote · 7 promised by migrations-home`), which is the
+answer you want BEFORE a release rather than after a household reports a broken
+button. It reads the migration files by replaying them in order — comments
+stripped, `DROP COLUMN` honoured, `RENAME TO` followed — because the naive
+version of that reading reports three false gaps (a table named `IF` out of a
+sentence of prose, a column that 0004 deliberately drops, and `users_new`, which
+0005 renames away).
 The three module databases are already migrated in production (their schemas
 exist) — only the new one needs this. Do **not** blindly re-run the module
 migrations remotely; several use bare `CREATE TABLE` / `ALTER TABLE` and will
@@ -121,9 +147,10 @@ like a schema problem: `POST /way/api/flush` returns
 permanently empty, map history is empty, and unsynced rows pile up inside the
 DO. The row list also has to contain every `device_id` used in auto events —
 which is the person's `way-db.users.username` **verbatim, case included**
-(`deviceId = user.username`). Production's people are `MaxX` and lowercase
-`niri`, so a `devices` row named `Niri` fixes MaxX's arrivals and leaves niri's
-still failing.
+(`deviceId = user.username`). Production's people are `MaxX` and `Niri`, so a
+`devices` row spelled any other way (a leftover lowercase `niri`, say) fixes
+MaxX's arrivals and leaves Niri's still failing — the table is matched by exact
+string, which is why the one-spelling cleanup in §1f mattered.
 
 If it is missing, restore it with `scripts/repair-way-messages-fk.sql`
 (idempotent; safe on a populated database, and it derives the rows from
@@ -147,6 +174,37 @@ npm run check && npm run verify && npx wrangler deploy --dry-run
 ```
 `npm run smoke` needs a running server; it covers the whole surface including
 the chat round trip (Sompitra expense → chat system row).
+
+### 1f. One-off repairs, applied by hand (2026-09-20)
+
+**One spelling per person.** A person's name is a key, not a label: it is
+`gps_pings.device_id`, `devices.device_id`, Sompitra's `users.id`
+(`usr_niri`), the μlogger credential, and the ntfy topic owner. Production had
+her account under the lowercase `niri` (her phone, 10 960 pings, her chat rows,
+her Sompitra account) **and** a leftover capitalised `Niri` device row that no
+account owned — so one person was two names in the data.
+
+`scripts/one-off/2026-09-20-rename-niri-to-Niri/` merges the lowercase spelling
+into `Niri` in all four databases (`way.sql`, `home.sql`, `sompitra.sql`,
+`laoka.sql`; the folder's `00-README.md` explains the order and the traps). It
+was applied to every remote database with `wrangler d1 execute … --remote` and
+verified by re-scanning **every text column of every table** in all four — the
+literal string `niri` is now absent, with three deliberate survivors noted in
+the README (Sompitra's `usr_niri` ids, chat text that mentions her, and a
+budget group literally named `NIRI`).
+
+Two habits follow, and the smoke test enforces both:
+
+- **A name lookup folds case.** Home's login always did; W.A.Y's own credential
+  check and its `getUserByUsername` did not, which meant one spelling fix could
+  lock a person out of their *tracker* while their *browser* kept working.
+- **A device id is re-resolved from the account, never trusted from the
+  cookie.** The μlogger session lasts 30 days and nothing re-read the account
+  per fix, so a pre-rename session would have re-stamped the old spelling onto
+  every ping — a rename undoing itself silently, one ping at a time.
+- **Do not fix this on the phone.** Editing the app's username is a manual step
+  on a device that may be away from you; the server accepting both spellings,
+  and storing one, is the durable fix.
 
 ---
 
@@ -194,11 +252,18 @@ leaves that window open in the meantime.
 ### About the phones (the step most likely to be missed)
 μlogger does not use per-request Basic Auth. It calls `action=auth` on
 `/ulogger` with a **username and password that are the same as the dashboard
-login**, checked against `way-db.users` with an exact-case username match
-(`src/way/routes/ingest.ts`). Consequences:
+login**, checked against `way-db.users` (`src/way/routes/ingest.ts`; as of
+2026-09-20 the match **folds case**, the same way the browser login does, and
+the session's device id is re-resolved to the account's own spelling on every
+fix). Consequences:
 
 - Keeping `way-db` means both phones keep working with their current
-  credentials — the recommended path even though the data is disposable.
+  credentials — the recommended path even though the data is disposable. A
+  phone whose app still says `niri` keeps working too: the credential check
+  folds case and the ping is stamped with the account's spelling, not the
+  app's. **That folding must be deployed for this to hold** — against a build
+  without it, a pre-rename phone is refused outright (no session) or silently
+  stamps the old spelling back into `gps_pings.device_id` (live session).
 - If you *do* wipe `way-db`, each phone must then authenticate with the
   person's **Home username and password**, because a fresh W.A.Y row is created
   from the password typed at Home login.
@@ -218,7 +283,7 @@ extra "arrived" event on its first ping. Harmless — and the chat now records i
 1. Open `/bootstrap` on the new domain — the **first account becomes the
    admin**. Create **MaxX** there, using the *same username* the module
    databases already know (`MaxX`; matching is case-insensitive).
-2. As MaxX, open `/admin` and create **niri** (the username the module
+2. As MaxX, open `/admin` and create **Niri** (the username the module
    databases already know, case included).
 3. Each person's notification channels: **You → Notifications** shows two — 💬
 the money/chat feed and 📍 W.A.Y tracking — and each is *generated*, not

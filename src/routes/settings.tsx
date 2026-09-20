@@ -81,7 +81,7 @@ interface Following {
  * What W.A.Y's subscription grid promises each person.
  *
  * This is the half of the routing that lives in another module, and it is the
- * half that fails SILENTLY: W.A.Y can be told "niri wants maxx's arrivals" and
+ * half that fails SILENTLY: W.A.Y can be told "Niri wants MaxX's arrivals" and
  * still deliver nothing, because the events go to her TRACKING topic and she has
  * none. The grid says yes, no phone rings, and no screen anywhere admits it —
  * which is how a household ends up debugging a working pipeline. Read here so

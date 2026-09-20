@@ -34,6 +34,7 @@
 // Exit code 0 = all green, 1 = something regressed.
 
 import { readFileSync } from 'node:fs'
+import { createHmac } from 'node:crypto'
 
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:8787').replace(/\/$/, '')
 const USER = process.env.SMOKE_USER || 'maxx'
@@ -268,7 +269,54 @@ log('\n9. WAY basemap stays where the user put it')
 {
   const way = await body(await req('/way/index.html'))
   check('no auto-revert timer in the served WAY document', !/scheduleTileRevert|tileRevertTimer/.test(way), 'an auto-revert to lite is back')
-  check('both manual basemaps still offered', way.includes("setLayer('lite')") && way.includes("setLayer('osm')"), 'LITE / OSM buttons missing')
+  check('the layer menu is BUILT from the shared basemaps',
+    way.includes('/shared/basemaps.js') && /Object\.keys\(HomeBasemaps\)/.test(way),
+    'the page is back to hardcoded basemap buttons, so a basemap can be renamed in one place and drawn from another — which is how a button reading "OSM" kept promising a server that had started refusing this app')
+
+  // The background, and why it is a shared file rather than two URLs: on
+  // 2026-09-20 OSM's volunteer-run tile server answered every request that
+  // identified this app with a BLANK 256x256 tile (https://osm.wiki/blocked,
+  // "not following the tile usage policy"), which broke /live while the
+  // household map — on Esri — looked perfect. A tile URL typed into a page is
+  // a dependency on somebody else's policy, taken twice.
+  const live = await body(await req('/live'))
+  const basemaps = await req('/shared/basemaps.js')
+  const basemapSrc = await body(basemaps)
+  check('the share names no tile server of its own',
+    live.includes('/shared/basemaps.js') && !/tile\.openstreetmap\.org/.test(live),
+    'the outsider view points at a tile host directly again — the last time it did, every request that identified this app came back as a blank tile, and a blank tile reads as "she has not moved"')
+  // The module's own header names the host that blocked us, so the URLs are
+  // read as VALUES rather than by grepping the file: a guard that trips on the
+  // comment explaining the fix is the documented trap (section 18) — and it
+  // tripped here first.
+  const basemapUrls = [...basemapSrc.matchAll(/url:\s*'([^']+)'/g)].map((m) => m[1])
+  check('…and neither does the household map',
+    !/tile\.openstreetmap\.org/.test(way) && way.includes('/shared/basemaps.js') &&
+      !basemapUrls.some((u) => /tile\.openstreetmap\.org/.test(u)),
+    `a tile URL is inlined in a page again (or a basemap points at the volunteer server): ${basemapUrls.join(' ') || 'none'} — one provider changing its mind can then break one map while the other looks fine, and nothing here would say which`)
+  // Each basemap, read as its OWN block. The first version of this check grepped
+  // the whole module for a credit: stripping ONE basemap's attribution passed,
+  // because the other basemap's mention satisfied the grep — found by falsifying
+  // it, which is the only reason to write a guard at all.
+  const basemapBlocks = [...basemapSrc.matchAll(/([a-z]+):\s*\{([\s\S]*?)\n\s*\},/g)]
+    .map((m) => ({ key: m[1], body: m[2] }))
+  const credited = basemapBlocks.filter((b) =>
+    /attribution:\s*'[^']*Esri[^']*'/.test(b.body) && /attribution:\s*'[^']*OpenStreetMap contributors[^']*'/.test(b.body))
+  check('every basemap is https, and each one names who to credit',
+    basemapUrls.length >= 2 && basemapUrls.length === basemapBlocks.length &&
+      basemapUrls.every((u) => u.startsWith('https://')) && credited.length === basemapBlocks.length,
+    `${basemapUrls.length} url(s) for ${basemapBlocks.length} basemap(s); credited: ${credited.map((b) => b.key).join(', ') || 'none'} — the credit is a condition of using someone's tiles rather than decoration, and an http tile on an https page is blocked by the browser before anyone sees it`)
+  check('the tile path is Esri\u2019s {z}/{y}/{x}, not OSM\u2019s {z}/{x}/{y}',
+    basemapUrls.every((u) => /\/tile\/\{z\}\/\{y\}\/\{x\}/.test(u)),
+    `${basemapUrls.join(' ')} — row before column; swapping the two by hand draws the right zoom of the wrong place, which reads as "the map is wrong" rather than "the URL is wrong"`)
+  check('the basemap module serves both maps',
+    basemaps.status === 200 && /javascript/.test(basemaps.headers.get('content-type') || '') &&
+      /HomeBasemaps/.test(basemapSrc) && /(^|\s)lite:\s*\{/.test(basemapSrc) && /(^|\s)streets:\s*\{/.test(basemapSrc),
+    `status ${basemaps.status}, ${basemaps.headers.get('content-type')} — it is a separate request, so a 404 leaves the share drawing an empty square while the household map looks fine`)
+  const defaultKey = (way.match(/BASEMAP_DEFAULT:\s*'([a-z]+)'/) || [])[1]
+  check('the map defaults to a basemap the module actually defines',
+    !!defaultKey && new RegExp(`(^|\\s)${defaultKey}:\\s*\\{`).test(basemapSrc),
+    `default "${defaultKey ?? 'missing'}" is not defined in /shared/basemaps.js — setLayer falls back silently, so the map just draws the wrong background`)
 }
 
 // ─── 9b. the HUD reads what the tracker actually sends ───────────
@@ -1853,7 +1901,7 @@ log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
 
   // Two hardcoded people used to sit in Sompitra's logic and copy: the
   // transaction legend next to the list, and the account a Kiné payment syncs
-  // into (`WHERE u.username='niri' AND ia.name='Kiné Privée'`). Both read the
+  // into (an exact `u.username = '…'` match on one person's name). Both read the
   // data now — an admin can create anyone, and a rename must not leave a
   // stranger's name on a card or send money to an account nobody looked up.
   // Comments must be stripped before asserting on a source file, or a check
@@ -1868,8 +1916,11 @@ log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
     !/align-middle"\s*\/>\s*(Niri|MaxX)/.test(budgetSrc),
     'the legend names people literally again — a third account gets no entry and a rename lies')
   check('the Kiné→budget sync resolves its income account instead of hardcoding one',
-    !/username\s*=\s*'niri'/.test(kineSrc) && (kineSrc.match(/kineIncomeAccount\(/g) || []).length >= 3,
-    'the account lookup is hardcoded again (or one of the two call sites bypasses the helper) — a second practitioner silently gets nothing')
+    // ANY literal, not just the one name that used to be there: a rename makes
+    // the old spelling disappear from this file, which would leave the guard
+    // green on a hardcoded replacement (found by asking what its mutation was).
+    !/username\s*=\s*'/.test(kineSrc) && (kineSrc.match(/kineIncomeAccount\(/g) || []).length >= 3,
+    'the account lookup is hardcoded again (a literal username in the SQL, or one of the two call sites bypassing the helper) — a second practitioner silently gets nothing')
 
   // The horizontal-scroll trap: a grid item's automatic minimum size is its
   // min-content width, and a transaction description is rendered with
@@ -1959,9 +2010,9 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   const beforeAcc = await counter('accuracy')
   const beforeRec = await counter('received')
 
-  // The device login is CASE-SENSITIVE (the dashboard's is not) — the exact
-  // username comes from the DO rather than from USER, which is the trap the run
-  // doc records as having cost an hour.
+  // The device login folded case as of the one-spelling rule (below) — the
+  // exact username still comes from the DO rather than from USER, which is the
+  // trap the run doc records as having cost an hour.
   await req('/ulogger/client/index.php', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form({ action: 'auth', user: device || '', pass: PASS }),
@@ -1986,6 +2037,93 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
     (await counter('received')) === beforeRec + 1,
     `received ${beforeRec} → ${await counter('received')}`)
 
+  // ── One spelling per person, through BOTH of the phone's doors. Home's login
+  // has always matched names case-insensitively; μlogger's own credential check
+  // did not, and the device cookie it mints lasts 30 days with nothing
+  // re-looking-up the account on each fix. That gave a rename two ways to
+  // quietly undo itself: a phone still configured with the old spelling stops
+  // uploading, and a session minted before the rename keeps stamping the old
+  // spelling onto gps_pings.device_id — the key every marker, trip and HUD row
+  // is drawn by. Both are exercised here rather than assumed.
+  const foldCase = (s) => {
+    const i = s.search(/[A-Za-z]/)
+    if (i === -1) return s
+    const c = s[i]
+    return s.slice(0, i) + (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()) + s.slice(i + 1)
+  }
+  const swappedUser = foldCase(USER)
+  const authRes = await req('/ulogger/client/index.php', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form({ action: 'auth', user: swappedUser, pass: PASS }),
+  })
+  const authBody = await body(authRes)
+  check('μlogger signs in whatever case the phone was configured with',
+    /"error"\s*:\s*false/.test(authBody),
+    `"${swappedUser}" was refused (${authBody.slice(0, 60)}) while the browser login accepts that same spelling — a phone set up before a rename stops uploading, and its owner has no way to see why`)
+  const decodeToken = (t) => {
+    try { return JSON.parse(Buffer.from(String(t).split('.')[0], 'base64url').toString('utf8')) } catch (e) { return null }
+  }
+  // The cookie is read off THIS response's own header, never out of the jar:
+  // a refused login sets nothing, and the jar still holds the session an earlier
+  // section minted — reading that would let this check pass on a login that
+  // never happened.
+  const mintedCookie = (authRes.headers.getSetCookie?.() || [])
+    .map((c) => c.split(';')[0])
+    .find((p) => p.startsWith('way_device_session='))?.slice('way_device_session='.length)
+  const canonical = decodeToken(mintedCookie || '')?.deviceId || null
+  check('…and the session it mints carries the account\u2019s own spelling, not the typed one',
+    !!canonical && canonical !== swappedUser && canonical.toLowerCase() === swappedUser.toLowerCase(),
+    `a login typed as "${swappedUser}" minted a session for "${canonical}" — a session echoing the typed casing keeps stamping it onto every ping, which is how the spelling that was just merged away comes back`)
+
+  // The second door, end to end: forge exactly the cookie a phone would still
+  // be holding from before the rename, and read back what the intake recorded
+  // against it. A fix its receiver rated worse than the limit is the ideal
+  // probe — that gate runs first and such a ping writes nothing else at all, so
+  // the only trace it can leave is the device id on the drop row.
+  let devSecret = null
+  try {
+    const m = readFileSync(new URL('../.dev.vars', import.meta.url), 'utf8').match(/^\s*SESSION_SECRET\s*=\s*"?([^"\r\n]+)/m)
+    devSecret = m ? m[1].trim() : null
+  } catch (e) {}
+  const staleId = canonical ? foldCase(canonical) : null
+  // The ledger windows the last 25 drops and persists them across runs, so this
+  // compares BEFORE and AFTER instead of scanning that history: a row left by an
+  // earlier run (including a deliberately mutated one) is not a live failure.
+  const accuracyNow = async () =>
+    (((await readDiagJson()).ingest?.drops) || []).filter((d) => d.gate === 'accuracy')
+  if (devSecret && staleId) {
+    const accuracyBefore = await accuracyNow()
+    const staleBefore = accuracyBefore.filter((d) => d.deviceId === staleId).length
+    const payload = Buffer.from(JSON.stringify({ deviceId: staleId, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')
+    const forged = `${payload}.${createHmac('sha256', devSecret).update(payload).digest('base64url')}`
+    await fetch(BASE + '/ulogger/client/index.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: `way_device_session=${forged}` },
+      body: form({
+        action: 'addpos', trackid: '1', lat: '-19.8795533', lon: '47.0307533',
+        time: String(Math.floor(Date.now() / 1000)), accuracy: '25', speed: '0',
+      }),
+    })
+    // The ledger reads ORDER BY id DESC, so the NEWEST drop is first — and the
+    // newest one is the fix just posted. That ordering is itself a trap: this
+    // check first searched from the other end, matched an hour-old row, and
+    // stayed green while the mutation it exists to catch sat in the code.
+    const accuracyAfter = await accuracyNow()
+    const newestDrop = accuracyAfter[0]
+    const staleAfter = accuracyAfter.filter((d) => d.deviceId === staleId).length
+    check('a session minted under the old spelling writes under the account\u2019s own name',
+      newestDrop?.deviceId === canonical && staleAfter <= staleBefore,
+      `the newest fix was recorded against "${newestDrop?.deviceId}" for a session claiming "${staleId}" (old spelling in the window: ${staleBefore} → ${staleAfter}) — the old spelling is back in the data, one silent ping at a time`)
+  } else if (!devSecret) {
+    check('the stale-session proof can run (needs the local SESSION_SECRET)',
+      false,
+      'SESSION_SECRET could not be read from .dev.vars — this check forges the cookie a pre-rename phone still holds, so without the local secret it proves nothing')
+  } else {
+    check('the stale-session proof can run (it needs the case probe above to name an account)',
+      false,
+      `no account resolved from a login typed as "${swappedUser}", so there is no second spelling to forge a cookie with — fix the check above before reading this one`)
+  }
+
   const after = await readDiagJson()
   check('the drop sample says WHY, in language a person can read',
     (after.ingest?.drops || []).some((x) => x.gate === 'accuracy' && /limit/.test(x.detail)),
@@ -2001,12 +2139,30 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   // ── The source contracts. A live check cannot reach every branch (no server
   // set, no channel configured, a push that throws), so the paths that cannot be
   // reached here are read instead.
-  let notifySrc = '', diagSrc = '', adminSrc = '', idxSrc = '', doLedgerSrc = ''
+  let notifySrc = '', diagSrc = '', adminSrc = '', idxSrc = '', doLedgerSrc = '', ingestSrc = '', querySrc = ''
   try { notifySrc = readFileSync(new URL('../src/lib/notify.ts', import.meta.url), 'utf8') } catch (e) {}
   try { diagSrc = readFileSync(new URL('../src/lib/diagnostics.ts', import.meta.url), 'utf8') } catch (e) {}
   try { adminSrc = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8') } catch (e) {}
   try { idxSrc = readFileSync(new URL('../src/index.tsx', import.meta.url), 'utf8') } catch (e) {}
   try { doLedgerSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { ingestSrc = readFileSync(new URL('../src/way/routes/ingest.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { querySrc = readFileSync(new URL('../src/way/db/queries.ts', import.meta.url), 'utf8') } catch (e) {}
+
+  // The rename's two contracts, read rather than assumed: the password check
+  // must fold case (or the tracker is stricter than the login that shares its
+  // credential), and the device id must be resolved from the ACCOUNT rather
+  // than trusted from the cookie. The live proof goes through one gate; this
+  // pins the code path so a later edit cannot reopen either door unnoticed.
+  check('μlogger resolves the account the same way the web login does',
+    /getUserByUsername\(env\.WAY_DB, username\)/.test(ingestSrc) &&
+      !/FROM users WHERE username = \?/.test(ingestSrc) &&
+      /lower\(username\) = lower\(\?1\)/.test(querySrc),
+    'the phone\u2019s credential check no longer folds case, or is back to an exact `WHERE username = ?` — a phone configured with any other casing of its owner\u2019s name stops uploading')
+  check('…and a session\u2019s device id is re-resolved instead of trusted from the cookie',
+    /canonicalDeviceId\(env\.WAY_DB, session\.deviceId\)/.test(ingestSrc) &&
+      !/const deviceId = session\.deviceId/.test(ingestSrc),
+    'the device id goes straight from the 30-day cookie onto every ping — a session minted before a rename re-stamps the old spelling onto gps_pings.device_id')
+
 
   check('every way a push can fail to reach a phone is recorded',
     (notifySrc.match(/recordDiag\(/g) || []).length >= 4,
@@ -2167,7 +2323,9 @@ log('\n20. The live share: one device, one code, until midnight UTC')
     const create = await req('/admin/share', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: form({ device, label: 'Smoke viewer' }),
+      // No `label`: the viewer's page shows the person's OWN name, read from the
+      // subject by the server, so a label in this form is ignored by design.
+      body: form({ device }),
     })
     const created = await body(create)
     const pin = (created.match(/id="share-pin">(\d{6})</) || [])[1]
@@ -2223,16 +2381,25 @@ log('\n20. The live share: one device, one code, until midnight UTC')
 
       // ── a SECOND code, because "Revoke all" only means something while more
       //    than one is open (and that is exactly when the card offers it) ──
-      const second = await req('/admin/share', {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: form({ device, label: 'Smoke viewer 2' }),
-      })
-      const secondHtml = await body(second)
-      const secondPin = (secondHtml.match(/id="share-pin">(\d{6})</) || [])[1]
-      check('two open codes are offered a way to end them together',
-        !!secondPin && /action="\/admin\/share\/revoke-all"/.test(secondHtml),
-        `second pin ${secondPin ?? 'missing'}, revoke-all form ${/action="\/admin\/share\/revoke-all"/.test(secondHtml) ? 'present' : 'missing'} — "she has arrived" must not mean revoking them one by one`)
+      // It has to be a DIFFERENT PERSON now: one code per device (checked at the
+      // end of this section) means two mints for the same one replace each other.
+      const targets = ((await (await req('/way/api/share')).json()).deviceOptions ?? []).map((t) => t.deviceId)
+      const other = targets.find((d) => d !== device)
+      let secondPin = null
+      if (!other) {
+        log('  \x1b[90m– skipped the two-open-codes check: only one shareable person here\x1b[0m')
+      } else {
+        const second = await req('/admin/share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: form({ device: other }),
+        })
+        const secondHtml = await body(second)
+        secondPin = (secondHtml.match(/id="share-pin">(\d{6})</) || [])[1]
+        check('two open codes are offered a way to end them together',
+          !!secondPin && /action="\/admin\/share\/revoke-all"/.test(secondHtml),
+          `second pin ${secondPin ?? 'missing'}, revoke-all form ${/action="\/admin\/share\/revoke-all"/.test(secondHtml) ? 'present' : 'missing'} — "she has arrived" must not mean revoking them one by one`)
+      }
 
       // ── revoking is what ends a share early, and only an admin can ──
       const id = shareId
@@ -2262,6 +2429,35 @@ log('\n20. The live share: one device, one code, until midnight UTC')
       check('Revoke all ends every open code at once',
         all.status === 302 && (!secondPin || (afterAll.status === 410 && afterAllBody.code === 'revoked')),
         `revoke-all ${all.status}, second code ${afterAll?.status ?? 'not minted'} ${afterAllBody.code ?? ''} — a bulk revoke that leaves a code alive is worse than no button`)
+
+      // ── ONE code per person: a second mint for the same device is a
+      //    REPLACEMENT, not a second way in. Two live codes for one person means
+      //    "who is being shared" has two answers and the admin cannot tell which
+      //    one is out there — and the person being shown the map cannot tell
+      //    either ──
+      const mintFor = async (dev) => {
+        const res = await req('/admin/share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: form({ device: dev }),
+        })
+        return ((await body(res)).match(/id="share-pin">(\d{6})</) || [])[1]
+      }
+      const replacedPin = await mintFor(device)
+      const keptPin = await mintFor(device)
+      const replacedState = replacedPin ? await req(`/live/api/state?pin=${replacedPin}`) : null
+      const replacedBody = replacedState ? await replacedState.json().catch(() => ({})) : {}
+      check('a second code for the same person replaces the first',
+        !!replacedPin && !!keptPin && replacedPin !== keptPin &&
+        replacedState?.status === 410 && replacedBody.code === 'revoked',
+        `first ${replacedPin ?? 'missing'} → ${replacedState?.status ?? 'n/a'} ${replacedBody.code ?? ''}, second ${keptPin ?? 'missing'} — two live codes for one person is two answers to "who is being shared"`)
+      const openNow = (await (await req(`/way/api/share?device=${encodeURIComponent(device)}`)).json()).open ?? []
+      check('and only ONE stays open for that person',
+        openNow.length === 1,
+        `open ${openNow.length} — the map's own row would offer to stop more than one code for one person`)
+      // Leave nothing behind: a later viewer check in this run must not find a
+      // code that somebody forgot to end.
+      await req('/admin/share/revoke-all', { method: 'POST' })
 
       // The console has to KEEP what ended, and say which of the two clocks
       // ended it; and the ended code must leave the active list, or the card is
@@ -2379,7 +2575,12 @@ log('\n20. The live share: one device, one code, until midnight UTC')
 
   // ── the source contracts: the refusals a test cannot stage ──
   check('the code is hashed before it is ever stored',
-    /hashPassword\(env, pin\)[\s\S]{0,600}?INSERT INTO share_links/.test(shareSrc),
+    /hashPassword\(env, pin\)[\s\S]{0,900}?INSERT INTO share_links/.test(shareSrc) &&
+    // The proximity above is a PROXY — a comment between the two moves it, and
+    // a nearby INSERT could bind `pin` anyway while still being "close". This
+    // is the property itself: the row written carries the hash, its salt and its
+    // cost, and never the pin.
+    /\.bind\(input\.kind, subject, label, input\.createdBy, now\.toISOString\(\), expiresAt, hash, salt, iterations\)/.test(shareSrc),
     'the pin reaches the database before it is hashed, so home-db holds live codes in clear')
   check('the console never reads a pin hash into a page',
     /const SHARE_COLUMNS/.test(shareSrc) && !/SELECT \* FROM share_links/.test(shareSrc),
@@ -2390,6 +2591,41 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('an expired or revoked code is reported as such, not as a wrong one',
     /code: 'expired'/.test(shareSrc) && /code: 'revoked'/.test(shareSrc),
     'both collapse into bad_pin — so a relative holding yesterday\'s link is told to check their typing, and an admin cannot tell a stale link from an attack')
+  // ── the name the viewer reads, and who may be shared at all ──
+  // Both were answered in more than one place, and the lists disagreed: the
+  // console offered every row of way-db's `devices`, the mint validated against
+  // `users` — so production offered a leftover `Niri` (no account, no pings,
+  // EVER, beside the real `niri` with 9,679 of them, the two spellings merged on
+  // 2026-09-20) and then refused it at the moment the admin had already decided. And the name was a 40-character text
+  // box, so one person's name could sit over another person's map.
+  const adminSrc20 = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8')
+  // Read here rather than reusing section 21's slice: that one is block-scoped
+  // to its own section, so reaching for it would be a ReferenceError, not an
+  // empty string (the difference between a guard that fails and one that lies).
+  const apiSrc20 = readFileSync(new URL('../src/way/routes/dashboard-api.ts', import.meta.url), 'utf8')
+  check('a shareable person is a device WITH AN ACCOUNT, decided in one place',
+    /FROM devices d JOIN users u ON u\.username = d\.device_id/.test(shareSrc) &&
+    /export async function resolveShareTarget/.test(shareSrc) &&
+    /export async function listShareTargets/.test(shareSrc) &&
+    // and the mint asks it, rather than testing a list of its own
+    /const name = await resolveShareTarget\(shareEnv, device\)/.test(apiSrc20) &&
+    // both doors build their list from that one function
+    /listShareTargets\(c\.env\)/.test(adminSrc20) &&
+    /deviceOptions: await listShareTargets\(shareEnv\)/.test(apiSrc20),
+    'the picker and the mint can disagree again: a device row with no account would be offered and then refused')
+
+  check('the viewer\'s page names the person from the SUBJECT, not from a request',
+    /label: await subjectName\(env, share\.subject\)/.test(shareSrc) &&
+    // createShare takes no label at all, so no caller — and therefore no body —
+    // can put one name over another person's map
+    /input: \{ kind: string; subject: string; createdBy: string \}/.test(shareSrc) &&
+    !/body\.label/.test(shareSrc),
+    'the name on the outsider page comes from somewhere a caller controls')
+
+  check('the console offers no free-text label, and asks for one from nobody',
+    !/name="label"/.test(adminSrc20) && !/body\.label/.test(adminSrc20),
+    'the console still lets an admin type the name the viewer will read, so it can contradict the map underneath it')
+
   check('the code expires at the next 00:00 UTC, and cannot be extended',
     /Date\.UTC\(from\.getUTCFullYear\(\), from\.getUTCMonth\(\), from\.getUTCDate\(\) \+ 1\)/.test(shareSrc),
     'the expiry is not computed from the clock, so a share can outlive the day it was minted for')
@@ -2502,10 +2738,10 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('the viewer\'s NUMBERS stay live while the drawing is delayed',
     /state\.speed/.test(liveSrc) && !!liveFrame && !/foot/.test(liveFrame),
     'the badge was moved onto the delayed clock, so the speed and the age would describe where the dot is drawn instead of where the device is')
-  check('the viewer\'s map is OpenStreetMap and nothing else',
+  check('the viewer\'s map has ONE background and no switch',
     (liveSrc.match(/L\.tileLayer\(/g) || []).length === 1 &&
-    /tile\.openstreetmap\.org/.test(liveSrc) && !/L\.control\.layers|baseMaps/.test(liveSrc),
-    'the share offers layers to switch: an outsider gets the map that always works, not a choice to make')
+    /HomeBasemaps\.streets/.test(liveSrc) && !/L\.control\.layers|baseMaps/.test(liveSrc),
+    'the share offers layers to switch, or names a tile host of its own: an outsider gets the map that always works, not a choice to make — and a host named in this file is the dependency that broke this page when OSM blocked the app (2026-09-20)')
   // ── the badge is a speedometer, and the household map's is its twin ──────
   // WAY's readout is the model: a large tabular figure with the unit under it.
   // The share's is checked against the SAME shape, so "a real dashboard font"
@@ -2623,8 +2859,55 @@ log('\n21. Settings → Map: the share row')
     'stop-sharing revokes whatever it finds, so an expired code gets credited to the admin who pressed stop')
 
   check('a device that does not exist cannot be shared',
-    /getUsers\(env\.WAY_DB\)\)\.some\(\(u\) => u\.username === device\)/.test(shareBlock),
+    // Through the SAME function the picker is built from: a typo, and the
+    // leftover `Niri` device row that has no account, are refused by one answer.
+    /const name = await resolveShareTarget\(shareEnv, device\)[\s\S]{0,200}?if \(!name\) return jsonError/.test(shareBlock),
     'a grant can be minted for a typo, so the relative holding it gets a link that can never answer')
+
+  // ── a failed mint has to NAME itself ──
+  // This section can be all green while the FEATURE is dead in production, and
+  // that is not hypothetical: share_links lives in home-db, which is migrated by
+  // HAND, per environment. Every read path here swallows its own error on
+  // purpose (the console must keep working on an unmigrated db), and the GET
+  // answers `open: []` — so a deployment whose migration was never applied looks
+  // perfectly healthy right up to the moment you press Generate, where the
+  // INSERT threw and came back as a 500 with NO body at all. A client reading
+  // JSON cannot parse that, so it showed its generic fallback: "Could not
+  // generate a code." — a sentence that names nothing to act on, from a fault
+  // whose fix is one command. These guards pin the naming.
+  const shareSrc21 = readFileSync(new URL('../src/lib/share.ts', import.meta.url), 'utf8')
+  const adminSrc21 = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8')
+  // NOT fnBody here: createShare's signature carries `{ kind: string; … }`, so
+  // brace-balancing starts at the PARAMETER type and returns a fragment of the
+  // declaration. Sliced by its own boundaries instead.
+  const createBody = shareSrc21.slice(
+    shareSrc21.indexOf('export async function createShare('),
+    shareSrc21.indexOf('export type ShareFilter'))
+
+  check('a mint that cannot reach its table is named, never a bare 500',
+    createBody.indexOf('export async function createShare(') === 0 &&
+    createBody.length > 400 &&
+    !!createBody &&
+    createBody.indexOf('try {') > -1 &&
+    createBody.indexOf('try {') < createBody.indexOf('INSERT INTO share_links') &&
+    /missingTable\(message\) \? 'no_table' : 'db_error'/.test(createBody),
+    'the share INSERT throws, so an environment missing its migration answers a bodyless 500 and the page can only shrug')
+
+  check('the missing-table answer names the migration to apply',
+    /0006_share_links\.sql/.test(fnBody(shareSrc21, 'shareErrorText') || ''),
+    'the message for the likeliest break does not say which file to run, so the fix is not in the error')
+
+  check('both doors report a failed mint with the same words',
+    // The TEXT and the STATUS together, from the same module: a typo is the
+    // caller's mistake (400) and a missing table is the deployment's (500), and a
+    // hardcoded status was a real defect here — found by removing the route's own
+    // refusal and watching the backstop answer 500 for a device that does not
+    // exist.
+    /jsonError\(shareErrorText\(created\.error\), shareErrorStatus\(created\.error\)\)/.test(shareBlock) &&
+    /shareErrorText\(code\)/.test(adminSrc21) &&
+    /err=\$\{encodeURIComponent\(created\.error\)\}/.test(adminSrc21) &&
+    !/err=share_failed/.test(adminSrc21),
+    'the console flattens every failed mint into one word, so the reason is lost before the operator reads it')
 
   // ── the UI sits where it was asked for: Settings → Map, under the switch ──
   const mapSection = waySrc21.slice(waySrc21.indexOf("settingsSection('map'"), waySrc21.indexOf("settingsSection('notif'"))

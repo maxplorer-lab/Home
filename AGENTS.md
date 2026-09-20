@@ -42,6 +42,7 @@ expecting it to affect Home.
 npm run check          # tsc --noEmit (must pass before you claim done)
 npm run smoke          # end-to-end checks against a RUNNING dev server
 npm run verify         # check + smoke — what "tested locally" means here
+npm run audit:remote   # REMOTE schema vs migrations-* (read-only, exits 1 on a gap)
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
 npm run deploy         # wrangler deploy (see rule 17 first)
@@ -52,6 +53,11 @@ npm run deploy         # wrangler deploy (see rule 17 first)
 regression, so it is safe to gate a deploy on. Defaults to the local dev
 seed account (`maxx`); override with `SMOKE_USER` / `SMOKE_PASS`. Set
 `SMOKE_ADMIN=0` when testing with a non-admin account.
+
+`npm run audit:remote` talks to the REAL databases (read-only selects only) and is
+the check rule 32 exists for: it answers "did every migration reach every
+environment?" Pass `--dir <path> --binding <BINDING>` to audit one directory
+instead of all four — which is how it can be falsified.
 
 Local DB setup (first time only):
 
@@ -275,8 +281,9 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     for every `device_id` used in auto events, and that id is the person's
     `way-db.users.username` **verbatim, case included** (`deviceId =
     user.username` in `src/way/routes/ingest.ts`) — production's people are
-    `MaxX` and lowercase `niri`, so a row named `Niri` satisfies MaxX's arrivals
-    and still fails niri's. Repair locally or remotely with
+    `MaxX` and `Niri`, and a device row spelled any other way satisfies one
+    person's arrivals while failing the other's (that is exactly what the
+    pre-2026-09-20 lowercase `niri` did — rule 33, `CUTOVER.md` §1f). Repair locally or remotely with
     `scripts/repair-way-messages-fk.sql` (idempotent; it derives the rows from
     `gps_pings` and `users` instead of hardcoding names).
     **Check the whole table, not just the parent**: D1 also fails to *prepare*
@@ -618,11 +625,31 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     can open.** `/live` (the document) plus `/live/api/state?pin=…` (the data)
     let an admin show ONE device to ONE person who has no account: they type a
     6-digit code and watch that device's map, and nothing else in the app is
-    reachable from there. `migrations-home/0006` creates `share_links` (subject
+    reachable from there.    `migrations-home/0006` creates `share_links` (subject
     device, label, the pin HASH, who created it, `expires_at`, `revoked_at`,
     `last_used_at`). Every choice below is a refusal of something easier, and
     each one has a guard in smoke section 20 — which proves the live flow (mint,
     wrong code, resolve, revoke) as well as the contracts a test cannot stage:
+    * **Who may be shared is a device WITH AN ACCOUNT**, decided in ONE function
+      (`listShareTargets` / `resolveShareTarget` in `lib/share.ts`, joining
+      `devices.device_id` to `users.username`) and asked by BOTH doors — the
+      console's picker and the mint route. Do not go back to listing one table
+      while validating against another: production's `devices` used to hold a
+      leftover `Niri` (capital N, no account, not one ping in its life) beside
+      the real `niri` (9,679 of them) — one person as two spellings, merged on
+      2026-09-20 (`CUTOVER.md` §1f) — so the picker offered a person the mint
+      then refused, at the exact moment an admin had decided.
+    * **The viewer reads the person's OWN name, resolved from the subject.**
+      `createShare` takes no label at all and the console has no text box for
+      one, so no request body can name one person while sharing another's map;
+      the stored `label` is only the record of what that grant promised, and the
+      page re-reads the name so a rename cannot leave an outsider watching an old
+      one. The map row picks the person and NAMES them on the button.
+    * **One live code per device** (`replaceOpenShares`): minting for a person
+      replaces whatever was open for them, so "who is being shared" always has
+      one answer. Two codes for two DIFFERENT people is the case **Revoke all**
+      exists for. A failed mint must not revoke anything — the replacement runs
+      AFTER the create.
     * **The pin is hashed, never looked up.** `createShare` stores it with the
       same peppered scheme as a password, so `resolveSharePin` VERIFIES it
       against the recent grants (`created_at` inside 7 days, `LIMIT 25`) rather
@@ -727,14 +754,55 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     "the instance is running old code" — and a *v14* instance would answer 200
     while ignoring the window, which is why the marker has to move with this
     feature rather than with the next one. `0006` must be applied to **home-db**
-    (local and remote) or the admin card lists nothing — `listShares` returns an
-    empty list rather than 500ing the console, so the failure is quiet by
-    design.
+    (local and remote) — and note that a deploy does NOT do it (rule 32).
+    Without the table the READS stay quiet on purpose (`listShares` returns an
+    empty list rather than 500ing the console, and the map's GET answers
+    `open: []`), so both doors look healthy and only the MINT fails. Precisely
+    because that is the likeliest break, the mint must NAME its remedy:
+    `createShare` catches the throw, returns `no_table`, and `shareErrorText` says
+    which file to run — through both doors. It did not, until 2026-09-20: the
+    bare throw left a 500 with NO body, so the page could only fall back to
+    "Could not generate a code." — a sentence that told the household nothing and
+    cost a day. Do not put an unwrapped `HOME_DB` write back on this path.
     What it deliberately does NOT do: tell the person being watched. That is an
     ADMIN capability, exercised by someone acting for the household (as when
     creating accounts or resetting a password); the grant records WHO created
     it, and every refused attempt is receipted, so it is accountable even where
     it is not announced.
+
+32. **A schema change is NOT part of a deploy.** `migrations-home/*.sql` is applied
+    BY HAND, per environment (`npx wrangler d1 execute HOME_DB --remote --file=…`),
+    and nothing in `npm run check`, the build or the deploy touches it. So the code
+    can be live and correct while the table it writes does not exist — which is
+    exactly how live shares became un-mintable in production on 2026-09-20. After
+    adding a migration: apply it everywhere, then PROVE it landed with
+    `npm run audit:remote`, which compares all four remote databases against their
+    `migrations-*` directories in one read-only pass and exits 1 on any gap —
+    because the absence is otherwise invisible: no error, no log entry, no failed
+    check (the run is spelled out in `CUTOVER.md` §1b). Two habits follow from the same fact: a write path that needs a
+    new table must ANSWER with that fact (a named reason, never a bodiless 500),
+    and `CUTOVER.md` §1b must stay the true list of what every environment has.
+
+33. **A person's name is a KEY, and there is exactly ONE spelling of it.** It is
+    `way-db.users.username` (which μlogger authenticates with), `gps_pings.device_id`
+    and `devices.device_id` (which every marker, trip and badge is drawn by),
+    Sompitra's `users.id`, and the owner of an ntfy topic. So a lookup **folds
+    case** everywhere — Home's login always did (`lower(username) = lower(?1)`),
+    and as of 2026-09-20 so do W.A.Y's own credential check and
+    `getUserByUsername` (exact hit preferred, so two rows differing only by case
+    stay unambiguous) — and a device id is **re-resolved from the account on
+    every fix** rather than trusted from the 30-day cookie, because a session
+    minted before a rename would otherwise re-stamp the old spelling onto
+    `gps_pings.device_id` and undo the rename silently. The live proof is in
+    `npm run smoke` §19 (a login typed in another case, and a hand-forged
+    pre-rename cookie whose fix must be recorded under the account's name). Two
+    traps found while building it, both worth knowing: the gate ledger reads
+    `ORDER BY id DESC`, so "the newest drop" is index 0 — searching from the
+    other end matches an hour-old row and passes while the fault sits in the
+    code — and the 25-row window persists across runs, so a guard must compare
+    before/after rather than scan that history. Never fix a casing problem on the
+    phone: the server accepting both spellings and storing one is the durable fix
+    (`scripts/one-off/2026-09-20-rename-niri-to-Niri/`, §1f).
 
 ## Smoke test (local, after any identity change)
 
@@ -824,7 +892,7 @@ have their own separate repositories and their own history.
 | A track spikes out and back from a geofence while the phone is parked | two separate causes, and the rows tell them apart. **Same-second pair?** judged against `GLITCH_TIME_FLOOR_S`, never skipped (rule 27) — a pre-floor DO accepts it unseen. **First row of the pair exactly on the exit radius?** that is the guard's interpolated edge point, so read the ping that STARTS the exit: a far-out ping after a long silence passed every speed gate (0.5 km/h implied over hours) and the guard then confirmed on wall time. `pingsFlushed` counts only accepted pings, so it is the first honest number to read |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
 | A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |
-| Someone is ticked in W.A.Y's grid and still receives nothing | they have no **tracking** topic: the grid says yes, the events are addressed to a topic that does not exist, and nothing else complains. `/settings`' household card warns about exactly this, and `GET /way/api/debug/notify` reports `niri has no topic` |
+| Someone is ticked in W.A.Y's grid and still receives nothing | they have no **tracking** topic: the grid says yes, the events are addressed to a topic that does not exist, and nothing else complains. `/settings`' household card warns about exactly this, and `GET /way/api/debug/notify` reports `Niri has no topic` |
 | "Send a test" says sent but the phone stays quiet | it now reports ntfy's own answer: `ntfy refused it (401)` = the server wants a token (`wrangler secret put NTFY_TOKEN`), `could not reach …` = wrong URL/host, `no ntfy server is set` = neither the database value nor `NTFY_URL`. If it says **accepted** and still nothing arrives, the phone is subscribed to a different topic — compare the string on screen with the subscription |
 | Money notifications never arrive on a fresh deployment, tracking ones do | the halves resolve the server separately (`src/lib/notify.ts` vs the DO's `getNotifyConfig()`); both must end on the same value, and smoke cross-checks the one each side reports |
 | Local login breaks right after editing `HOME_DB`'s `database_id` | local D1 state is keyed to the database identity — the previous `.sqlite` is still in `.wrangler/state/v3/d1/`; either re-apply the migrations + `/bootstrap`, or give the binding the old data (rule 17, and the workspace run doc) |
@@ -838,7 +906,8 @@ have their own separate repositories and their own history.
 | The HUD's health slot reads `n/a` or `—`, or the badge shows no battery strip | μlogger reports **no battery level at all** (96 of 12,077 pings ever had one, all on the old app's first day) and the live push never carried the field, so `n/a` was permanent. The slot now falls back to GPS accuracy (`±1.6 m`, on every ping), and `—` only means a device's stored `lastStatus` predates the DO sending `accuracy` — one ping fixes it. Never print `n/a` again: smoke section 9b fails on it, and on the DO losing `accuracy` from the live push |
 | The HUD's age reads `-1s ago` | the phone's clock runs ~1 s ahead of the viewer's: the age is `Date.now() - ping.timestamp` and must be **clamped at 0** (`now` under a second). Whatever the skew, an age can never be negative |
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
-| A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth is **case-sensitive** on `users.username` (`MaxX`, lowercase `niri` — a lowercase login works for the dashboard, not for a phone), and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h) |
+| A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth **folds case** on `users.username` (`MaxX`, `Niri`), so a 401 means the password (not the casing) is wrong, or a session cookie went stale — and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h). Before 2026-09-20 this check was exact-case, which is how a casing fix could leave a phone refused while the browser login worked (rule 33) |
+| The share's map is blank, or shows "access blocked … tile usage policy" (`osm.wiki/blocked`) | the page is pointing at a tile server of its own again. Both maps read `/shared/basemaps.js` and nothing else, because OSM's volunteer-run server blocks this app per-APP (the same request with no `Referer` still gets a real tile, which is why `curl` looks fine): a blocked tile is a **flat 1-bit image a few hundred bytes long**, not an HTTP error. Never inline a tile URL in a page — that is how `/live` broke while the household map, on Esri, looked perfect |\r\n| A tile lands in the wrong part of the world, at the right zoom | Esri's tile path is `/tile/{z}/{y}/{x}` — ROW before COLUMN, the reverse of OSM's `{z}/{x}/{y}`. Copy a basemap from `/shared/basemaps.js` instead of retyping a URL; smoke §9 asserts the order |\r\n| Pings start arriving under a spelling you just merged away | the running build is older than rule 33: the device id must be **re-resolved from the account** on every fix (`canonicalDeviceId` in `src/way/routes/ingest.ts`), because a 30-day μlogger cookie minted before a rename re-stamps the old spelling onto `gps_pings.device_id`. Smoke §19 forges exactly that cookie and reads the ledger row back |
 | The share badge shows the speed but NOT its colour, and the footer/address stay empty or frozen | a local named **`window`** inside that function. `var window = state.since ? …` was hoisted to the top of `render()`, so the global read `undefined` for the whole function and every statement *after* the speed figure was silently skipped — on every poll, forever, with nothing in the console but `Cannot read properties of undefined (reading 'HomePlayback')`. The local is `windowLabel` now, and section 20 fails any page that declares its own `window` |
 | The share button is missing from WAY → Settings → Map | first check WHO you are signed in as: the row is admin-only, and a non-admin sees the sentence "Only an admin can hand out a code" in its place. If you are an admin and it still says **Checking…**, the device list has not loaded — the row acts on the SELECTED device and refuses to show a stale answer for a different one. A `403` from `POST /way/api/share` while `/admin` mints fine means `shareMinter` is failing to read the central session: `HOME_DB` must be bound and `home_session` must be present (the console uses the same cookie) |
 | A code minted from the map is not listed in the console | both doors write the same `share_links` rows, so an empty console means the row is not there at all: check `wrangler d1 execute HOME_DB --local` for `SELECT id, subject, revoked_at, expires_at FROM share_links`. Note the console lists ACTIVE codes for every device while the map shows only the SELECTED device's |

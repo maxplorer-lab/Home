@@ -17,15 +17,34 @@
 // level at all (unlike OwnTracks). gps_pings.battery will be null for
 // every ping ingested through this route.
 
-import { Env, UserRow } from "../types";
+import { Env } from "../types";
 import { verifyPassword, signToken, verifyToken } from "../lib/auth-crypto";
 import { RawPing } from "../lib/state-machine";
+import { getUserByUsername } from "../db/queries";
 import {
   DEVICE_SESSION_COOKIE, DEVICE_SESSION_TTL_SECONDS, getCookie, buildSetCookie,
 } from "../lib/session";
 
 interface DeviceSessionPayload {
   deviceId: string; // == the username (one person == one device)
+}
+
+/** The spelling the account actually has today, for a name that may have
+ * been spelled differently when this session was minted.
+ *
+ * The device cookie lasts 30 days and nothing re-looks-up the account on
+ * every fix, so a session created before a rename would keep stamping the
+ * old spelling onto gps_pings.device_id -- which is the key the dashboard
+ * draws markers, trips and the map by. That is a rename quietly undoing
+ * itself, one ping at a time.
+ *
+ * A name with no account at all passes through untouched rather than
+ * erroring: the fix then fails the way it always would, instead of the
+ * whole device going dark because its row was renamed or removed. */
+async function canonicalDeviceId(db: D1Database, deviceId: string): Promise<string> {
+  if (!deviceId) return deviceId;
+  const user = await getUserByUsername(db, deviceId);
+  return user?.username || deviceId;
 }
 
 function jsonError(message: string, status = 401): Response {
@@ -72,17 +91,18 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
     if (!username || !pass) return jsonError("Missing credentials", 400);
 
     // One person == one device (migration 0002): μlogger authenticates
-    // with the SAME username/password as the dashboard login.
-    const user = await env.WAY_DB
-      .prepare("SELECT * FROM users WHERE username = ?")
-      .bind(username)
-      .first<UserRow>();
+    // with the SAME username/password as the dashboard login, matched by
+    // the same case-insensitive rule (see getUserByUsername). The password
+    // is still the gate -- the folding only decides which row is meant.
+    const user = await getUserByUsername(env.WAY_DB, username);
 
     if (!user || !(await verifyPassword(pass, user.password_hash))) {
       return jsonError("Unauthorized");
     }
 
-    // deviceId in the session == the username. This is what gets stamped
+    // deviceId in the session == the username -- the STORED spelling, not
+    // what the phone typed -- so every ping lands under the account's one
+    // true name however the app was configured. This is what gets stamped
     // onto every ping (gps_pings.device_id) and what the dashboard keys
     // markers/badges by.
     const token = await signToken(
@@ -103,7 +123,7 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
     ? await verifyToken<DeviceSessionPayload>(cookie, env.SESSION_SECRET)
     : null;
   if (!session) return jsonError("Unauthorized");
-  const deviceId = session.deviceId;
+  const deviceId = await canonicalDeviceId(env.WAY_DB, session.deviceId);
 
   if (action === "addtrack") {
     // No real "tracks" table -- fixed id, never validated on addpos.

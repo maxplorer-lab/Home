@@ -10,8 +10,23 @@ import { generateNtfyTopic } from "../lib/notify";
 // ============================================================
 //  Users (the single entity -- one person == one tracked device)
 // ============================================================
+// Names are matched the way Home's login matches them: ignoring case, with
+// an exact hit preferred. Three places decide who a name means -- Home's
+// login, the identity bridge (find-or-create per module), and μlogger's own
+// credential check in routes/ingest.ts -- and if the phone's is stricter than the
+// browser's, a person can sign in on the web and be rejected by their own
+// tracker (that is exactly what a one-letter casing fix used to do, since
+// the 30-day device cookie is minted from the stored spelling).
+//
+// Exact-first matters for more than tidiness: with two rows differing only
+// by case, the one spelled the way the caller typed it wins, so a lookup
+// is never ambiguous. Registration refuses such a twin anyway (auth.ts
+// checks through this same function), so the tie-break is a backstop.
 export async function getUserByUsername(db: D1Database, username: string): Promise<UserRow | null> {
-  return db.prepare("SELECT * FROM users WHERE username = ?").bind(username).first<UserRow>();
+  return db
+    .prepare("SELECT * FROM users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1")
+    .bind(username)
+    .first<UserRow>();
 }
 
 export async function getUserById(db: D1Database, id: number): Promise<UserRow | null> {

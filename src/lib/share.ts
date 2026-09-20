@@ -120,6 +120,202 @@ export function validPinShape(pin: unknown): pin is string {
   return typeof pin === 'string' && new RegExp(`^[0-9]{${SHARE_PIN_DIGITS}}$`).test(pin)
 }
 
+/** Is this D1 error "the table is not in this database"? */
+function missingTable(message: string): boolean {
+  return /no such table/i.test(message)
+}
+
+/**
+ * The wording for a mint that failed, in ONE place — because there are two doors
+ * to this capability (the console card and Settings → Map) and an operator who
+ * sees the message should get the same sentence from either.
+ *
+ * It exists for one failure in particular. `share_links` lives in home-db, which
+ * is migrated BY HAND, per environment — so the most likely way this feature
+ * breaks is "migration 0006 was never applied HERE". That is invisible from the
+ * outside and it looks like nothing: the code simply cannot be generated. So the
+ * message names the file to run instead of shrugging.
+ */
+export function shareErrorText(code: string): string {
+  switch (code) {
+    case 'no_pepper':
+      return 'AUTH_PEPPER is not configured on this Worker, so no code can be generated.'
+    case 'no_table':
+      return 'The share table is missing from this deployment — apply migrations-home/0006_share_links.sql to home-db.'
+    case 'db_error':
+      return 'The database refused to store that code. The Worker log has the reason.'
+    case 'no_subject':
+      return 'Pick a device to share before generating a code.'
+    case 'not_shareable':
+      return 'That device has no account in this household, so a code for it could never show anything.'
+    default:
+      return 'Could not create that code.'
+  }
+}
+
+// ─── Who can be shared, and what they are called ────────────────
+//
+// TWO questions started out with three different answers, which is how a grant
+// can end up pointing at nobody:
+//
+//   * which people can be shared — the console listed way-db's `devices` table,
+//     while the mint route validated against `users`. Those two lists are not the
+//     same list. Production had THREE device rows and TWO accounts: a leftover
+//     `Niri` (capital N) that no phone ever reported from, next to the real
+//     `niri` (9,679 pings) — one person as two spellings, merged on 2026-09-20
+//     (`CUTOVER.md` §1f). The dropdown offered it, and the mint then refused it
+//     — the feature failing at the one moment the admin had already decided.
+//     So: a shareable person is a device row that HAS AN ACCOUNT (`device_id`
+//     matching `users.username`), and both doors ask this one function.
+//   * whose name the viewer sees — it was a free-text box on the console, up to
+//     40 characters, stored as given. Nothing tied it to the subject, so a typo
+//     (or a joke) could put one person's name over another's map, and the person
+//     being shown the page had no way to tell. The name now comes from the
+//     SUBJECT, and the API takes no label at all.
+
+/** One person who can be handed a code: their device id, and their name. */
+export interface ShareTarget {
+  deviceId: string
+  name: string
+  emoji: string | null
+  color: string | null
+}
+
+/** The shareable people are `devices` INNER JOINed to `users` on the id, written
+ *  once so the picker and the check that guards the mint cannot drift apart. */
+const SHARE_TARGET_SQL = `SELECT d.device_id AS deviceId, d.display_name AS name, d.emoji AS emoji, d.color AS color
+   FROM devices d JOIN users u ON u.username = d.device_id`
+
+/**
+ * The people this household can share, for the pickers.
+ *
+ * Falls back to the plain account list when way-db's `devices` table is absent or
+ * holds nothing that has an account (a database mid-migration, or a standalone
+ * W.A.Y deployment whose device rows predate the accounts). The fallback keeps
+ * the feature usable; it does NOT widen what may be shared, because
+ * `resolveShareTarget` reads the same two sources in the same order.
+ */
+export async function listShareTargets(env: Env): Promise<ShareTarget[]> {
+  try {
+    const { results } = await env.WAY_DB
+      .prepare(`${SHARE_TARGET_SQL} ORDER BY d.display_name COLLATE NOCASE`)
+      .all<ShareTarget>()
+    if (results?.length) return results
+  } catch {
+    /* no devices table (or no WAY_DB): the account list below is the fallback */
+  }
+  return accountTargets(env)
+}
+
+/** The accounts themselves, as a last resort: nobody's name but their login. */
+async function accountTargets(env: Env): Promise<ShareTarget[]> {
+  try {
+    const { results } = await env.WAY_DB
+      .prepare(`SELECT username AS deviceId, username AS name, emoji, color FROM users ORDER BY username COLLATE NOCASE`)
+      .all<ShareTarget>()
+    return results ?? []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Is this subject shareable, and if so what is the person called?
+ *
+ * Returns null for a device row that has no account — the phantom-row case — and
+ * the mint route refuses it by that answer. This is the check that keeps a code
+ * from pointing at a device which will never report: the grant would resolve, the
+ * viewer would see a name, and the map behind it would stay empty forever.
+ */
+export async function resolveShareTarget(env: Env, subject: string): Promise<string | null> {
+  const id = String(subject || '').trim()
+  if (!id) return null
+  try {
+    const row = await env.WAY_DB.prepare(`${SHARE_TARGET_SQL} WHERE d.device_id = ?1`).bind(id).first<ShareTarget>()
+    if (row?.name) return row.name
+  } catch {
+    /* fall through to the account check below */
+  }
+  try {
+    const row = await env.WAY_DB
+      .prepare(`SELECT username FROM users WHERE username = ?1`)
+      .bind(id)
+      .first<{ username: string }>()
+    return row?.username ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The name the VIEWER's page shows, resolved from the subject at read time.
+ *
+ * Read live rather than taken from the grant's stored `label`, for one reason: a
+ * person who renames themselves must not leave an outsider watching an old name.
+ * The stored label stays as the fallback (it is what this grant promised at mint
+ * time, and it is never a request body — see `createShare`), and the subject
+ * itself is the last resort, because showing a technical id beats showing nothing.
+ */
+export async function subjectName(env: Env, subject: string): Promise<string> {
+  const id = String(subject || '').trim()
+  if (!id) return 'Device'
+  try {
+    const row = await env.WAY_DB
+      .prepare(`SELECT display_name FROM devices WHERE device_id = ?1`)
+      .bind(id)
+      .first<{ display_name: string }>()
+    if (row?.display_name) return row.display_name
+  } catch {
+    /* a deployment with no devices table still has the account name below */
+  }
+  try {
+    const row = await env.WAY_DB.prepare(`SELECT username FROM users WHERE username = ?1`).bind(id).first<{ username: string }>()
+    if (row?.username) return row.username
+  } catch {
+    /* fall through to the subject itself */
+  }
+  return id
+}
+
+/**
+ * End every OTHER open grant for this device.
+ *
+ * The rule this enforces is "one device, at most one live code": with several
+ * open at once, "who is shared" has more than one answer, and the admin cannot
+ * tell which name is out there. Only grants the CLOCK has not already ended, for
+ * the same reason `revokeAllShares` skips them — stamping `revoked_at` on an
+ * expired grant rewrites what happened. Best-effort: a mint that succeeded must
+ * not be reported as failed because the cleanup had a bad day.
+ */
+export async function replaceOpenShares(env: Env, subject: string, keepId: number): Promise<number> {
+  try {
+    const now = new Date().toISOString()
+    const res = await env.HOME_DB
+      .prepare(
+        `UPDATE share_links SET revoked_at = ?1
+          WHERE subject = ?2 AND id <> ?3 AND revoked_at IS NULL AND expires_at > ?1`
+      )
+      .bind(now, subject, keepId)
+      .run()
+    return res.meta?.changes ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * What STATUS a failed mint deserves, beside the sentence above.
+ *
+ * Split out because the two are not the same kind of failure, and mixing them
+ * hides which one happened: "this device cannot be shared" is the CALLER's
+ * mistake (400 — a typo, or a device row with no account), while a missing table
+ * or an unset pepper is the DEPLOYMENT's (500). Found by removing the route's own
+ * refusal and watching the backstop answer 500 for a typo.
+ */
+export function shareErrorStatus(code: string): 400 | 500 {
+  return code === 'no_subject' || code === 'not_shareable' ? 400 : 500
+}
+
 function stateOf(row: ShareRow, now = Date.now()): ShareStatus['state'] {
   if (row.revoked_at) return 'revoked'
   if (Date.parse(row.expires_at) <= now) return 'expired'
@@ -130,28 +326,47 @@ function stateOf(row: ShareRow, now = Date.now()): ShareStatus['state'] {
  * Mint a grant. Returns the pin ONCE — it is hashed before it is stored, so
  * this value cannot be recovered afterwards; the admin card says so and offers
  * regenerate instead of a "show pin" that could only ever lie.
+ *
+ * There is no label parameter, and that is the point: the name on the viewer's
+ * page is read from the SUBJECT here, so no caller — and therefore no request
+ * body — can put one person's name over another person's map. `resolveShareTarget`
+ * is also the refusal that keeps a grant off a device with no account, so a code
+ * that could only ever show an empty map cannot be created even by a direct API
+ * call that skips the route's own check.
  */
 export async function createShare(
   env: Env,
-  input: { kind: string; subject: string; label: string; createdBy: string }
+  input: { kind: string; subject: string; createdBy: string }
 ): Promise<{ ok: true; share: ShareStatus; pin: string } | { ok: false; error: string }> {
-  const label = String(input.label || '').trim().slice(0, 40)
   const subject = String(input.subject || '').trim()
   if (!subject) return { ok: false, error: 'no_subject' }
-  if (!label) return { ok: false, error: 'no_label' }
   if (!String(env.AUTH_PEPPER || '').length) return { ok: false, error: 'no_pepper' }
+  const name = await resolveShareTarget(env, subject)
+  if (!name) return { ok: false, error: 'not_shareable' }
+  const label = name.slice(0, 40)
 
   const pin = newPin()
   const { hash, salt, iterations } = await hashPassword(env, pin)
   const now = new Date()
   const expiresAt = nextUtcMidnight(now)
-  const res = await env.HOME_DB
-    .prepare(
-      `INSERT INTO share_links (kind, subject, label, created_by, created_at, expires_at, pin_hash, pin_salt, pin_iterations)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
-    )
-    .bind(input.kind, subject, label, input.createdBy, now.toISOString(), expiresAt, hash, salt, iterations)
-    .run()
+  // This database is migrated by hand, so "0006 was never applied HERE" is the
+  // likeliest break — and uncaught it left the Worker as a 500 with NO body,
+  // which the page can only report as "Could not generate a code.", a sentence
+  // naming nothing to act on. Caught and NAMED instead (as listShares does).
+  let res: { meta?: { last_row_id?: number } }
+  try {
+    res = await env.HOME_DB
+      .prepare(
+        `INSERT INTO share_links (kind, subject, label, created_by, created_at, expires_at, pin_hash, pin_salt, pin_iterations)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+      )
+      .bind(input.kind, subject, label, input.createdBy, now.toISOString(), expiresAt, hash, salt, iterations)
+      .run()
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.log(`share create failed: ${message}`)
+    return { ok: false, error: missingTable(message) ? 'no_table' : 'db_error' }
+  }
 
   const id = res.meta?.last_row_id
   const row: ShareStatus = {
@@ -445,7 +660,11 @@ export async function readLiveView(env: Env, share: ShareStatus): Promise<LiveVi
     const ageMs = updatedAt ? Math.max(0, Date.now() - Date.parse(updatedAt)) : null
     return {
       ok: true,
-      label: share.label,
+      // The person's OWN name, read from the subject — never the grant's stored
+      // label. That column is the record of what this grant promised when it was
+      // made (the console lists it); the page shows the name as it is NOW, so a
+      // rename cannot leave an outsider watching an old one.
+      label: await subjectName(env, share.subject),
       expiresAt: share.expires_at,
       updatedAt,
       ageMs,

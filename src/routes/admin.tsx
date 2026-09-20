@@ -11,7 +11,10 @@ import {
 import type { Env, User } from '../db/schema'
 import type { HomeUser } from '../identity'
 import { readDiag } from '../lib/diagnostics'
-import { createShare, listShares, revokeShare, revokeAllShares, timeUntil, WAY_SHARE_KIND } from '../lib/share'
+import {
+  createShare, listShares, revokeShare, revokeAllShares, replaceOpenShares, timeUntil,
+  shareErrorText, listShareTargets, WAY_SHARE_KIND,
+} from '../lib/share'
 
 /** The pin from the create that just happened, so it can be shown ONCE. */
 interface NewSharePin {
@@ -40,6 +43,12 @@ function errMessage(code: string): string {
     case 'taken': return 'That username is already taken.'
     case 'no_pepper': return 'AUTH_PEPPER is not configured on this Worker.'
     case 'bad_target': return 'User not found.'
+    // The share reasons come from lib/share.ts, so the console and the map's own
+    // settings row say the same sentence about the same failure.
+    case 'no_subject':
+    case 'no_label':
+    case 'no_table':
+    case 'db_error': return shareErrorText(code)
     case 'share_failed': return 'Could not create that live code — check that a W.A.Y device is selected and AUTH_PEPPER is set.'
     default: return 'Something went wrong.'
   }
@@ -78,24 +87,13 @@ async function renderAdmin(
   const err = opts.err
   const ok = opts.ok
   const newPin = opts.newPin
-  // The devices a share can point at come from W.A.Y's own table: this is the
-  // one place the console reads module data, and it reads it to OFFER it, not
-  // to change it (project.md, "Databases").
-  interface DeviceRow { device_id: string; display_name: string }
-  let devices: DeviceRow[] = []
-  try {
-    // `c.env` is untyped on this Context<any>, so the generic form of `.all()`
-    // is unavailable — cast the result instead (the rows are used for a
-    // <select> and nothing else).
-    const res = (await c.env.WAY_DB
-      .prepare('SELECT device_id, display_name FROM devices ORDER BY display_name COLLATE NOCASE')
-      .all()) as { results?: DeviceRow[] }
-    devices = res.results ?? []
-  } catch {
-    // A way-db without the devices table still renders the console: the share
-    // half simply says there is nothing to share yet.
-    devices = []
-  }
+  // WHO can be shared, from the ONE authority both doors use: `listShareTargets`
+  // (lib/share.ts) joins W.A.Y's `devices` to the accounts, so a leftover device
+  // row with no account cannot be offered here and then refused by the mint. This
+  // is the one place the console reads module data, and it reads it to OFFER it,
+  // not to change it (project.md, "Databases"). A way-db without accounts still
+  // renders the console — the list simply comes back empty.
+  const devices = await listShareTargets(c.env)
   const shares = await listShares(c.env, 'active')
   // What ENDED, newest first: a revoked code is a fact worth keeping, and
   // "did I already revoke that one?" is the question this answers.
@@ -192,7 +190,8 @@ async function renderAdmin(
             <b>Revoke</b> stops one code immediately; <b>Revoke all</b> ends every open
             code at once — that is the button for "she has arrived". Both are instant:
             the next thing the viewer's page does is say the link has ended.
-            Generating a new code does NOT revoke the old one.
+            <b>One code per person:</b> generating a new one for the same device replaces
+            whatever was open for it, so "who is being shared" always has one answer.
           </p>
 
           {newPin && (
@@ -219,11 +218,16 @@ async function renderAdmin(
             <select name="device" required
               class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500">
               {devices.length === 0
-                ? <option value="">No W.A.Y devices yet</option>
-                : devices.map((d) => <option value={d.device_id}>{d.display_name} ({d.device_id})</option>)}
+                ? <option value="">No shareable people yet</option>
+                : devices.map((d) => <option value={d.deviceId}>{d.name} ({d.deviceId})</option>)}
             </select>
-            <input type="text" name="label" maxlength={40} placeholder="What the viewer sees (e.g. MaxX)"
-              class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
+            {/* No free-text label: the viewer's page shows the NAME of the device
+                the code resolves to. A text box here could only ever disagree with
+                the map underneath it. */}
+            <p class="text-[11px] text-gray-500 dark:text-gray-400">
+              The viewer sees <b>that person's own name</b>, taken from the device the code
+              points at — there is nothing to type.
+            </p>
             <button type="submit" disabled={devices.length === 0}
               class="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl">
               🔗 Generate a live code
@@ -320,12 +324,20 @@ admin.post('/share', async (c) => {
 
   const body = await c.req.parseBody()
   const device = String(body.device || '').trim()
-  const label = String(body.label || '').trim() || device
+  // Any `label` a hand-made form posts is ignored: the name on the viewer's page
+  // is read from the subject, and that decision lives in `createShare`.
 
   const created = await createShare(c.env, {
-    kind: WAY_SHARE_KIND, subject: device, label, createdBy: gate.username,
+    kind: WAY_SHARE_KIND, subject: device, createdBy: gate.username,
   })
-  if (!created.ok) return c.redirect('/admin?err=share_failed')
+  // The reason travels in the code, not flattened into one word: a missing
+  // migration and an unset AUTH_PEPPER are different problems with different
+  // fixes, and `errMessage` above already knows how to say each one.
+  if (!created.ok) return c.redirect(`/admin?err=${encodeURIComponent(created.error)}`)
+  // ONE code per person: the new grant replaces whatever was open for this
+  // device, so an older code cannot keep showing a map the admin no longer means
+  // to share. Done after the create, so a failed mint revokes nothing.
+  await replaceOpenShares(c.env, device, created.share.id)
 
   // Rendered, not redirected: the pin is in the response body and never in a URL.
   return renderAdmin(c, { newPin: {

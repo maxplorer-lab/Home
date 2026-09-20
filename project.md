@@ -293,6 +293,15 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
 * **Auto-repair**: any module 401 (or Laoka's `200 {user:null}`) with a live
   `home_session` mints that module's cookie and retries the request once.
   Sompitra's page middleware does the same (`src/lib/middleware.ts`).
+* **One spelling per person**: a name is a key here, not a label — it is the
+  μlogger credential, `gps_pings.device_id`, `devices.device_id`, Sompitra's
+  `users.id` and the owner of an ntfy topic. So every lookup **folds case**
+  (`lower(username) = lower(?1)`, exact hit preferred) — Home's login, the
+  find-or-create bridge above, and W.A.Y's own credential check all agree — and
+  μlogger's device id is **re-resolved from the account on every fix** rather
+  than trusted from its 30-day cookie, so a device session minted before a
+  rename can never re-stamp the old spelling onto `gps_pings.device_id`
+  (AGENTS.md rule 33; the live proof is in `npm run smoke` §19).
 * **Rate limiting**: failed logins are throttled per client IP (10/hour).
 
 ## Admin & lifecycle
@@ -320,12 +329,30 @@ smoke section 20 proves it live rather than by grepping.
 
 * `migrations-home/0006` (`share_links`): subject device, label, the **hashed**
   pin, who created it, `expires_at`, `revoked_at`, `last_used_at`.
+* **Who can be shared is a device WITH AN ACCOUNT.** One function decides it
+  (`listShareTargets` / `resolveShareTarget`, joined on
+  `devices.device_id = users.username`), and both doors ask it — the console's
+  picker and the mint route. That is not tidiness: production's `devices` table
+  used to hold a leftover `Niri` (capital N) with no account and not one ping
+  ever, beside the real `niri` (9,679) — one person as two spellings, merged on
+  2026-09-20 (`CUTOVER.md` §1f). Listing one table while validating against the
+  other offered the phantom and then refused it, at the moment the admin had
+  already decided.
+* **The name on the viewer's page is the person's own**, resolved from the
+  subject at read time. There is no label parameter on `createShare` and no
+  text box in the console, so no caller — and therefore no request body — can put
+  one person's name over another person's map; a rename shows up on the viewer's
+  next poll. The stored `label` is the record of what the grant promised.
+* **ONE live code per device.** Minting for a device replaces whatever was open
+  for it (`replaceOpenShares`), so "who is being shared" has exactly one answer;
+  the map's row says so when it happens. Minting a second code for a DIFFERENT
+  person is still allowed, which is what **Revoke all** is for. The list stays
+  visible because the grant is a fact worth keeping.
 * `POST /admin/share` mints one and shows the code **once**. It is hashed before
   it is stored, so a "show it again" button could only lie; the card offers
   *Regenerate* instead, and the one-tap link puts the code in the **fragment**
   (`/live#123456`) so it never reaches a request line, an access log or a
-  referrer. Minting a second code does not silently kill the first — revoking is
-  a button, and the list stays visible because the grant is a fact worth keeping.
+  referrer.
 * `GET /live/api/state?pin=…` answers one device's newest fix plus a bounded
   track **since the code was created** — the window IS the grant, so an outsider
   handed a code at 14:00 cannot see where the car went this morning. The window
@@ -334,7 +361,7 @@ smoke section 20 proves it live rather than by grepping.
   served, because that is the point). It comes straight from the **FleetDO** —
   never `way-db`, which knows positions only after the nightly flush.
   `no-store`, `noindex`, no cookie, no session, no socket, and no household
-  names: the viewer learns a LABEL.
+  names: the viewer learns ONE person's name and their map, nothing else.
 * The viewer's lower badge is a **HUD panel** in the household map's shape
   (dark in both themes, hairline over the status row): the **speedometer** — the
   household map's own readout, a large tabular figure with `km/h` beneath it,
@@ -343,6 +370,18 @@ smoke section 20 proves it live rather than by grepping.
   poll's 5 s, and not at all while the device sits where we already resolved it.
   Past 400 m of drift the text is dropped: a stale address is worse than a dash,
   because it looks authoritative.
+* **The background comes from ONE file, for both maps.** `/shared/basemaps.js`
+  holds each basemap's label, tile URL, native zoom and the credit its licence
+  requires; the household map builds its layer menu from it and the share draws
+  its single background from it, so no page names a tile server of its own. That
+  is a lesson rather than tidiness: `/live` used to hardcode OSM's standard
+  tiles, and on 2026-09-20 OSM's volunteer-run server began answering every
+  request that identified this app with a blank tile and `osm.wiki/blocked` —
+  breaking the share while the household map, on Esri, looked perfect. Both maps
+  are on ArcGIS Online rasters now (keyless, CDN-hosted), and the share gets the
+  labelled street style, because place names are what "where is she?" needs.
+  AGENTS.md rule 33's sibling rule of thumb: a hardcoded third-party URL is a
+  dependency on somebody else's policy, taken once per page that repeats it.
 * **The badge's numbers are live while the drawing is not.** The speed is the
   newest fix's, straight out of the payload, and the age is the newest fix's age
   — the 25 s lag lives only in where the dot is drawn. The speed's colour comes
@@ -503,7 +542,7 @@ Each is silent by design, and each is now named somewhere on screen:
 | --- | --- |
 | the recipient has no channel on that side | the household card in `/settings`, which lists both topics per person and warns when W.A.Y's grid has events for someone who has no tracking topic ("she was subscribed and heard nothing") |
 | quiet hours are running (22:00–06:00 by default, tracking side only, chat exempt) | the 📍 card in `/settings` states the window and says whether it is on **right now** |
-| W.A.Y's grid has no cell for that person × activity | `GET /way/api/debug/notify` reports per-event recipient counts and the last routing decision in words (`niri has no topic`, `cooldown (12s since last)`, `quiet hours for niri (22-6)`) |
+| W.A.Y's grid has no cell for that person × activity | `GET /way/api/debug/notify` reports per-event recipient counts and the last routing decision in words (`Niri has no topic`, `cooldown (12s since last)`, `quiet hours for Niri (22-6)`) |
 
 All of this is managed in one place: **`/settings`**, organised by who a
 setting belongs to (You / the household / a module) rather than by app.

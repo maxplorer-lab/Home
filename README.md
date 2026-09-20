@@ -196,6 +196,16 @@ position reaches the map half a minute later — so the pace is a **switch**, in
 newest ping the moment it lands. It is per device, remembered on that phone, and
 changes nothing about what W.A.Y records, stores or notifies.
 
+**The background has one definition** — `public/shared/basemaps.js` — read by
+this map *and* by the public live share, so neither page names a tile server of
+its own. **LITE** (the default) is Esri's neutral grey canvas, which lets
+markers, tracks and fences stand out; **STREETS** adds place names for when you
+are looking at somewhere you do not know. The share always gets **STREETS**,
+with no switch to make. This is not fussiness: the share used to point straight
+at OpenStreetMap's standard tiles, and in September 2026 that volunteer-run
+server began refusing this app — blank tiles on the page that mattered, while
+the household map (already on Esri) looked perfect.
+
 **Approaching home sends up a flare.** The "about a minute / 30 seconds away"
 push is easy to miss, and being at the gate is not — so the same thresholds that
 send it also mark the map: that device's **badge card** is banded in colour — a
@@ -221,16 +231,20 @@ every trip segment and would bury the rows that matter.)
 
 ## Showing someone the map (the live share)
 
-An admin can hand a relative a **6-digit code** for **one device**: they open
-`/live`, type it, and watch that device drive on a full-bleed map until
+An admin can hand a relative a **6-digit code** for **one person**: they open
+`/live`, type it, and watch that person drive on a full-bleed map until
 **midnight UTC**. Nothing to install, no account for them — and nothing else
-visible: not the other device, not the chat, not the household's names (the
-viewer sees a label).
+visible: not the other device, not the chat, not the household's other names.
+The page names the person it is showing, and that name is theirs: the code is
+bound to a device that has an account, and the name is read from it, so there is
+no text box anywhere that could put one person's name over another's map. A
+person can have **one** live code at a time — making a new one replaces it.
 
 The viewer sees where the device is **now** and where it has been **since the code was created** — never the whole day, so an outsider handed a code at 14:00 cannot see the morning. Their lower badge is the household map's HUD, speedometer included: the **live** speed as a large figure coloured by the same ramp the household trail uses, then the street and number, suburb and first division (Nominatim, refreshed on a 10 s clock of its own). The map moves exactly like the household's — the same fluid cursor and follow camera from one shared engine, with no live/real-time switch — so the numbers are live while the dot glides about 25 s behind.
 
-Mint from **WAY → Settings → Map**, under the *Map pace* switch: it acts on the
-device you have selected, shows the code **once** with a copy-link button, and
+Mint from **WAY → Settings → Map**, under the *Map pace* switch: pick the person
+there (until you do, it offers the device the map is following), the button names
+them, and the code is shown **once** with a copy-link button, and
 puts **Stop sharing** right there. The household-wide card — every open code,
 what ended, and **Revoke all** ("she has arrived") — stays in **Home → You →
 Console** (`/admin`). Both doors ask the same authority before minting, so they
@@ -260,6 +274,12 @@ ledger" for what each number means and its three limits).
   screen.
 * If a module cookie goes stale, the next 401 transparently re-mints it —
   you never notice.
+* **One spelling per person.** Names are matched ignoring case everywhere — the
+  login, the per-module provisioning, and the GPS tracker's own credential
+  check — and the tracker stores the account's spelling rather than whatever
+  the phone's app happens to say. So a phone configured before a rename keeps
+  uploading, under one name (see `CUTOVER.md` §1f for the 2026-09-20 cleanup
+  that made `Niri` the only spelling in the data).
 * `/logout` signs you out of everything. `/change-password` changes it
   everywhere at once.
 * The very first deployment is claimed at **`/bootstrap`**: the first account
@@ -284,8 +304,17 @@ npm run check                                  # tsc --noEmit
 npm run smoke                                  # end-to-end checks, exit 0 = green
 BASE_URL=http://127.0.0.1:8793 npm run smoke   # non-default port
 npm run verify                                 # both, in order
+npm run audit:remote                           # the four REMOTE dbs vs migrations-* (read-only)
 npm run deploy:dry-run                         # builds + resolves bindings
 ```
+
+`npm run audit:remote` answers the one question the local suite cannot:
+**did every migration actually reach the real databases?** Those files are
+applied by hand, per environment, and nothing in a build or a deploy touches
+them — so the code can be live and correct while the table it writes does not
+exist, silently (this is how live shares were un-mintable in production on
+2026-09-20). It reads only, is safe against production, and exits non-zero on a
+gap — run it before a release, and after adding any `migrations-*/*.sql`.
 
 `npm run smoke` logs in once through `/login` and then proves: all four
 session cookies are minted, every tab and module API answers 200, the

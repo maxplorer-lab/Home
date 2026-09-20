@@ -7,6 +7,7 @@
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
+    "audit:remote": "node scripts/schema-audit.mjs",
     "verify": "npm run check && npm run smoke",
     "deploy:dry-run": "wrangler deploy --dry-run",
     "cf-typegen": "wrangler types"

@@ -340,10 +340,10 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
     <div id="eta-pill"></div>
 
     <div id="layer-box">
-        <div class="layer-menu" id="layer-menu">
-            <button class="layer-opt active" id="layer-opt-lite" onclick="setLayer('lite')">LITE</button>
-            <button class="layer-opt" id="layer-opt-osm" onclick="setLayer('osm')">OSM</button>
-        </div>
+        <!-- The options are BUILT from /shared/basemaps.js on load, so the
+             buttons and the tiles can never disagree about what a basemap is
+             called or where it comes from. -->
+        <div class="layer-menu" id="layer-menu"></div>
         <button class="layer-toggle-btn" onclick="toggleLayerMenu()">Layer</button>
         <button class="layer-toggle-btn" onclick="goHome()" style="margin-top:4px;">⌂ Home</button>
     </div>
@@ -403,6 +403,9 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
      loads, so "the share looks like the map" is one implementation rather than a
      promise. Its numbers live there and nowhere else. -->
 <script src="/shared/playback.js"></script>
+<!-- The basemaps, also shared with the share: one place for what each map is
+     called, which server it comes from and who must be credited. -->
+<script src="/shared/basemaps.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // ============================================================================
@@ -437,15 +440,12 @@ const CONFIG = {
     // "today" / date-range / monthly-totals math so the day boundary
     // matches the midnight flush (wrangler.jsonc cron at 21:00 UTC).
     TZ_OFFSET_HOURS: 3,
-    // LITE = Esri Light Gray Canvas (neutral, minimal -- device markers /
-    // tracks / geofences pop). Keyless as of this change. This LEGACY raster
-    // service sunsets Dec 2029; its modern replacement is a VECTOR basemap
-    // (MapLibre / Leaflet.VectorGrid), not a drop-in for Leaflet raster
-    // tiles, so migrating later means a map-library change, not a URL swap.
-    // NOTE Esri's tile path order is /tile/{z}/{y}/{x} (row before column).
-    LAYER_LITE_URL: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-    // OSM standard = the "full" option.
-    LAYER_OSM_URL: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    // The basemaps are NOT here: both maps read /shared/basemaps.js, which is
+    // also where the story of the OSM block lives. Do not inline a tile URL in
+    // this page again — a hardcoded one is a dependency on someone else's
+    // policy, and this page already paid for that once (2026-09-20).
+    // Esri's tile path order is /tile/{z}/{y}/{x}: ROW before column.
+    BASEMAP_DEFAULT: 'lite',
 
     GEOFENCE_HOME_COLOR: '#10b981',
     GEOFENCE_OFFICE_COLOR: '#38bdf8',
@@ -850,29 +850,48 @@ async function loadDevicesAndGeofences() {
 }
 
 const map = L.map('map', { center: CONFIG.MAP_DEFAULT_CENTER, zoom: CONFIG.MAP_DEFAULT_ZOOM, zoomControl: true });
-let currentLayer = 'lite', tileLayer = null;
+let currentLayer = CONFIG.BASEMAP_DEFAULT, tileLayer = null;
+
+/** The menu, built from the basemap module: one button per key it defines, so
+ *  a basemap added there appears here, and no button can outlive the tiles it
+ *  promises. Label, URL and the required credit all come from that one object
+ *  — which is what stops a button from saying "OSM" while the map draws
+ *  somebody else's raster (the state /way/ was left in on 2026-09-20, when
+ *  OSM started blocking this app and the button kept its old name). */
+function buildLayerMenu() {
+    const menu = document.getElementById('layer-menu');
+    if (!menu || typeof HomeBasemaps === 'undefined') return;
+    menu.innerHTML = Object.keys(HomeBasemaps).map(function (key) {
+        return '<button class="layer-opt' + (key === currentLayer ? ' active' : '') +
+            '" id="layer-opt-' + key + '" onclick="setLayer(\'' + key + '\')">' +
+            HomeBasemaps[key].label + '</button>';
+    }).join('');
+}
 
 function setLayer(key) {
-    if (!map) return; // defensive: the map exists on this page
-    if (key === currentLayer && tileLayer) { document.getElementById('layer-menu').classList.remove('open'); return; }
+    if (!map || typeof HomeBasemaps === 'undefined') return; // defensive: the map exists on this page
+    // An unknown key falls back to the default rather than drawing an empty
+    // map: a typo must not leave an outsider (or the household) staring at
+    // grey tiles wondering whether the person has moved.
+    const want = HomeBasemaps[key] ? key : CONFIG.BASEMAP_DEFAULT;
+    if (want === currentLayer && tileLayer) { document.getElementById('layer-menu').classList.remove('open'); return; }
+    const base = HomeBasemaps[want];
     if (tileLayer) map.removeLayer(tileLayer);
-    const isLite = key === 'lite';
-    const url = isLite ? CONFIG.LAYER_LITE_URL : CONFIG.LAYER_OSM_URL;
-    const attribution = isLite
-        ? '&copy; <a href="https://goto.arcgisonline.com/maps/World_Light_Gray_Base">Esri</a>, HERE, Garmin, &copy; OpenStreetMap contributors'
-        : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-    tileLayer = L.tileLayer(url, {
+    tileLayer = L.tileLayer(base.url, {
         maxZoom: 19,
-        maxNativeZoom: isLite ? 16 : 19,
+        maxNativeZoom: base.maxNativeZoom,
         minZoom: 8,
-        attribution: attribution
+        attribution: base.attribution
     }).addTo(map);
-    currentLayer = key;
-    document.getElementById('layer-opt-lite').classList.toggle('active', key === 'lite');
-    document.getElementById('layer-opt-osm').classList.toggle('active', key === 'osm');
+    currentLayer = want;
+    Object.keys(HomeBasemaps).forEach(function (k) {
+        const btn = document.getElementById('layer-opt-' + k);
+        if (btn) btn.classList.toggle('active', k === want);
+    });
     document.getElementById('layer-menu').classList.remove('open');
 }
-setLayer('lite');
+buildLayerMenu();
+setLayer(CONFIG.BASEMAP_DEFAULT);
 function toggleLayerMenu() { document.getElementById('layer-menu').classList.toggle('open'); }
 
 function drawGeofenceCircles() {
@@ -1244,24 +1263,83 @@ function updatePaceNote() {
 // are looking at, because that is where "can I show someone this trip?"
 // actually comes up. Both doors decide WHO may mint from one place
 // (src/way/routes/dashboard-api.ts, shareMinter), so the answer cannot differ.
-let shareState = null;   // { device, canShare, open: [], lastPin: null }
+let shareState = null;   // { device, deviceOptions: [], canShare, open: [], lastPin: null }
 let shareBusy = false;
+/** The person the row acts on, once the admin picks one in the row itself. */
+let sharePick = null;
 
-/** The device the block acts on: the SELECTED one, so switching the map
- *  switches the offer rather than sharing whichever device is first. */
+/** WHO can be shared, as the server lists them: a W.A.Y device that HAS AN
+ *  ACCOUNT. Exactly the console's list, because both come from
+ *  `listShareTargets` (src/lib/share.ts). A picker that offers someone the mint
+ *  then refuses is the bug this replaced: way-db used to hold a leftover `Niri`
+ *  device row (no account, no pings, ever) beside the real `niri` — the two
+ *  spellings were merged on 2026-09-20, and the join is what keeps a row nobody
+ *  owns from being offered at all (AGENTS.md rule 33). */
+function shareTargets() {
+    return (shareState && shareState.deviceOptions) || [];
+}
+
+/** What a person is CALLED: their own name, read from the subject. Never a
+ *  string somebody typed — the viewer's page and this row must not be able to
+ *  disagree about whose map is on screen. */
+function shareTargetName(dev) {
+    const opts = shareTargets();
+    for (let i = 0; i < opts.length; i++) {
+        if (opts[i].deviceId === dev) return opts[i].name || opts[i].deviceId;
+    }
+    return dev || '';
+}
+
+/** The device the block acts on. An explicit pick wins; with nothing picked it
+ *  follows the device the map is looking at, which is what "show someone this
+ *  trip" means when the trip is the thing on screen. */
 function shareDevice() {
-    return selectedDevice || (DEVICES.length === 1 ? DEVICES[0] : null);
+    const opts = shareTargets();
+    const wanted = sharePick || selectedDevice;
+    if (opts.length) {
+        for (let i = 0; i < opts.length; i++) if (opts[i].deviceId === wanted) return wanted;
+        return opts[0].deviceId;
+    }
+    return wanted || (DEVICES.length === 1 ? DEVICES[0] : null);
+}
+
+/** The picker. It exists so the choice is VISIBLE before anything is minted: the
+ *  button then names the person it is about to share, which is the whole answer
+ *  to "which of us does this code point at?". With one shareable person there is
+ *  nothing to choose and the name appears in the button instead. */
+function sharePickerHtml(dev) {
+    const opts = shareTargets();
+    if (opts.length < 2) return '';
+    let html = '<div class="settings-row"><span>Share</span>' +
+        '<select id="share-device" onchange="pickShareDevice(this.value)">';
+    for (let i = 0; i < opts.length; i++) {
+        html += '<option value="' + escapeHtml(opts[i].deviceId) + '"' +
+            (opts[i].deviceId === dev ? ' selected' : '') + '>' +
+            escapeHtml(opts[i].name || opts[i].deviceId) + '</option>';
+    }
+    return html + '</select></div>';
+}
+
+function pickShareDevice(devId) {
+    sharePick = devId || null;
+    // Drop the old answer rather than re-rendering it while the new one is in
+    // flight: a code shown beside the WRONG person is the failure this row exists
+    // to prevent.
+    shareState = null;
+    updateShareBlock();
+    loadShareState();
 }
 
 function renderShareBlock() {
     const dev = shareDevice();
-    if (!dev) return '<div class="settings-hint">Pick a device on the map first \u2014 a code shares exactly one.</div>';
+    const name = escapeHtml(shareTargetName(dev));
     // A stale answer for a DIFFERENT device would offer the wrong person: show
     // \"checking\" until the reply for this device is in hand.
-    if (!shareState || shareState.device !== dev) return '<div class="settings-hint">Checking\u2026</div>';
+    if (!shareState || (dev && shareState.device !== dev)) return '<div class="settings-hint">Checking\u2026</div>';
     if (!shareState.canShare) return '<div class="settings-hint">Only an admin can hand out a code.</div>';
+    if (!shareTargets().length) return '<div class="settings-hint">Nobody can be shared yet \u2014 W.A.Y has no device with an account.</div>';
 
-    let html = '';
+    let html = sharePickerHtml(dev);
     if (shareState.lastPin) {
         // The ONE place the code is ever readable: the database keeps only its
         // hash, so this box is not a \"show it again\", it is the only time it
@@ -1269,26 +1347,29 @@ function renderShareBlock() {
         // request line or an access log.
         const link = location.origin + '/live#' + shareState.lastPin.pin;
         html += '<div class="settings-card" style="gap:6px;">' +
-            '<div style="font-size:10px;color:#9ca3af;">For whoever is watching <b>' + escapeHtml(dev) + '</b> \u2014 shown once:</div>' +
+            '<div style="font-size:10px;color:#9ca3af;">For whoever is watching <b>' + name + '</b> \u2014 shown once:</div>' +
             '<div class="share-pin">' + escapeHtml(shareState.lastPin.pin) + '</div>' +
             '<div style="font-size:10px;color:#6b7280;word-break:break-all;">' + escapeHtml(link) + '</div>' +
             '<button class="export-btn" onclick="copyShareLink()">Copy link</button>' +
+            // Said out loud, because the replacing happened elsewhere and silently:
+            // the older code for this person is dead from this moment.
+            (shareState.lastPin.replaced ? '<div style="font-size:10px;color:#6b7280;">This replaced the code that was open for ' + name + '.</div>' : '') +
             '<div id="share-msg" style="font-size:10px;color:#9ca3af;"></div>' +
         '</div>';
     }
     const open = shareState.open || [];
     if (open.length) {
         const o = open[0];
-        html += '<div class="settings-row"><span>' + escapeHtml(dev) + ' is shared' +
+        html += '<div class="settings-row"><span>' + name + ' is shared' +
             (o.last_used_at ? ' \u00b7 last watched ' + escapeHtml(formatTime(o.last_used_at)) : ' \u00b7 not opened yet') +
             '</span></div>' +
             '<div class="settings-hint">Ends ' + escapeHtml(String(o.expires_at).replace('T', ' ').slice(0, 16)) +
             ' UTC (' + escapeHtml(o.expiresIn) + '), code made by ' + escapeHtml(o.created_by) + '.</div>' +
             '<button class="export-btn" onclick="stopSharing()">Stop sharing</button>' +
-            (open.length > 1 ? '<div class="settings-hint">' + open.length + ' codes are open for this device; this stops all of them.</div>' : '');
+            (open.length > 1 ? '<div class="settings-hint">' + open.length + ' codes are open for this device (made before one code per person); this stops all of them.</div>' : '');
     } else {
-        html += '<div class="settings-row"><span>' + escapeHtml(dev) + ' \u00b7 not shared</span>' +
-            '<button class="export-btn" id="share-mint" onclick="mintShare()">Generate a code</button></div>' +
+        html += '<div class="settings-row"><span>' + name + ' \u00b7 not shared</span>' +
+            '<button class="export-btn" id="share-mint" onclick="mintShare()">Generate a code for ' + name + '</button></div>' +
             '<div id="share-msg" style="font-size:10px;color:#9ca3af;"></div>';
     }
     return html;
@@ -1301,14 +1382,18 @@ function updateShareBlock() {
 
 async function loadShareState() {
     const dev = shareDevice();
-    if (!dev) { shareState = null; updateShareBlock(); return; }
-    const r = await apiJson('GET', '/way/api/share?device=' + encodeURIComponent(dev));
+    // Asked WITHOUT a device the first time: the reply is what teaches this row
+    // who can be shared, which is how the picker fills in.
+    const r = await apiJson('GET', '/way/api/share' + (dev ? '?device=' + encodeURIComponent(dev) : ''));
     // Keep the just-minted code on screen across this refresh for the SAME
     // device; a refresh must not eat the one moment it is readable.
-    const keepPin = shareState && shareState.device === dev ? shareState.lastPin : null;
+    const keepPin = shareState && dev && shareState.device === dev ? shareState.lastPin : null;
     shareState = r.ok
         ? Object.assign({ lastPin: keepPin }, r.data)
-        : { device: dev, canShare: false, open: [], lastPin: keepPin };
+        : { device: dev || '', canShare: false, open: [], deviceOptions: [], lastPin: keepPin };
+    // That first reply carried no device, so ask again for the person the picker
+    // now defaults to (or the map already follows). One extra round trip, once.
+    if (!dev && shareDevice()) { await loadShareState(); return; }
     updateShareBlock();
 }
 
@@ -1318,16 +1403,23 @@ async function mintShare() {
     if (!dev) return;
     shareBusy = true;
     setMsg('share-msg', 'Generating\u2026');
-    const r = await apiJson('POST', '/way/api/share', { device: dev, label: dev });
+    // No label in the body on purpose: the name on the viewer's page is read from
+    // the subject by the server, so the page cannot name one person and share
+    // another's map.
+    const r = await apiJson('POST', '/way/api/share', { device: dev });
     shareBusy = false;
     if (!r.ok) {
         updateShareBlock();
         setMsg('share-msg', (r.data && r.data.message) ? r.data.message : 'Could not generate a code.');
         return;
     }
-    shareState = { device: dev, canShare: true, open: [], lastPin: {
-        pin: r.data.pin, expiresAt: r.data.expiresAt, expiresIn: r.data.expiresIn,
-    } };
+    shareState = { device: dev, canShare: true, open: [],
+        deviceOptions: shareState ? shareState.deviceOptions : [],
+        lastPin: {
+            pin: r.data.pin, expiresAt: r.data.expiresAt, expiresIn: r.data.expiresIn,
+            // How many older codes this one replaced (one code per person).
+            replaced: r.data.replaced || 0,
+        } };
     updateShareBlock();
     loadShareState();   // picks up the open grant that was just created
 }
@@ -1506,6 +1598,9 @@ function updateTip(devId, ping) {
 
 function selectSpeedoDevice(devId) {
     selectedDevice = devId;
+    // The share row follows the map again: an explicit pick made while looking at
+    // someone else must not outlive the view that produced it.
+    sharePick = null;
     updateSpeedoHUD();
 }
 
@@ -2005,7 +2100,7 @@ function renderSettingsMenu() {
         // device you are looking at. Only an admin sees the controls.
         '<div class="settings-title" style="margin-top:6px;">🔗 Live share</div>' +
         '<div id="share-block"><div class="settings-hint">Checking\u2026</div></div>' +
-        '<div class="settings-hint">Hand ONE relative a 6-digit code for the SELECTED device: they watch it at <b>/live</b> until midnight UTC, then it dies. A code is shown <b>once</b> \u2014 only its hash is stored. The household-wide card (every code, what ended, stop-all) stays in <b>Home → You → Console</b>.</div>' +
+        '<div class="settings-hint">Hand ONE relative a 6-digit code for ONE person: pick them in the row above \u2014 until you do, it offers the device you are looking at. They see <b>that person\u2019s own name</b> over the map, at <b>/live</b>, until midnight UTC, then it dies. A code is shown <b>once</b> (only its hash is stored), and making a new one for the same person <b>replaces</b> the old. The household-wide card stays in <b>Home → You → Console</b>.</div>' +
         '<div class="settings-row"><span>Follow zoom (8-19)</span><input id="set-follow-zoom" type="number" min="8" max="19" value="' + userPrefs.followZoom + '" style="width:60px;"></div>' +
         '<div class="settings-row"><span>Home view</span><select id="set-home-fence" class="date-input">' + fenceOptions + '</select></div>' +
         '<button class="export-btn" onclick="savePrefs()">Save map settings</button>'

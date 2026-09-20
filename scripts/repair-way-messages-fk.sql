@@ -45,10 +45,12 @@ INSERT OR IGNORE INTO devices (device_id, tid, display_name, emoji, color, usern
 -- guessed. A hardcoded list is only correct by accident: the DO stamps an auto
 -- arrival/departure with the SAME device_id the ping carried, and the ingest
 -- sets that from the username verbatim (`deviceId = user.username`,
--- src/way/routes/ingest.ts). Case counts. So on a database whose people are
--- `MaxX` and lowercase `niri`, the row named `Niri` above matches nothing: the
--- FK is satisfied for MaxX's events and still violated for niri's, which reads
--- exactly like the original bug on one phone only. Both sources are unioned
+-- src/way/routes/ingest.ts). Case counts. So on a database whose people were
+-- spelled differently from these two seeds (`MaxX` and a lowercase `niri`, which
+-- is how production stood until the 2026-09-20 merge, CUTOVER.md §1f), the row
+-- named `Niri` above matched nothing: the FK was satisfied for MaxX's events and
+-- still violated for hers, which read exactly like the original bug on one phone
+-- only. Both sources are unioned
 -- because a person's first ping is not in `gps_pings` until the 21:00 flush,
 -- while their first arrival event happens the moment they move.
 INSERT OR IGNORE INTO devices (device_id, display_name, username, password_hash)
