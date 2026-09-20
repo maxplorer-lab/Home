@@ -226,6 +226,14 @@
   }
 
   function render(state) {
+    // The map library is this page's only third-party dependency, and the viewer
+    // is the one person in the product we cannot support in person: if it did
+    // not load, a blank rectangle would be the whole answer. Say the true thing
+    // instead, and keep saying it — `poll` calls this again every few seconds.
+    if (typeof L === 'undefined') {
+      $('foot').textContent = 'Could not load the map. Check the connection and reload this page.';
+      return;
+    }
     var stale = state.ageMs === null || state.ageMs > STALE_MS;
     $('dot').className = 'dot' + (stale ? ' stale' : ' live');
     $('when').textContent = state.updatedAt ? ago(state.ageMs || 0) : 'hasn’t reported yet';

@@ -2238,6 +2238,13 @@ log('\n20. The live share: one device, one code, until midnight UTC')
     'Revoke all stamps expired grants as revoked, so the Ended list lies about who ended them')
   const liveEndedBranch = liveSrc.slice(
     liveSrc.indexOf("code === 'expired'"), liveSrc.indexOf('function gateOpen'))
+  // The map library is the page's one third-party dependency, and the viewer is
+  // the one person in the product nobody can walk through a reload with.
+  const liveRender = liveSrc.slice(
+    liveSrc.indexOf('function render('), liveSrc.indexOf("$('go').addEventListener"))
+  check('an outsider whose map library failed to load is told so',
+    /typeof L === 'undefined'/.test(liveRender) && /Could not load the map/.test(liveRender),
+    'a blocked unpkg leaves the viewer with a blank rectangle and no sentence, on the one page that cannot be supported by phone')
   check('a code that has ended is forgotten, not re-submitted on the next visit',
     /removeItem\(PIN_KEY\)/.test(liveEndedBranch),
     'the dead code stays in sessionStorage, so the next visit re-submits it and the page blames the viewer for a typo it did not make')
