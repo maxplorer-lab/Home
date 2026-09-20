@@ -308,10 +308,11 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
 
 ## Request routing rules
 
-1. `run_worker_first` sends `/ws`, `/laoka-ws`, `/ulogger*` — **plus the two
-   module documents `/way/index.html` and `/laoka/index.html` and their shell
-   URLs `/way/`, `/laoka/`** — to the Worker before static assets. The docs
-   are session-gated; without this the edge would serve them signed-out.
+1. `run_worker_first` sends `/ws`, `/laoka-ws`, `/ulogger*` — **plus all three
+   module documents (`/way/index.html`, `/laoka/index.html`, `/chat/index.html`)
+   and their shell URLs (`/way/`, `/laoka/`, `/chat`, `/chat/`)** — to the
+   Worker before static assets. The docs are session-gated; without this the
+   edge would serve them signed-out.
 2. Module mounts are registered **before** Sompitra's routes — Sompitra's
    `use('*', requireAuth)` catch-all would otherwise swallow `/way/*` and
    `/laoka/*`.
@@ -332,13 +333,15 @@ schemas, untouched data):
 * `home-db` — new; schema in `migrations-home/` (0001: users, sessions,
   attempts; 0002: the first per-person ntfy channel + household
   `home_settings`; 0003: `laoka_imports`, the Laoka→Sompitra hand-off ledger;
-  0004: the SECOND channel, `users.way_topic`).
+  0004: the SECOND channel, `users.way_topic`; 0005: `diag_events`, the
+  cross-module diagnostics ledger).
   It holds identity AND notification identity — a channel belongs to a person,
   not to an app — and there are **two** of them, because the two halves of the
   app are filtered differently (see "Notifications" below). It also holds the
   only record of a fact that belongs to **two** modules at once, which is why
   the shopping-list hand-off ledger lives here rather than in either module's
-  database (see below).
+  database (see below) — and the diagnostics ledger, because a notification
+  that never arrived is nobody's module data (see "The diagnostics ledger").
 * `sompitra-db` — migrations in `migrations-sompitra/`.
 * `way-db` — migrations in `migrations-way/`.
 * `laoka` — migrations in `migrations-laoka/`.
@@ -424,6 +427,52 @@ Each is silent by design, and each is now named somewhere on screen:
 All of this is managed in one place: **`/settings`**, organised by who a
 setting belongs to (You / the household / a module) rather than by app.
 
+### The diagnostics ledger — what these silences were costing
+
+Everything above is silent on purpose: a push must never break the action that
+triggered it, and µlogger must never see an upload error. The bill for that
+contract arrived on 2026-09-20, when a real-world test of the tracking rules
+could not be read from the outside — **a parked phone whose fixes were all
+correctly collapsed and a phone that never uploaded at all are the same
+observable.** Nothing was broken; there was simply no record of the difference.
+
+`/admin/diagnostics` is that record. It is deliberately HOME-wide rather than a
+W.A.Y screen, and it is split in two by **frequency**, which is the whole
+design:
+
+| Ledger | Lives in | Holds | Why there |
+| --- | --- | --- | --- |
+| **Ingest gates** | the FleetDO's own SQLite (`ingest_gates` + a bounded `ingest_drops`) | a counter per gate, plus the last ~80 drops with a plain-language reason | a parked phone produces thousands of collapsed points a night. Pushing that volume into D1 to record "the same phone was collapsed again" is how a free-tier app dies |
+| **Notification non-deliveries** | home-db `diag_events` (migration 0005) | every push that did not reach a phone — skipped (no server / no channel), refused (ntfy said no, or was unreachable), failed (it threw) | a few rows a day, so it can be kept for months and read in full. Pruned to 90 days by the daily cron |
+
+The gate counters are meant to be read as an **equation**, and the page says so:
+`received = accuracy + glitch + accepted`, then `accepted = drawn + collapsed +
+unwitnessed + paused`. That is what turns "0 drawn" from alarming into explained
+— the phone was parked — and a sum that does not hold means a gate exists that
+nobody counts. Every branch of the persistence decision is exhaustive for the
+same reason: a new branch that is not counted is indistinguishable from a broken
+one later.
+
+Three limits worth knowing before trusting it:
+
+* the gate counters are **durable but scoped to the build that wrote them**:
+they survive an eviction (a parked-phone test can span one), and a deploy that
+changes the Durable Object's code clears them, which is the only reason the two
+sums stay true. So an empty gate list means "a fresh deployment" or "a build
+bump just cleared them" — never "nothing was ever dropped";
+* the ledger records what the app **decided**, not what the world did. A fix that
+never reached the Worker leaves no trace anywhere — for that the phone's own
+µlogger queue is the only record. And `received` counting 14 with `drawn` 0 is
+the ledger working, not failing: it is the parked phone, collapsed on purpose;
+* it cannot rescue accuracy. The 2026-09-19 wild fix carried **9.6 m** and the
+parked scribble's fixes are 1–8 m, so no accuracy gate would have caught either
+(rule 29's own limits). What the ledger changes is that you can now *see* which
+rule fired, how often, and on which device.
+
+Smoke section 19 proves it live rather than by grepping: it sends a real
+accuracy-25 µlogger upload, asserts the phone still gets `{"error":false}`, and
+then asserts the counter rose and the sampled drop carries its reason.
+
 ### A user ACTION must fail loudly, never silently
 
 The notification rule above, pointed the other way: when a person taps **Save**
@@ -503,8 +552,8 @@ gets wrong:
   announced; repeating the "💸 … Ar 46 600" line would read as a second
   purchase — exactly the confusion idempotency exists to prevent.
 * **It is a module-to-module read, not a module-to-module import.** The
-  endpoint reads `laoka-db` through the `LAOKA_DB` binding; Laoka's own code
-  is never imported into Sompitra's router, so neither module's release can
+  endpoint reads the `laoka` database through the `LAOKA_DB` binding; Laoka's own
+  code is never imported into Sompitra's router, so neither module's release can
   break the other by surprise.
 
 `npm run smoke` asserts the identity property directly (a re-send must return

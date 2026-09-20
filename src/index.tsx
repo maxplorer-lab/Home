@@ -33,6 +33,7 @@ import type { Env } from './env'
 import { getHomeUserFromCookie, promoteSession, isSecureRequest, HOME_COOKIE } from './identity'
 import type { HomeUser } from './identity'
 import { requireAuth } from './lib/middleware'
+import { pruneDiag } from './lib/diagnostics'
 import { ModuleShell } from './views/shell'
 
 import auth     from './routes/auth'
@@ -252,6 +253,14 @@ export default {
   // boundary for W.A.Y's dashboard; never move it to UTC midnight.
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     await flushFleet(env, ctx)
+    // Retention without a human in the loop, on the same principle as the flush
+    // above: the diagnostics ledger only has to be long enough to answer "did
+    // this notification go out last month?", and a table that shrinks only when
+    // someone remembers is a table that only grows. Best-effort and awaited on
+    // purpose -- a failed prune must not take the nightly flush down with it
+    // (pruneDiag never throws).
+    const dropped = await pruneDiag(env)
+    if (dropped > 0) console.log(`Diagnostics: pruned ${dropped} ledger entries older than 90 days`)
   },
 } satisfies ExportedHandler<Env>
 

@@ -75,15 +75,19 @@ npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0001_identity.sq
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0002_notifications.sql
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0003_laoka_imports.sql
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0004_two_channels.sql
+npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0005_diagnostics.sql
 ```
-(0001–0004 are all applied in production. A fresh environment needs all four,
-in this order — 0004 rewrites the channel columns 0002 created.)
+(0001–0004 are applied in production; **0005 is the one that must be applied
+before the release that ships `/admin/diagnostics`** — without it the page
+renders an honest "the ledger is unreadable" instead of the notification
+ledger, and nothing is recorded. A fresh environment needs all five, in this
+order — 0004 rewrites the channel columns 0002 created.)
 The three module databases are already migrated in production (their schemas
 exist) — only the new one needs this. Do **not** blindly re-run the module
 migrations remotely; several use bare `CREATE TABLE` / `ALTER TABLE` and will
 abort on an already-migrated database.
 
-### 1c. Give MaxX back Sompitra's admin pages
+### 1c. Give MaxX back Sompitra's admin pages — done, and no longer load-bearing
 Sompitra's `is_admin` is **not** re-derived on provisioning — an existing row
 keeps its flag, and the Home role is only applied when a row is *created*. So
 the Home admin does not automatically become the Sompitra admin:
@@ -91,8 +95,14 @@ the Home admin does not automatically become the Sompitra admin:
 npx wrangler d1 execute DB --remote \
   --command "UPDATE users SET is_admin = 1 WHERE lower(username) = 'maxx'"
 ```
-Symptom if skipped: MaxX logs in fine, can use the whole finance suite, but
-`/settings`-style admin pages and anything gated on `is_admin` misbehave.
+**Run it for a clean state, but the app no longer depends on it.** The one
+surface that used to gate on the module flag was `/settings`' household card —
+and with it the links to `/admin` and `/admin/diagnostics`, so a Home admin
+could be locked out of the console he administers. That card and its three POST
+handlers now follow the **central** role (`isSettingsAdmin()` in
+`src/routes/settings.tsx`), keeping `is_admin` only as a fallback for a person
+whose module row predates the merge. `AGENTS.md` rule 13 states the rule and
+`npm run smoke` section 10 pins it.
 
 ### 1d. Verify `way-db` still has the `devices` table
 ```bash
@@ -231,10 +241,18 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v9-accuracy-gate   (kept honest by `npm run smoke`,
+#   expect build notify-v12-gate-reset   (kept honest by `npm run smoke`,
 #   which reads THIS line and compares it with the DO's source AND with what
 #   the running DO reports — otherwise "the DO is stale" and "this doc is
 #   stale" look identical from the outside)
+
+# The diagnostics ledger answers, and the intake gates are readable
+curl -s -b /tmp/j $B/admin/diagnostics.json | head -c 400
+#   expect "modules":[…all four ok…] and an "ingest" block with a "build" and a
+#   "gates" list. An empty "gates" list means a fresh deployment (or that a build
+#   bump just cleared them) — send one upload to populate it; the counters are
+#   durable, not per-instance, and are cleared only when the DO's code changes.
+#   `indexWarning` naming gps_pings is real and expected today (DB-REDESIGN §1a).
 
 # The chat flush completes (this is the `devices` FK check, live)
 curl -s -b /tmp/j -X POST $B/way/api/flush

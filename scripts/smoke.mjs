@@ -20,16 +20,17 @@
 // The checks run in NUMBERED SECTIONS (banners in this file), and the docs
 // (AGENTS.md, README.md, project.md) cite them by those numbers — so the
 // numbers are a contract: renumbering a banner breaks every citation.
-//   1. the server answers                10. unified settings & channels
-//   2. one login, all cookies            11. two channels per person
-//   3. every tab renders                 12. the chat is the ONE feed
-//   4. module APIs                       13. Laoka's list reaches Sompitra
-//   5. chrome consistency                14. a template can be forgotten
-//   6. modules are session-gated         15. the map clock + the tracking laws
-//   7. bad credentials                   16. Android install, both shapes
-//   8. auto-repair from home_session     17. Laoka inside the shell
-//   9. no silent map reversion           18. one brand, one colour per screen
+//   1. the server answers                11. two channels per person
+//   2. one login, all cookies            12. the chat is the ONE feed
+//   3. every tab renders                 13. Laoka's list reaches Sompitra
+//   4. module APIs                       14. a template can be forgotten
+//   5. chrome consistency                15. the map clock + the tracking laws
+//   6. modules are session-gated         16. Android install, both shapes
+//   7. bad credentials                   17. Laoka inside the shell
+//   8. auto-repair from home_session     18. one brand, one colour per screen
+//   9. no silent map reversion           19. the silent gates become readable
 //   9b. the HUD reads what the tracker sends
+//  10. unified settings & channels
 // Exit code 0 = all green, 1 = something regressed.
 
 import { readFileSync } from 'node:fs'
@@ -357,6 +358,33 @@ log('\n10. Unified settings + two notification channels per person')
   })
   const anonLoc = anonPost.headers.get('location') || ''
   check('POST /settings/channel anonymous → /login', anonPost.status === 302 && anonLoc.includes('/login'), `${anonPost.status} → ${anonLoc || '(none)'}`)
+
+  // The household card and its POST handlers must follow the CENTRAL role, not
+  // only Sompitra's `is_admin`: a Home admin whose module row predates the merge
+  // carries is_admin = 0 there (CUTOVER.md §1c), which is how the links to
+  // /admin and /admin/diagnostics vanished from this page for a real admin.
+  let settingsSrc = ''
+  try { settingsSrc = readFileSync(new URL('../src/routes/settings.tsx', import.meta.url), 'utf8') } catch (e) {}
+  // Counted, not merely present: the first version of this check was satisfied by
+  // the helper ALONE, so putting the rendered card back on the module flag left
+  // it green — found by falsifying it. Each half is pinned separately: the
+  // helper's read of the central role, the card's own judgement, all three POST
+  // sites, and the absence of any handler left on the module flag alone.
+  const adminSites = (settingsSrc.match(/isSettingsAdmin\(/g) || []).length - 1   // minus the definition
+  // …and the helper's own body, not a window that could reach into the render
+  // below it (a 900-char window did, and stayed green with the helper gutted).
+  const adminFn = (() => {
+    const at = settingsSrc.indexOf('async function isSettingsAdmin(')
+    if (at === -1) return ''
+    const end = settingsSrc.indexOf('\n}', at)
+    return settingsSrc.slice(at, end === -1 ? at + 900 : end)
+  })()
+  check('the settings admin surface follows the central role, not only the module flag',
+    /home\?\.role === 'admin'/.test(adminFn) &&
+    /const isAdmin = home\?\.role === 'admin' \|\| user\.is_admin === 1/.test(settingsSrc) &&
+    adminSites === 3 &&
+    !/user\.is_admin !== 1/.test(settingsSrc),
+    `settings gates on Sompitra's is_admin alone (helper reads the central role: ${/home\?\.role === 'admin'/.test(adminFn)}; card: ${/const isAdmin = home\?\.role === 'admin'/.test(settingsSrc)}; admin POST sites on the helper: ${adminSites}/3) — a central admin can be locked out of the household card, and with it the link to /admin`)
 }
 
 // ─── 11. TWO channels per person ─────────────────────────────────
@@ -689,9 +717,10 @@ log('\n13. Laoka shopping list → one itemized Sompitra expense (no CSV hop)')
   })
   const ghostBody = await body(ghost)
   // 404 (no such week) rather than 400 (no week given) is the difference
-  // between Sompitra actually READING laoka-db and merely echoing a guard.
+  // between Sompitra actually READING the `laoka` database and merely echoing a
+  // guard. (The probe label is the real database name, not `laoka-db`.)
   check(
-    'an unknown week is a LOOKUP miss, so laoka-db is really read',
+    'an unknown week is a LOOKUP miss, so laoka is really read',
     ghost.status === 404 && /no such week/i.test(ghostBody),
     `${ghost.status} ${ghostBody.slice(0, 90)}`
   )
@@ -1758,6 +1787,196 @@ log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
       at > 0 && dash.slice(Math.max(0, at - 700), at).includes('min-w-0'),
       'the card lost min-w-0 — a long description will force a horizontal scrollbar')
   }
+}
+
+// ─── 19. Diagnostics: every silent gate, every silent notification ──
+log('\n19. Diagnostics: the silent gates and the silent notifications become readable')
+{
+  // The app is built to fail SILENTLY wherever failing loudly would land on a
+  // person: µlogger must never see an upload error, and a push must never break
+  // the action that triggered it. Both are right, and the price is that
+  // "silently fine" and "silently broken" look identical from outside — which is
+  // what made a real-world test of the tracking rules impossible to read. These
+  // checks are about the surface that fixes that staying an answer.
+
+  // ── It is an admin surface, in both of its forms.
+  const anonDiag = await fetch(`${BASE}/admin/diagnostics.json`, { redirect: 'manual' })
+  check('the diagnostics JSON is not readable anonymously',
+    anonDiag.status === 403 || anonDiag.status === 302,
+    `got ${anonDiag.status} — the ledger names people, topics and devices`)
+  const anonPage = await fetch(`${BASE}/admin/diagnostics`, { redirect: 'manual' })
+  check('the diagnostics page is not readable anonymously',
+    anonPage.status === 302 || anonPage.status === 403, `got ${anonPage.status}`)
+
+  const diagRes = await req('/admin/diagnostics.json')
+  let diag = null
+  try { diag = JSON.parse(await body(diagRes)) } catch (e) {}
+  check('the diagnostics JSON answers', diagRes.status === 200 && !!diag, `status ${diagRes.status}`)
+
+  const dbNames = (diag?.modules || []).map((m) => m.name)
+  check('it probes all four databases',
+    ['home-db', 'sompitra-db', 'way-db', 'laoka'].every((n) => dbNames.includes(n)),
+    `saw ${dbNames.join(', ') || 'nothing'}`)
+  const broken = (diag?.modules || []).filter((m) => !m.ok && m.name !== 'way-db indexes')
+  check('every database answers on a healthy deployment',
+    broken.length === 0, broken.map((m) => `${m.name}: ${m.detail}`).join(' | '))
+
+  const pageRes = await req('/admin/diagnostics')
+  const pageHtml = await body(pageRes)
+  check('the page renders the three things it exists for',
+    pageRes.status === 200 &&
+    pageHtml.includes('Tracking intake') && pageHtml.includes('Notification ledger') &&
+    pageHtml.includes('Databases'),
+    `status ${pageRes.status}; the page is missing a section`)
+  // The do-nothing gates have to be VISIBLE. The DO only stores gates it has
+  // counted, so without seeding the list a fresh reading omits `drawn` — and
+  // "0 drawn" is the number a parked-phone test is read by. A missing row reads
+  // as "this gate does not exist", which is the opposite of the truth.
+  // Matched as a gate ROW (the cell span), not as a word anywhere on the page:
+  // an `includes()` version of this passed while the row was missing, because
+  // the sum line below the grid also spells out `drawn` — found by falsifying it.
+  const gateCell = (name) => new RegExp(`font-mono text-xs[^>]*>${name}<`).test(pageHtml)
+  const missingGates = ['received', 'accepted', 'drawn', 'collapsed', 'unwitnessed'].filter((g) => !gateCell(g))
+  check('the gates that did NOT fire are shown as rows, not omitted',
+    missingGates.length === 0,
+    `no gate row for ${missingGates.join(', ')} — the name appearing only in the sum line still leaves "0 drawn" reading as "there is no such gate"`)
+
+  // ── The core claim, proven live rather than grepped: a REAL upload through the
+  // μlogger path that the intake drops must leave the counter up and the reason
+  // readable, while still answering the phone with success. A bad-accuracy ping
+  // is the perfect probe — it writes nothing else at all, so a counter that
+  // moved proves the ledger rather than some other side effect.
+  const dbgRes = await req('/way/api/debug/notify')
+  let device = null
+  try { device = (JSON.parse(await body(dbgRes)).users || [])[0]?.username || null } catch (e) {}
+  check('the DO names the devices the ledger keys by', !!device, 'no users in /way/api/debug/notify')
+
+  const readDiagJson = async () => JSON.parse(await body(await req('/admin/diagnostics.json')))
+  const counter = async (name) => {
+    const d = await readDiagJson()
+    return (d.ingest?.gates || []).find((g) => g.gate === name)?.n ?? 0
+  }
+
+  const beforeAcc = await counter('accuracy')
+  const beforeRec = await counter('received')
+
+  // The device login is CASE-SENSITIVE (the dashboard's is not) — the exact
+  // username comes from the DO rather than from USER, which is the trap the run
+  // doc records as having cost an hour.
+  await req('/ulogger/client/index.php', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form({ action: 'auth', user: device || '', pass: PASS }),
+  })
+  const badFix = await req('/ulogger/client/index.php', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form({
+      action: 'addpos', trackid: '1', lat: '-19.8795533', lon: '47.0307533',
+      time: String(Math.floor(Date.now() / 1000)), accuracy: '25', speed: '0',
+    }),
+  })
+  const badBody = await body(badFix)
+  check('a fix its receiver rated worse than the limit still answers success',
+    /"error"\s*:\s*false/.test(badBody),
+    `the silent-drop contract is gone: µlogger got ${badBody.slice(0, 60)}`)
+
+  const afterAcc = await counter('accuracy')
+  check('…and the dropped upload is COUNTED with a reason instead of vanishing',
+    afterAcc === beforeAcc + 1,
+    `accuracy counter ${beforeAcc} → ${afterAcc}; a drop that leaves no trace is the thing this ledger exists to end`)
+  check('…and the drop is counted as received too, so a gate count always has a denominator',
+    (await counter('received')) === beforeRec + 1,
+    `received ${beforeRec} → ${await counter('received')}`)
+
+  const after = await readDiagJson()
+  check('the drop sample says WHY, in language a person can read',
+    (after.ingest?.drops || []).some((x) => x.gate === 'accuracy' && /limit/.test(x.detail)),
+    'the sampled drops carry no reason, so the sample adds nothing over the counter')
+  // The counters are durable, so this sum is only meaningful because the DO
+  // CLEARS them when its build marker changes (see ensureSchema). If you just
+  // changed which gates count, this failing means the rows still describe the
+  // old code: bump DO_BUILD, do not "fix" the counter.
+  check('the gate sums hold, so the counters can be trusted',
+    after.ingest?.checks?.sumInHolds === true && after.ingest?.checks?.sumOutHolds === true,
+    `${JSON.stringify(after.ingest?.checks)} — if you just changed which gates count, bump the DO build marker so the stale rows are cleared (AGENTS.md rule 30)`)
+
+  // ── The source contracts. A live check cannot reach every branch (no server
+  // set, no channel configured, a push that throws), so the paths that cannot be
+  // reached here are read instead.
+  let notifySrc = '', diagSrc = '', adminSrc = '', idxSrc = '', doLedgerSrc = ''
+  try { notifySrc = readFileSync(new URL('../src/lib/notify.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { diagSrc = readFileSync(new URL('../src/lib/diagnostics.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { adminSrc = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8') } catch (e) {}
+  try { idxSrc = readFileSync(new URL('../src/index.tsx', import.meta.url), 'utf8') } catch (e) {}
+  try { doLedgerSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
+
+  check('every way a push can fail to reach a phone is recorded',
+    (notifySrc.match(/recordDiag\(/g) || []).length >= 4,
+    'a notification can still disappear with only a console.log behind it — the ledger only answers "did it go out?" if EVERY non-delivery is written')
+  // Counted, not merely present: a `kind: 'notify-refused'` left anywhere in the
+  // file satisfied an `includes()` version of this check while one of its two
+  // sites had drifted to a different kind — found by falsifying it (renaming
+  // only the fan-out's refusal still passed). Two of each are real: skipped is
+  // "no server" AND "nobody has a channel", refused is the fan-out AND the
+  // single-channel test push.
+  const skips = (notifySrc.match(/kind: 'notify-skipped'/g) || []).length
+  const refusals = (notifySrc.match(/kind: 'notify-refused'/g) || []).length
+  check('every way a notification fails is named, at every site',
+    skips >= 2 && refusals >= 2 && notifySrc.includes("kind: 'notify-failed'"),
+    `skipped=${skips} (need 2: no server, no channel), refused=${refusals} (need 2: the fan-out, the test push), failed=${notifySrc.includes("kind: 'notify-failed'")} — a site that records under a different or missing kind cannot be asked "did it go out?"`)
+
+  const gateCalls = (doLedgerSrc.match(/this\.countGate\(/g) || []).length
+  check('every gate and every non-draw in the intake counts what it did',
+    gateCalls >= 8,
+    `only ${gateCalls} countGate call sites — a gate exists that nobody records, which is the blind spot this removes`)
+  // Each gate named individually, matched as the FIRST ARGUMENT of a countGate
+  // call: a gate counted under one anonymous name would make "why did this ping
+  // die?" unanswerable, which is the whole point of the ledger.
+  const namedGates = ['accuracy', 'glitch', 'unwitnessed', 'report-unbelievable']
+    .filter((g) => new RegExp(`countGate\\(\\s*"${g}"`).test(doLedgerSrc))
+  check('every drop gate is named, not lumped together',
+    namedGates.length === 4,
+    `counted by name: ${namedGates.join(', ') || 'none'} — a drop with no name cannot be acted on`)
+
+  check('the intake ledger cannot itself break ingest',
+    /private countGate[\s\S]{0,2500}?\} catch \{/.test(doLedgerSrc),
+    'countGate can throw, so a ping that would have been dropped cleanly would 500 the upload route instead')
+  // Durable counters only keep the sums honest if they are cleared when the
+  // code that writes them changes — the failure mode is silent and permanent
+  // (found by mutation-testing this very feature: the sum stayed broken after
+  // the mutated code was restored).
+  // The READ and the COMPARISON, not the mere presence of the words: a version
+  // that still mentions `gate_build` and still writes do_meta while comparing
+  // the stored value to itself (or not reading it at all) passed the first
+  // attempt at this check — found by falsifying it.
+  check('the durable gate counters are scoped to the build that wrote them',
+    /const stored = meta\("gate_build"\)[\s\S]{0,300}?stored !== DO_BUILD/.test(doLedgerSrc) &&
+    /DELETE FROM ingest_gates/.test(doLedgerSrc),
+    'the build that wrote the durable counters is not read back and compared with DO_BUILD, so after a deploy they describe code that no longer exists and the sums stay skewed forever')
+  // Exactly ONE quoted marker in the file: the constant. A second literal
+  // anywhere (say, the debug response hardcoding it while the constant moves on)
+  // makes the reported build and the reset build disagree — which clears the
+  // counters on every single start, or never.
+  const markerLiterals = (doLedgerSrc.match(/"notify-v\d+-[a-z-]+"/g) || []).length
+  check('the build marker is one constant, not a string repeated in two places',
+    markerLiterals === 1 && /const DO_BUILD = "notify-v\d+-[a-z-]+"/.test(doLedgerSrc),
+    `${markerLiterals} quoted marker literals (need exactly 1, in DO_BUILD) — the reported build and the one that scopes the counters have drifted apart`)
+  check('the drop sample stays bounded',
+    /DELETE FROM ingest_drops WHERE id <= \(SELECT MAX\(id\) - \d+/.test(doLedgerSrc),
+    'the sample is unbounded: a parked phone would grow it all night, and the whole point of counting in the DO was to keep the volume out of D1')
+  check('the ledger reads are defensive too',
+    /private readGateLedger[\s\S]{0,1800}?\} catch \(e\) \{/.test(doLedgerSrc),
+    'the ledger read can throw, so a missing table would 500 the debug probe that exists to explain missing data')
+
+  check('the ledger write itself can never become the failure it was recording',
+    /export async function recordDiag[\s\S]{0,1500}?catch/.test(diagSrc),
+    'recordDiag can throw, so diagnostics can now break the user action it was observing')
+  check('the ledger is pruned without a human',
+    /pruneDiag\(env\)/.test(idxSrc),
+    'nothing prunes diag_events, so the table only grows — retention that needs somebody to remember is not retention')
+
+  check('the diagnostics page is linked where an admin will find it',
+    /href="\/admin\/diagnostics"/.test(adminSrc),
+    'the surface exists but nothing links to it')
 }
 
 // ─── summary ─────────────────────────────────────────────────────

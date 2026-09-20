@@ -17,6 +17,7 @@ import type { Transaction } from '../db/schema'
 import type { Env } from '../env'
 import { listNtfyChannels, getHomeSetting } from '../identity'
 import { postSystemChat } from '../way/system-chat'
+import { recordDiag, type DiagModule } from './diagnostics'
 
 export interface NotifLine {
   href: string
@@ -176,15 +177,43 @@ export async function ntfyServer(env: Env): Promise<string> {
  * A one-line event (Kiné) has no second line, so the text is sent as the message
  * with no title — never as an empty message with only a title, which some ntfy
  * clients render as a blank body.
+ *
+ * Every push that does NOT land is recorded in the diagnostics ledger before
+ * this returns. That is the whole reason the ledger exists: the console.log
+ * below only answers "did the household's money events go out?" to somebody who
+ * happens to be running `wrangler tail` at that second, so a notification that
+ * vanished on a Tuesday used to be unfindable by Thursday.
+ *
+ * `module` says which part of the app the event came from, so the ledger can be
+ * read per module rather than as one undifferentiated list.
  */
-export async function pushNtfy(env: Env, title: string, message: string, accent = 'green'): Promise<NtfyFanout> {
+export async function pushNtfy(
+  env: Env,
+  title: string,
+  message: string,
+  accent = 'green',
+  module: DiagModule = 'sompitra'
+): Promise<NtfyFanout> {
   const none: NtfyFanout = { sent: 0, failed: [] }
+  const what = title.trim() || message.trim() || '(empty notification)'
   try {
     const server = await ntfyServer(env)
-    if (!server) return none
+    if (!server) {
+      await recordDiag(env, {
+        module, kind: 'notify-skipped', subject: null, outcome: 'skipped',
+        detail: `no ntfy server is set, so \"${what}\" was never pushed (an admin can set one in settings)`,
+      })
+      return none
+    }
 
     const channels = (await listNtfyChannels(env.HOME_DB)).filter((u) => (u.ntfy_topic || '').trim())
-    if (channels.length === 0) return none
+    if (channels.length === 0) {
+      await recordDiag(env, {
+        module, kind: 'notify-skipped', subject: null, outcome: 'skipped',
+        detail: `nobody has an ntfy channel yet, so \"${what}\" was never pushed`,
+      })
+      return none
+    }
 
     const hasBody = message.trim().length > 0
     const base = server.replace(/\/+$/, '')
@@ -209,11 +238,20 @@ export async function pushNtfy(env: Env, title: string, message: string, accent 
       else {
         out.failed.push({ username: o.username, detail: o.result.detail })
         console.log(`ntfy feed push to ${o.username} refused: ${o.result.detail}`)
+        await recordDiag(env, {
+          module, kind: 'notify-refused', subject: o.username, outcome: 'refused',
+          detail: `${o.result.detail} — \"${what}\" reached nobody on that channel`,
+        })
       }
     }
     return out
-  } catch {
-    // ignore — notifications are best-effort
+  } catch (e) {
+    // ignore — notifications are best-effort. Recorded, not raised: the action
+    // this push was riding on has already succeeded and must stay that way.
+    await recordDiag(env, {
+      module, kind: 'notify-failed', subject: null, outcome: 'failed',
+      detail: `the push itself threw, so \"${what}\" may have reached nobody: ${e instanceof Error ? e.message : String(e)}`,
+    })
     return none
   }
 }
@@ -274,17 +312,37 @@ async function pushTo(
  * or that person has no channel, so the caller can say so plainly instead of
  * claiming a notification went out.
  */
-export async function pushNtfyTo(env: Env, topic: string, title: string, message: string, accent = 'green'): Promise<NtfyPushResult> {
+export async function pushNtfyTo(
+  env: Env,
+  topic: string,
+  title: string,
+  message: string,
+  accent = 'green',
+  module: DiagModule = 'home'
+): Promise<NtfyPushResult> {
+  // This one IS reported to the caller (the settings test button shows the
+  // detail), unlike the fan-out above. It is still recorded, because "the test
+  // worked yesterday and not today" is a question about history, and the person
+  // clicking the button is not the person reading the ledger three days later.
+  const target = (topic || '').trim()
+  const fail = async (detail: string): Promise<NtfyPushResult> => {
+    await recordDiag(env, {
+      module, kind: 'notify-refused', subject: target || null, outcome: 'refused',
+      detail: `${detail} — the test push to that channel did not go out`,
+    })
+    return { ok: false, detail }
+  }
   try {
     const server = await ntfyServer(env)
-    const target = (topic || '').trim()
-    if (!target) return { ok: false, detail: 'that channel has no topic yet' }
-    if (!server) return { ok: false, detail: 'no ntfy server is set (an admin can set one)' }
+    if (!target) return await fail('that channel has no topic yet')
+    if (!server) return await fail('no ntfy server is set (an admin can set one)')
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`
-    return await pushTo(server.replace(/\/+$/, ''), headers, target, title, message, message.trim().length > 0, accent)
+    const result = await pushTo(server.replace(/\/+$/, ''), headers, target, title, message, message.trim().length > 0, accent)
+    if (!result.ok) return await fail(result.detail)
+    return result
   } catch (e) {
-    return { ok: false, detail: e instanceof Error ? e.message : String(e) }
+    return await fail(e instanceof Error ? e.message : String(e))
   }
 }
 

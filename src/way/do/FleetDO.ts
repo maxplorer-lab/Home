@@ -58,6 +58,14 @@ import { WAY_CONFIG } from "../config";
 /** Household ntfy server, in home-db (the unified settings own it). */
 const NTFY_SERVER_HOME_KEY = "ntfy_server";
 
+/**
+ * This file's build marker. Bump it whenever the DO's own code changes — the
+ * debug probe reports it, and `ensureSchema` uses it to decide whether the
+ * ingest gate counters still describe THIS code (see the build-scoped reset
+ * there). One constant, because those two jobs must never disagree.
+ */
+const DO_BUILD = "notify-v12-gate-reset";
+
 interface LiveDeviceStatus extends PingResult {
   timestamp: string;
   latitude: number;
@@ -300,6 +308,167 @@ export class FleetDO extends DurableObject<Env> {
         `chat reactions will fail; the ALTERs in ensureSchema did not apply`
       );
     }
+
+    // ---- Ingest gate ledger --------------------------------------------
+    // WHY this exists at all: EVERY gate in handleIngest drops a ping
+    // silently, on purpose (µlogger must never see an error). The cost is that
+    // "the phone was correctly filtered" and "the phone never uploaded" are
+    // the same observable from outside -- so a real-world test of the tracking
+    // rules could not be read, which is exactly what this ledger fixes.
+    //
+    // It lives in the DO's own SQLite rather than home-db's diag_events on
+    // purpose, and the split is the whole design: these are the HIGH-frequency
+    // facts (a parked phone produces thousands of collapsed points a night),
+    // and pushing that volume into D1 to record "the same phone was collapsed
+    // again" is how a free-tier app dies. Notifications, which happen a few
+    // times a day, go to diag_events instead.
+    //
+    //   ingest_gates : one row per gate, a durable counter
+    //   ingest_drops : a bounded SAMPLE of the last few, with the reason
+    //                  (the counters say "how many", this says "what did it
+    //                  actually look like")
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS ingest_gates (
+        gate     TEXT PRIMARY KEY,
+        n        INTEGER NOT NULL DEFAULT 0,
+        first_at TEXT NOT NULL,
+        last_at  TEXT NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS ingest_drops (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        at        TEXT NOT NULL,
+        device_id TEXT,
+        gate      TEXT NOT NULL,
+        detail    TEXT NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS do_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+
+    // The counters above are DURABLE — they survive eviction on purpose, so a
+    // parked-phone test spanning an eviction is still readable. That is also
+    // how they lie: after a deploy they describe code that no longer exists,
+    // and the two sums reported by /debug-notify stay permanently skewed.
+    //
+    // This is not theoretical. Mutation-testing the ledger itself (removing the
+    // accuracy gate's counter) added two `received` pings to an instance that
+    // could no longer count them as `accuracy`; the sum was still broken after
+    // the code was restored, because nothing knew the rows predated different
+    // code. So the counters are SCOPED TO THE BUILD that wrote them: a changed
+    // marker clears them. The reading is then always "since this code started",
+    // which is the only reading under which the sums mean anything.
+    //
+    // Consequence worth knowing: changing which gates count without bumping
+    // DO_BUILD leaves the sums broken, and `npm run smoke` fails on exactly that
+    // (section 19) — the fix is the marker bump, not the counter.
+    const meta = (key: string): string | null => {
+      try {
+        return this.sql.exec<{ value: string }>(`SELECT value FROM do_meta WHERE key = ?`, key).toArray()[0]?.value ?? null;
+      } catch {
+        return null;
+      }
+    };
+    try {
+      const stored = meta("gate_build");
+      if (stored !== DO_BUILD) {
+        if (stored !== null) {
+          console.log(
+            `FleetDO build changed (${stored} → ${DO_BUILD}): clearing the ingest gate counters, which only ever described the old code`
+          );
+          this.sql.exec(`DELETE FROM ingest_gates`);
+          this.sql.exec(`DELETE FROM ingest_drops`);
+        }
+        this.sql.exec(`INSERT OR REPLACE INTO do_meta (key, value) VALUES ('gate_build', ?)`, DO_BUILD);
+      }
+    } catch (e) {
+      // Never stop the DO from starting over bookkeeping -- a constructor throw
+      // would take the whole write path down.
+      console.log(`FleetDO could not scope the gate counters to its build: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Count one ingest decision, and keep a bounded sample of the interesting
+   * ones. Called from every gate in handleIngest -- including the "nothing went
+   * wrong" ones, because the counters only mean something next to each other:
+   * "12 collapsed" is only reassuring when you can also see the 14 that
+   * arrived.
+   *
+   * NEVER throws. A drop is already a deliberate silent-skip by contract, and
+   * bookkeeping must not be the thing that upgrades it to a throw -- a ping
+   * that would have been dropped cleanly would instead 500 the ingest route.
+   */
+  private countGate(gate: string, deviceId: string | null, detail: string, sample = true): void {
+    try {
+      const now = new Date().toISOString();
+      this.sql.exec(
+        `INSERT INTO ingest_gates (gate, n, first_at, last_at) VALUES (?, 1, ?, ?)
+           ON CONFLICT(gate) DO UPDATE SET n = n + 1, last_at = excluded.last_at`,
+        gate, now, now
+      );
+      // Only the things that did NOT go through get a sampled row. The
+      // high-volume outcomes (arrived / accepted / collapsed / drawn) pass
+      // sample = false and stay counters -- otherwise the 80-row window would
+      // be nothing but "a ping arrived" and the one parked-phone anomaly worth
+      // reading would have been pushed out an hour ago.
+      if (sample) {
+        this.sql.exec(
+          `INSERT INTO ingest_drops (at, device_id, gate, detail) VALUES (?, ?, ?, ?)`,
+          now, deviceId, gate, detail
+        );
+        // Bounded sample: the counters are the durable record, this window is
+        // the "what did it look like" one. Pruned by id (the primary key), so
+        // it is a cheap index range delete rather than a table scan.
+        this.sql.exec(`DELETE FROM ingest_drops WHERE id <= (SELECT MAX(id) - 80 FROM ingest_drops)`);
+      }
+    } catch {
+      // Deliberately silent, like every other decision on this path.
+    }
+  }
+
+  /**
+   * The ingest gate ledger, as /debug-notify reports it.
+   *
+   * Read it as an equation rather than a list: `received` should equal
+   * `accuracy + glitch + accepted`, and `accepted` should equal
+   * `drawn + collapsed + unwitnessed + paused`. Those two sums are the point -- they are
+   * what turns "0 drawn" from alarming into explained, and a sum that does not
+   * hold means a gate exists that nobody recorded.
+   */
+  private readGateLedger(): {
+    gates: Array<{ gate: string; n: number; firstAt: string; lastAt: string }>;
+    drops: Array<{ at: string; deviceId: string | null; gate: string; detail: string }>;
+  } {
+    try {
+      const gates = this.sql
+        .exec<{ gate: string; n: number; first_at: string; last_at: string }>(
+          `SELECT gate, n, first_at, last_at FROM ingest_gates ORDER BY n DESC, gate ASC`
+        )
+        .toArray();
+      const drops = this.sql
+        .exec<{ at: string; device_id: string | null; gate: string; detail: string }>(
+          `SELECT at, device_id, gate, detail FROM ingest_drops ORDER BY id DESC LIMIT 25`
+        )
+        .toArray();
+      return {
+        gates: gates.map((g) => ({ gate: g.gate, n: g.n, firstAt: g.first_at, lastAt: g.last_at })),
+        drops: drops.map((d) => ({ at: d.at, deviceId: d.device_id, gate: d.gate, detail: d.detail })),
+      };
+    } catch (e) {
+      // A missing table here means this instance is running pre-ledger code (or
+      // the CREATEs did not apply); say so instead of reporting an empty list,
+      // which would read as "nothing was ever dropped".
+      console.log(
+        `FleetDO ingest ledger unreadable: ${e instanceof Error ? e.message : String(e)}`
+      );
+      return { gates: [], drops: [] };
+    }
   }
 
   // ------------------------------------------------------------
@@ -404,6 +573,21 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(null, { status: 204 });
     }
 
+    // Clear the ingest gate ledger so the NEXT reading starts from zero.
+    //
+    // The counters are durable and build-scoped, so a code change clears them
+    // by itself — but wanting a clean reading without changing any code is the
+    // normal case before a real-world test ("reset, drive home, now read what
+    // the gates did"), and without this the only way to get one would be a
+    // deploy. Deliberately not part of the build marker's reset: this is a
+    // deliberate act, visible as its own button.
+    if (url.pathname === "/reset-gates" && request.method === "POST") {
+      this.sql.exec(`DELETE FROM ingest_gates`);
+      this.sql.exec(`DELETE FROM ingest_drops`);
+      console.log("FleetDO ingest gate ledger reset by an admin");
+      return new Response(null, { status: 204 });
+    }
+
     // Diagnostic probe (reachable only via the Worker's /api/debug/notify):
     // reports this instance's build marker and exactly what it has cached,
     // so we can tell "stale code" from "stale config" without a live tail.
@@ -430,7 +614,13 @@ export class FleetDO extends DurableObject<Env> {
             //      unwitnessed crossing is silent (rule 28).
             // v9 = the intake gates on receiver accuracy before anything else
             //      (rule 29).
-            build: "notify-v9-accuracy-gate",
+            // v10 = the ingest gate ledger: every gate counts what it did and
+            //       samples what it dropped (rule 30).
+            // v11 = those counters are scoped to the build that wrote them, so
+            //       the two sums stay true across a deploy (rule 30).
+            // v12 = POST /reset-gates, so a test can start from a clean zero
+            //       without changing any code (rule 30).
+            build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
             // "does the RUNNING instance know about income yet?" without
@@ -461,6 +651,11 @@ export class FleetDO extends DurableObject<Env> {
             })),
             lastNotify: this.lastNotify,
             cooldowns: Array.from(this.notifyCooldowns.entries()),
+            // Every gate in handleIngest drops a ping silently on purpose, so
+            // without this "the phone was correctly filtered" and "the phone
+            // never uploaded" are the same observable. Durable counters plus a
+            // bounded sample of the drops themselves.
+            ingest: this.readGateLedger(),
             // The map's in-flight badge pulses. Reported here because a pulse is
             // deliberately never persisted and expires on the client's clock: if
             // the badge is not sweeping, this is the only way to tell "the DO
@@ -657,6 +852,10 @@ export class FleetDO extends DurableObject<Env> {
     const { ping, accuracy, altitude } = body;
     const stored = this.loadDeviceState(ping.deviceId);
 
+    // The denominator for every gate below. Counted, never sampled: this fires
+    // on every ping, and the sample window belongs to the anomalies.
+    this.countGate("received", ping.deviceId, "arrived at the intake", false);
+
     // ---- Accuracy pre-filter ---------------------------------------------
     // The household's phones filter this client-side (µlogger's "minimum
     // accuracy"), so this gate should never fire for them -- and it exists
@@ -667,6 +866,10 @@ export class FleetDO extends DurableObject<Env> {
     // BEFORE the speed filters on purpose: a nonexistent measurement cannot
     // be asked what it implies about speed.
     if (!accuracyIsAcceptable(accuracy)) {
+      this.countGate(
+        "accuracy", ping.deviceId,
+        `accuracy ${accuracy} m is beyond the ${WAY_CONFIG.PRE_FILTER_MAX_ACCURACY_M} m limit`
+      );
       return; // dropped silently, same as the glitch filter
     }
 
@@ -708,6 +911,13 @@ export class FleetDO extends DurableObject<Env> {
         ping.latitude, ping.longitude, ping.timestamp
       )
     ) {
+      this.countGate(
+        "report-unbelievable", ping.deviceId,
+        `the device reported ${reportedVel} km/h where its own coordinates imply ${speedFromPositions(
+          prev.lastLat, prev.lastLon, prev.lastTs,
+          ping.latitude, ping.longitude, ping.timestamp
+        )} km/h -- the report was replaced by the positions`
+      );
       ping.vel = speedFromPositions(
         prev.lastLat, prev.lastLon, prev.lastTs,
         ping.latitude, ping.longitude, ping.timestamp
@@ -724,8 +934,20 @@ export class FleetDO extends DurableObject<Env> {
         ping.latitude, ping.longitude, ping.timestamp
       )
     ) {
+      this.countGate(
+        "glitch", ping.deviceId,
+        `impossible jump: ${distanceM(
+          stored.motion.lastLat, stored.motion.lastLon, ping.latitude, ping.longitude
+        ).toFixed(0)} m in ${(
+          (Date.parse(ping.timestamp) - Date.parse(stored.motion.lastTs)) / 1000
+        ).toFixed(0)} s implies over ${PRE_FILTER_SPEED_LIMIT} km/h`
+      );
       return; // dropped silently, same as the Python receiver
     }
+
+    // Everything down to here reached the state machine: no gate will drop it
+    // from now on, so this is the number the drops above should account for.
+    this.countGate("accepted", ping.deviceId, "reached the state machine", false);
 
     const geofences = await this.getGeofences();
     const { state: newMotion, result } = processPing(stored.motion, ping, geofences, stored.forcedMode);
@@ -737,6 +959,14 @@ export class FleetDO extends DurableObject<Env> {
     // event, no push. The fence state resolved to UNKNOWN, and the next ping
     // re-anchors with zero distance (settlePending).
     const unwitnessed = result.unwitnessed === true;
+    if (unwitnessed) {
+      this.countGate(
+        "unwitnessed", ping.deviceId,
+        `found outside its fence after ${(
+          (Date.parse(ping.timestamp) - Date.parse(stored.motion.lastTs ?? ping.timestamp)) / 1000
+        ).toFixed(0)} s of silence (limit ${WAY_CONFIG.EXIT_WITNESS_GAP_S} s): the position is real but the crossing was not watched, so it moves the live dot only`
+      );
+    }
 
     // If the device just crossed a fence's exit radius, start the outgoing
     // track AT the boundary instead of the first ping past it.
@@ -800,6 +1030,26 @@ export class FleetDO extends DurableObject<Env> {
     // recordingPaused overrides everything else -- no history writes at all
     // while paused.
     const shouldPersist = !stored.recordingPaused && !unwitnessed && this.shouldPersistTrackPoint(result);
+
+    // The persistence decision, counted. "0 drawn" has to be readable as "the
+    // phone was parked and every point was collapsed on purpose" rather than as
+    // "the pipeline is broken" -- those are the two stories this whole ledger
+    // exists to tell apart.
+    // The branches are exhaustive on purpose: every accepted ping lands in
+    // exactly one of them, so `accepted = drawn + collapsed + unwitnessed +
+    // paused` has to hold. A pause is counted rather than skipped because an
+    // uncounted branch is indistinguishable from a broken one later.
+    if (shouldPersist) {
+      this.countGate("drawn", ping.deviceId, "written as a track point", false);
+    } else if (stored.recordingPaused) {
+      this.countGate("paused", ping.deviceId, "recording is paused for this device", false);
+    } else if (!unwitnessed) {
+      // Not a failure and not an anomaly: the deliberate noise collapse (a phone
+      // on a desk indoors pings every few seconds all day, and storing those
+      // would bury the real journeys). Counted all the same, because "0 drawn"
+      // and "the pipeline is broken" must not look alike.
+      this.countGate("collapsed", ping.deviceId, "no track information: stationary or inside a fence", false);
+    }
 
     // device_state updates on every ping regardless of the throttle or
     // the pause flag -- it's a single UPSERT row, not a growing table,

@@ -60,6 +60,7 @@ npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0001_identit
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0002_notifications.sql
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0003_laoka_imports.sql
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0004_two_channels.sql
+npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0005_diagnostics.sql
 npx wrangler d1 execute DB           --local --file=migrations-sompitra/0001_initial_schema.sql   # + 0002…0009
 npx wrangler d1 execute WAY_DB       --local --file=migrations-way/0000_baseline.sql              # + 0001…0007
 npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.sql                # + 0002…0008
@@ -113,6 +114,13 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     not by which app it came from. Module-specific panels are being folded
     into it; until then the W.A.Y and Laoka sections link into their own
     UIs. Notification settings live here and nowhere else.
+    **Admin is the CENTRAL role, never a module flag.** The household card and
+    the three admin POST handlers judge a session with `isSettingsAdmin()`,
+    which reads `home-db.users.role` first (`/admin` gates on the same value)
+    and keeps Sompitra's `is_admin` only as a FALLBACK. Provisioning never
+    re-derives that flag, so gating on it alone hides the links to `/admin`
+    and `/admin/diagnostics` from a real admin — the Home admin need not be
+    the Sompitra one (`CUTOVER.md` §1c). Smoke section 10 pins both halves.
 14. **One chrome, one place**: the header and the tab bar are ONLY defined in
     `src/views/app-chrome.tsx` (`HomeHeader`, `HomeTabBar`, `CHROME_CSS`).
     `views/layout.tsx` (Sompitra pages) and `views/shell.tsx` (module tabs)
@@ -424,7 +432,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
     halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v9-accuracy-gate`).
+    (`notify-v12-gate-reset`).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -553,6 +561,49 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     at the SAME coordinates as an accepted 10 m ping, so only the field
     differed), acc 9 m / 10 m / absent kept.
 
+30. **Every deliberate silence is COUNTED, and that count is readable at
+    `/admin/diagnostics`.** Rules 25–29 all drop pings SILENTLY on purpose
+    (µlogger must never see an error), and the price of that contract is that
+    "the phone was correctly filtered" and "the phone never uploaded" are the
+    same observable from outside — which is what made the 2026-09-19/20
+    real-world test unreadable. Two ledgers, split by FREQUENCY, and the split
+    is the design:
+    * **Tracking gates → the FleetDO's own SQLite** (`ingest_gates` counters +
+      a bounded `ingest_drops` sample, written by `countGate()`). A parked phone
+      produces thousands of collapsed points a night; pushing that volume into
+      D1 to say "the same phone was collapsed again" is how a free-tier app
+      dies. Read it at `GET /way/api/debug/notify` → `ingest`, and check the two
+      sums: `received = accuracy + glitch + accepted` and `accepted = drawn +
+      collapsed + unwitnessed + paused`. A sum that does not hold means a gate
+      exists that nobody counts. Every branch of the persistence decision is
+      exhaustive for exactly that reason — do not add one without counting it.
+    * **Notification non-deliveries → home-db `diag_events`** (migration
+      0005), written by `recordDiag()` from `src/lib/notify.ts`. A few rows a
+      day, pruned to 90 days by the daily cron. This is the table that answers
+      project.md's "the three ways a notification disappears without a trace"
+      *after* the fact; the console.log it replaces only answered it to whoever
+      happened to be tailing at that second. Kinds: `notify-skipped` (no server
+      / no channel set), `notify-refused` (ntfy said no, or was unreachable),
+      `notify-failed` (the push threw).
+    The gate counters are DURABLE, so they survive an eviction (a parked-phone
+    test can span one) — and that is exactly why they are **scoped to the build
+    that wrote them**: `ensureSchema` stores `DO_BUILD` in the DO's `do_meta`
+    table and clears `ingest_gates`/`ingest_drops` when it changes. Without that
+    the two sums stay permanently skewed after any deploy, because a durable row
+    counted under old code cannot be recounted under new code. This was found by
+    mutation-testing this very feature — the sum was still broken after the
+    mutant was restored, and nothing knew why. **So: change which gates count,
+    and you MUST bump `DO_BUILD`.** One constant, used both by the debug probe
+    and by that reset, so the two can never disagree; an empty `gates` list then
+    means "a fresh deployment" or "a build bump just cleared them", never
+    "nothing was ever dropped".
+    `recordDiag`, `pruneDiag`, `countGate` and `readGateLedger` NEVER throw —
+    a ledger that can fail the user action it was observing is worse than no
+    ledger. Guards: smoke section 19, which
+    proves it live (a real accuracy-25 µlogger upload, asserted to answer
+    success, raise the counter AND sample its reason) as well as reading the
+    contracts a test cannot reach.
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -611,6 +662,7 @@ have their own separate repositories and their own history.
 | An inactive tab looks greyed/dead | the colour must come from `--tab` on `.tab-tint` (`CHROME_CSS`); a literal `color:` or a `text-gray-*` utility on a tab is the bug |
 | An inactive tab is unreadable in dark mode | `html.dark .tab-tint`'s `color-mix()` lift is missing — without it slate/violet measure 1.9–2.6:1 on the dark bar. It only works if the tint is `--tab` (see the rule above) |
 | A tab exists in one shape but not the other | `HOME_TABS` in `views/app-chrome.tsx` is the single list; the bottom bar and `HomeNav` both map over it |
+| A person who IS an admin cannot see the admin links on `/settings` (or an admin POST bounces back to `/settings`) | they are a Home admin whose Sompitra row predates the merge, so `users.is_admin` is 0 there. The card and the handlers must judge with `isSettingsAdmin()` — central role first, module flag as a fallback (rule 13, `CUTOVER.md` §1c) |
 | The bottom bar shows on a desktop window | the `md:hidden` (bar) / `hidden md:flex` (header nav) split in `app-chrome.tsx` |
 | Chrome/Brave on Android never offers "Install app" | `public/manifest.webmanifest` + the icons it points at: each file must exist **at** the advertised size, and the maskable must not be a byte-copy of `icon-512.png` (Android then clips the mark). `npm run smoke` section 16 checks the served bytes |
 | Module still shows its own header/nav inside a tab | the module's own `window.self !== window.top` embed script — selectors drift when its UI changes |
@@ -631,6 +683,9 @@ have their own separate repositories and their own history.
 | A phone that has not moved draws a track, or a Trips total grows on its own | the **reported-speed** half of rule 26 — the speed field lies, not the coordinates. Check `reportedSpeedIsCredible` + `REPORTED_SPEED_MIN_MOVE_M` and the replacement block in `FleetDO.handleIngest`. Look at the fence too: a phone parked *outside* its home fence is never "inside" either, so nothing gets dropped by the inside rule (Home1 sits ~305 m from where the household's phones actually stop) |
 | A device's track teleports, or a synthetic ping seems to be ignored | the **position** half of rule 25 — `isGlitch` drops a ping implying >120 km/h silently and the upload still answers success. Check the speed your test generated before suspecting the pipeline (a 5 s gap and a 1 km step is 720 km/h, no matter what the `speed` field says) |
 | A save or a chat message "did nothing at all" | the network path, not the server: `apiJson` answers a rejected fetch as `{ok:false, status:0}` so the caller's alert runs, and the chat composer clears only after `sendWs` returns true — smoke sections 15 and 12 fail if either goes back to silence. DevTools' Offline switch reproduces it in one step |
+| "Did the tracking rules actually do anything?" after a real-world test | `/admin/diagnostics` (admin-only). It is the ONLY way to tell "the phone was correctly filtered" from "the phone never uploaded" — every gate drops silently by contract (rule 30). Read the sums first: `received = accuracy + glitch + accepted`, `accepted = drawn + collapsed + unwitnessed + paused`. `collapsed` climbing with `drawn` flat is a parked phone working as designed, not a broken pipeline |
+| `/admin/diagnostics` shows no gates at all | the counters are **DURABLE and build-scoped**, so exactly three things empty them: a fresh deployment, a **build-marker bump** (`ensureSchema` clears them when `DO_BUILD` changes), or the **Reset counters** button. A restart or an eviction does NOT — so if a restart seems to have cleared them, the code changed too. An empty list right after a deploy is normal; send one upload and they reappear. If it persists with `"ingest": null`, the FleetDO binding or `/debug-notify` is the problem (rule 30) |
+| A notification vanished last Tuesday and nobody can say why | `diag_events` in **home-db** (`/admin/diagnostics` → Notification ledger). It holds every push that did NOT reach a phone, with ntfy's own words. Rows expire after 90 days (the daily cron's prune), and `ledger.total: 0` means every push has been landing. If the ledger is unreadable, migration `migrations-home/0005_diagnostics.sql` was never applied |
 | A ping with a silly accuracy (say 50 m) still moves the dashboard | the gate is the FIRST thing in `FleetDO.handleIngest` (rule 29) — check `accuracyIsAcceptable` is still called before the speed filters and still reads `PRE_FILTER_MAX_ACCURACY_M` from config. And note the other direction: a client that sends NO accuracy always passes by design (null is accepted), so first check whether the field was sent at all |
 | A track spikes out and back from a geofence while the phone is parked | two separate causes, and the rows tell them apart. **Same-second pair?** judged against `GLITCH_TIME_FLOOR_S`, never skipped (rule 27) — a pre-floor DO accepts it unseen. **First row of the pair exactly on the exit radius?** that is the guard's interpolated edge point, so read the ping that STARTS the exit: a far-out ping after a long silence passed every speed gate (0.5 km/h implied over hours) and the guard then confirmed on wall time. `pingsFlushed` counts only accepted pings, so it is the first honest number to read |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
@@ -662,8 +717,8 @@ have their own separate repositories and their own history.
 | A WAY ping arrives but the map does not move to it | that is the 25 s lag doing its job; the point is committed when the cursor reaches it. To see it immediately, look at `latestPing` (the HUD) rather than the marker, or switch the pace to **Live** |
 | The pace switch is there but the marker does not look any fresher | check `localStorage.getItem('map_pace')` and `playbackLagSeconds()` in the console; the pills and the pace line only repaint through `applyMapPace()` → `updatePaceNote()`, and a device whose newest ping is in the FUTURE (clock skew) is drawn from its `latestPing` either way |
 | The Chat tab shows a red dot, but the chat has nothing new in it | the dot is a **watermark**, not a count: `localStorage['chat_last_seen']` (an ISO instant) against the DO's newest `chat_messages.created_at`, polled from `/way/api/chat/latest` on every page. It never shows while you are ON `/chat` (that poll advances the watermark instead). A device seeing the dot for the first time adopts the whole backlog — if it is lit on a fresh device, the watermark was set by hand or the DO's timestamps are not ISO |
-| A badge pulses (or keeps pulsing after the car has parked) | that is the **approach pulse**: the DO arms it from the same 60 s / 30 s thresholds that send the entry-timer push (since `notify-v7-approach-chat`; the running build is reported at `/way/api/debug/notify`), yellow at 60 s and red at 30 s. It expires on **wall time** — 60 s from the 60 s trigger with no 30 s, 60 s from the 30 s trigger with no entry — and on arrival or turn-away (`clearApproachPulse`). Nothing pulsing means no threshold was crossed: the push, the pulse and the chat row are one decision, so a missing pulse is a missing notification, and `/way/api/debug/notify` says whether the per-event-type recipient count is 0 |
-| The 60 s / 30 s push arrives but there is no row for it in the chat | the row is written by the same block that pushes (`maybeNotifyApproach`), so a missing row means the running Durable Object is **pre-`notify-v7`** code — a deploy shuts Durable Objects down, but eventually consistently, so an instance can serve the old code until the rollout reaches it (or it goes idle and is evicted after 70–140 s). `GET /way/api/debug/notify` reports `build`; re-check it a minute after the deploy. A settings save does NOT restart the code — it only reloads that instance's notify cache. If the build is v7-or-later and the row is still absent, look for a `handleChatMessage` failure in the DO's logs (the flush writes `way-db` nightly, so the row will also be missing from `messages` until then) |
+| A badge pulses (or keeps pulsing after the car has parked) | that is the **approach pulse**: the DO arms it from the same 60 s / 30 s thresholds that send the entry-timer push (the `v7` entry in `DO_BUILD`'s version history; the running build is reported at `/way/api/debug/notify`), yellow at 60 s and red at 30 s. It expires on **wall time** — 60 s from the 60 s trigger with no 30 s, 60 s from the 30 s trigger with no entry — and on arrival or turn-away (`clearApproachPulse`). Nothing pulsing means no threshold was crossed: the push, the pulse and the chat row are one decision, so a missing pulse is a missing notification, and `/way/api/debug/notify` says whether the per-event-type recipient count is 0 |
+| The 60 s / 30 s push arrives but there is no row for it in the chat | the row is written by the same block that pushes (`maybeNotifyApproach`), so a missing row means the running Durable Object is **pre-v7** code (the `v7` line in `DO_BUILD`'s version history) — a deploy shuts Durable Objects down, but eventually consistently, so an instance can serve the old code until the rollout reaches it (or it goes idle and is evicted after 70–140 s). `GET /way/api/debug/notify` reports `build`; re-check it a minute after the deploy. A settings save does NOT restart the code — it only reloads that instance's notify cache. If the build is v7-or-later and the row is still absent, look for a `handleChatMessage` failure in the DO's logs (the flush writes `way-db` nightly, so the row will also be missing from `messages` until then) |
 | A drive home never announces `arrived at Home` (no chat row, no push) while `left Home` still works | the entry was never CONFIRMED, and the usual cause is the **rolling average**, not the dwell: `processOutside` restarts `entryStartTime` on every ping whose `speedBuffer` average is ≥ `WALKING_DRIVING_THRESHOLD` (10 km/h), and that buffer holds only `SPEED_BUFFER_SIZE` (3) samples — after a 30 km/h approach the first stationary pings each reset the clock, so the 30 s `ENTRY_GUARD_SECONDS` cannot mature. Three stationary pings on a ~40 s cadence is what settles it (measured 2026-09-19). The second cause is the arrival key: if `maybeLogGeofenceEvent` is keyed on the literal `OUTSIDE` again, a device sitting in `UNKNOWN` (unwitnessed crossing, rule 28) can never announce its arrival |
 | A `left Home` row plus a multi-km spike appear while the phone never left the fence | the exit started from a ping that did not witness the crossing (rule 28). Check `EXIT_WITNESS_GAP_S` against the move cadence, and that `s.geoState = "OUTSIDE"` is still the only `OUTSIDE` assignment — smoke section 15 fails on both, and on the DO drawing or storing an `unwitnessed` ping |
 | The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |

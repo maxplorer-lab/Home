@@ -14,6 +14,7 @@ by an admin.
 | 📍 **W.A.Y** | Live GPS tracking, geofences, μlogger ingest | `/way/` | `way-db` |
 | ⚙️ **You** | Settings: your account, your two notification channels, the module panels | `/settings` | `home-db` |
 | 👥 **Accounts** | The one login: sign in (`/login`), first-run claim, admin console (`/admin`) | — | `home-db` |
+| 🩺 **Diagnostics** | Everything the app fails *silently* at, on purpose: the tracking intake's gate counters and every notification that never reached a phone (`/admin/diagnostics`, admin-only) | — | `home-db` + the FleetDO |
 
 Each module keeps its own database and its own palette. Inside Home they run
 as **chromeless tabs under one shared chrome** — one header with the Home
@@ -220,7 +221,10 @@ every trip segment and would bury the rows that matter.)
 
 ## One login, how it works
 
-* An admin creates each person at **`/admin`** (username + password + role).
+* An admin creates each person at **`/admin`** (username + password + role), and
+watches the parts of the app that are built to fail quietly at
+**`/admin/diagnostics`** (see [project.md](./project.md) → "The diagnostics
+ledger" for what each number means and its three limits).
   The account is provisioned into Sompitra, W.A.Y and Laoka immediately.
 * **`/login`** checks the password once (against the central `home-db`) and
   mints every module's native session cookie. No module ever shows a login
@@ -288,6 +292,9 @@ wrangler secret put AUTH_PEPPER      # required, ≥16 random chars
 wrangler secret put SESSION_SECRET   # signs W.A.Y device tokens / module sessions
 ```
 
+A fourth, `NTFY_TOKEN`, is needed **only** when the household's ntfy instance
+requires auth — see [`CUTOVER.md`](./CUTOVER.md) §2.
+
 `SETUP_TOKEN` first is deliberate: `/bootstrap` becomes claimable the moment a
 pepper exists, so on a public hostname the token is what stops a stranger
 becoming admin. Without `AUTH_PEPPER` the app deploys **inert, not open** —
@@ -299,7 +306,7 @@ live `home-db`, which would create a second, empty identity database:
 
 ```bash
 wrangler d1 create home-db     # paste the id into wrangler.jsonc (HOME_DB)
-for f in migrations-home/000{1,2,3,4}*.sql; do
+for f in migrations-home/000{1,2,3,4,5}*.sql; do
   wrangler d1 execute HOME_DB --remote --file="$f"
 done
 ```
@@ -320,8 +327,12 @@ household at `/admin`.
   unknown names get fresh rows on first Home login.
 * Two traps worth reading the runbook for:
   * Sompitra's `users.is_admin` is **never** re-derived on provisioning, so the
-    Home admin does not become the Sompitra admin — MaxX needs the flag set by
-    hand or he loses the finance admin pages.
+    Home admin does not automatically become the Sompitra admin. Set the flag by
+    hand for a clean state (`CUTOVER.md` §1c) — though the app no longer *needs*
+    it: `/settings`' household card (and with it the links to `/admin` and
+    `/admin/diagnostics`) follows the **central role** first and keeps the
+    module flag only as a fallback, so a Home admin cannot be locked out of the
+    console by a module row that predates the merge.
   * `way-db` must still contain the `devices` table. It is the FK parent of
     `messages.device_id`, and without it the DO's flush fails **as a whole**
     while the live chat keeps working — so chat history and map tracks go

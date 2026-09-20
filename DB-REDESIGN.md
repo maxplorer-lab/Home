@@ -5,7 +5,7 @@ that we stay **entirely inside the Cloudflare free tier**, with all data
 disposable **except Sompitra**.
 
 This is a proposal, not a plan of record. Most of it is still unbuilt — but
-**not all of it any more**, and the difference matters when reading §4:
+**not all of it any more**, and the difference matters when reading §2 and §4:
 
 * **§4's button exists**, in a different shape. Laoka's export sheet has
   **Send to Sompitra**, which posts the priced week straight into a Sompitra
@@ -19,7 +19,10 @@ This is a proposal, not a plan of record. Most of it is still unbuilt — but
   corrected or summed on its own. The hand-off is one press; the *structure*
   it writes is still a blob.
 * **§2's `events` ledger is not built** — the three notification paths still
-  meet at the chat/DO seam rather than in one table.
+  meet at the chat/DO seam rather than in one table. The one piece of it that
+  HAS landed is `home-db.diag_events` (migration 0005), and it records the
+  opposite fact: a notification that did NOT reach a phone, read at
+  `/admin/diagnostics` (`AGENTS.md` rule 30).
 
 ---
 
@@ -148,6 +151,13 @@ exactly why it should happen before it becomes an outage.
 
 ## 2. One events ledger, instead of three notification code paths
 
+> **Status (2026-09-20): a narrow slice of this shipped.**
+> `home-db.diag_events` (migration 0005, written by `src/lib/diagnostics.ts`,
+> read at `/admin/diagnostics`) is a cross-module ledger in exactly this
+> spirit — but it records only what did NOT happen (a notification that was
+> skipped, refused or threw). The `events` table below, as the record of what
+> DID happen, is still the proposal. See `AGENTS.md` rule 30.
+
 Today each module invents its own idea of "something happened": Sompitra builds
 a `NotifLine` and pushes to ntfy, W.A.Y has a *separate* ntfy publisher inside
 the FleetDO, and the chat's system rows were the accidental third. They have
@@ -187,7 +197,7 @@ behind it so the chat is no longer the only place the record lives.
 
 ---
 
-## 3. Identity: five `users` tables, three id types, three password formats
+## 3. Identity: four `users` tables, three id types, three password formats
 
 Today a person exists in **four** places, with `home-db.users` (uuid TEXT),
 `sompitra-db.users` (uuid), `way-db.users` (INTEGER + its own PBKDF2 that
@@ -229,17 +239,29 @@ shape is worth the indirection.
 
 ## 4. Structured shopping items — the Laoka → Sompitra button
 
-You gave this as the example of real seamlessness, and it is worth being blunt
-about why it doesn't exist yet.
+> **Status (2026-09-20): half of this shipped.** The one-press hand-off EXISTS:
+> Laoka's export sheet calls Sompitra's `POST /budget/import-laoka`
+> (`GET /budget/laoka-import?week=N` is its status), idempotent per week
+> through `home-db.laoka_imports`, with the CSV path kept alongside it — and it
+> is `POST /budget/import-laoka` in Sompitra's router, not the
+> `send-to-sompitra` route proposed below. What has NOT shipped is the half
+> that needs a schema change: items are still a `transactions.notes` blob. So
+> read this section as the proposal for **that** half. See `AGENTS.md` rule 20
+> and `project.md` → "The Laoka → Sompitra hand-off".
+
+You gave this as the example of real seamlessness. The hand-off itself exists
+now; what is still missing is the DATA MODEL behind it, and it is worth being
+blunt about why.
 
 **An "itemized expense" in Sompitra today is a text blob.** The add-expense
 modal's itemized mode runs client-side JS that builds a string —
 `"Rice: Ar 5 000\nOil: Ar 12 000"` — and stores it in `transactions.notes`.
 There is no item table. So per-item totals can't be summed, a single item can't
-be corrected, an import can't be undone, and the Laoka hand-off is: export a CSV
-from Laoka, download it, open Sompitra's expense modal, click "Import CSV",
-pick the file. Four manual steps and a file lifecycle, for data both sides
-already have.
+be corrected and an import can't be undone. (The hand-off itself no longer
+needs the file: before it, the Laoka route was export a CSV, download it, open
+Sompitra's expense modal, click "Import CSV", pick the file — four manual steps
+and a file lifecycle, for data both sides already have. The button closed the
+four steps; the items it writes are still the same blob.)
 
 **Proposal: make items real** (additive to Sompitra — nothing dropped):
 
@@ -335,6 +357,11 @@ Two hard rules I'd encode in the schema rather than in code: a settled week is
 ---
 
 ## 8. If I were sequencing this
+
+> **Status (2026-09-20).** Row 2 is half-shipped — the one-button send exists
+> and is idempotent per week, but it writes the notes blob rather than
+> `transaction_items` (see §4's status note). Row 3 is also half-shipped, as
+> `diag_events` (see §2's). Rows 1, 4 and 5 are untouched.
 
 Ordered by *risk removed per unit of disruption*, not by visibility:
 

@@ -250,14 +250,32 @@ const ChannelRow = (userId: string, channel: 'feed' | 'tracking', badge: string,
   </div>
 )
 
+/**
+ * May this session manage the household?
+ *
+ * The CENTRAL role is the authority: `home-db.users.role` is what `/admin`
+ * itself gates on, and a Home admin whose Sompitra row predates the merge
+ * carries `is_admin = 0` there — CUTOVER.md §1c records that the flag is never
+ * re-derived on provisioning, and the visible symptom was this page hiding the
+ * link to the admin console from a Home admin. The module flag is kept as a
+ * FALLBACK so a Sompitra-era admin does not lose access to it.
+ */
+async function isSettingsAdmin(env: Env, user: User | undefined): Promise<boolean> {
+  if (!user) return false
+  if (user.is_admin === 1) return true
+  const home = await findHomeUserByName(env.HOME_DB, user.username)
+  return home?.role === 'admin'
+}
+
 // ─── GET /settings ─────────────────────────────────────────
 settings.get('/', async (c) => {
   const user = c.get('user')
-  const isAdmin = user.is_admin === 1
   const err = c.req.query('err')
   const ok = c.req.query('ok')
 
   const home = await findHomeUserByName(c.env.HOME_DB, user.username)
+  // Same judgement as `isSettingsAdmin`, from the row already in hand.
+  const isAdmin = home?.role === 'admin' || user.is_admin === 1
   const server = await ntfyServer(c.env)
   const channels = await listNtfyChannels(c.env.HOME_DB)
   const mine = channels.find((ch) => ch.id === home?.id) ?? null
@@ -477,14 +495,21 @@ settings.get('/', async (c) => {
               </a>
             </div>
           </Card>
-          {user.is_admin === 1 && (
+          {isAdmin && (
             <Card title="People & Access" icon="people" className="mb-4">
               <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
                 Add people, set their password and role. One account signs them into every module.
               </p>
-              <a href="/admin" class="inline-block px-4 py-2 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-semibold">
-                Manage people →
-              </a>
+              <div class="flex flex-wrap gap-2">
+                <a href="/admin" class="inline-block px-4 py-2 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-semibold">
+                  Manage people →
+                </a>
+                {/* Everything the app is built to fail silently at: the tracking
+                    gates and every notification that did not reach a phone. */}
+                <a href="/admin/diagnostics" class="inline-block px-4 py-2 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-semibold">
+                  🩺 Diagnostics →
+                </a>
+              </div>
             </Card>
           )}
         </Section>
@@ -567,7 +592,7 @@ settings.get('/', async (c) => {
 // ─── POST /settings/notifications (household server) ───────
 settings.post('/notifications', async (c) => {
   const user = c.get('user')
-  if (user.is_admin !== 1) return c.redirect('/settings')
+  if (!(await isSettingsAdmin(c.env, user))) return c.redirect('/settings')
   const body = await c.req.parseBody()
   const server = String(body.ntfy_server || '').trim()
   if (server && !/^https?:\/\//i.test(server)) return c.redirect('/settings?err=bad_server')
@@ -595,8 +620,8 @@ settings.post('/notifications/test', async (c) => {
   // The test says WHICH channel answered. Two topics on one phone means "a test
   // arrived" is no longer enough information to diagnose anything.
   const result = channel === 'tracking'
-    ? await pushNtfyTo(c.env, topic, 'Home test', `${who} · tracking channel`, 'blue')
-    : await pushNtfyTo(c.env, topic, 'Home test', `${who} · money & chat feed`, 'green')
+    ? await pushNtfyTo(c.env, topic, 'Home test', `${who} · tracking channel`, 'blue', 'way')
+    : await pushNtfyTo(c.env, topic, 'Home test', `${who} · money & chat feed`, 'green', 'sompitra')
   // Report what the SERVER answered, not that we tried. "Sent" over a push the
   // server refused is the one answer this button must never give: it is the
   // difference between a wrong topic on the phone and an ntfy server that wants
@@ -659,7 +684,7 @@ settings.post('/channel', async (c) => {
 // ─── POST /settings/channel/:id (admin, anyone) ────────────
 settings.post('/channel/:id', async (c) => {
   const user = c.get('user')
-  if (user.is_admin !== 1) return c.redirect('/settings')
+  if (!(await isSettingsAdmin(c.env, user))) return c.redirect('/settings')
   const body = await c.req.parseBody()
   const channel = channelOf(body)
   const changed = await applyChannelAction(c.env, c.req.param('id'), channel, String(body.action || 'rotate'))
@@ -671,7 +696,7 @@ settings.post('/channel/:id', async (c) => {
 // ─── POST /settings/adopt-way (admin) ─────────────────────
 settings.post('/adopt-way', async (c) => {
   const user = c.get('user')
-  if (user.is_admin !== 1) return c.redirect('/settings')
+  if (!(await isSettingsAdmin(c.env, user))) return c.redirect('/settings')
   const adopted = await adoptWayTopics(c.env)
   await reloadWayNotifications(c.env)
   return c.redirect(`/settings?ok=${encodeURIComponent(adopted === 1 ? 'Adopted 1 tracking topic from W.A.Y' : `Adopted ${adopted} tracking topics from W.A.Y`)}`)
