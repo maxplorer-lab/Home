@@ -58,6 +58,22 @@ function check(name, condition, detail = '') {
   condition ? ok(name) : bad(name, detail || 'assertion failed')
 }
 
+/** Pull one function body out by brace balance, so a check can talk about what
+    a function does instead of pattern-matching a whole file. Shared by the
+    sections that read the served pages and the shared motion engine. */
+function fnBody(src, name) {
+  const at = src.indexOf(`function ${name}(`)
+  if (at === -1) return null
+  const open = src.indexOf('{', at)
+  if (open === -1) return null
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open, i + 1) }
+  }
+  return null
+}
+
 /** The tab-bar markup only — page CONTENT may legitimately contain emoji
     (🌙 theme toggle, 📅 calendar, Sompitra's coloured dots). */
 function tabBarHtml(html) {
@@ -897,21 +913,6 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // value that decides how a track looks is still exactly what it was.
   const way = await body(await req('/way/index.html'))
 
-  // Pull one function body out by brace balance, so a check can talk about
-  // what a function does instead of pattern-matching the whole file.
-  const fnBody = (src, name) => {
-    const at = src.indexOf(`function ${name}(`)
-    if (at === -1) return null
-    const open = src.indexOf('{', at)
-    if (open === -1) return null
-    let depth = 0
-    for (let i = open; i < src.length; i++) {
-      if (src[i] === '{') depth++
-      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open, i + 1) }
-    }
-    return null
-  }
-
   check('the playback loop is in the page that is actually served',
     way.includes('startPlaybackLoop()') && way.includes('PLAYBACK_LAG_SECONDS') && way.includes('function playbackTick('),
     'the served /way/index.html has no playback loop')
@@ -921,35 +922,52 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     !!ping && !/redrawAllTracks|updateMarker\(|panTo\(/.test(ping),
     ping ? 'handleNewPing still redraws or pans' : 'handleNewPing is not in the page')
 
-  const cam = fnBody(way, 'updateFollowCamera')
-  const zone = fnBody(way, 'followZoneRadiusPx')
-  const landing = Number((way.match(/FOLLOW_PULL_LANDING: ([0-9.]+)/) || [])[1])
+  // ── the motion engine is SHARED with the public live share ─────────
+  // The camera and the cursor were moved OUT of this page and into
+  // /shared/playback.js, and the share loads the same file: "the share looks
+  // exactly like the map" is then one implementation rather than two that
+  // agree today. These guards therefore read the module -- where the motion
+  // now lives -- and the pages only for DELEGATION, which is also what keeps a
+  // private copy from growing back.
+  const shared = await body(await req('/shared/playback.js'))
+  check('both maps load the shared motion engine, and neither keeps a copy',
+    way.includes('/shared/playback.js') && shared.includes('HomePlayback') &&
+    way.includes('HomePlayback.cursorPosition(') && way.includes('HomePlayback.createFollowCamera(') &&
+    !way.includes('function pullEase') && !way.includes('function cursorIndex') &&
+    // the camera's own arithmetic must not come back here either
+    !/map\.panBy\(/.test(way) &&
+    // The per-ping pan is the bug this replaced: it must not come back anywhere.
+    !/map\.panTo\(/.test(way),
+    'the served /way page is not delegating its motion to /shared/playback.js, so the map and the share can drift apart again')
+
+  const cam = fnBody(shared, 'createFollowCamera')
+  const zone = fnBody(shared, 'followZoneRadius')
+  const landing = Number((shared.match(/PULL_LANDING: ([0-9.]+)/) || [])[1])
   check('the camera is the only thing that moves the map',
-    !!cam && cam.includes('panBy(') && !!zone && zone.includes('FOLLOW_ZONE_DIAMETER_FRACTION') &&
+    !!cam && cam.includes('panBy(') && !!zone &&
     // A circle, off the SHORTER side, so it can never reach the corners the
     // HUD and the badge strip own.
     zone.includes('Math.min(size.x, size.y)') &&
-    (way.match(/map\.panBy\(/g) || []).length === 1 &&
-    // The per-ping pan is the bug this replaced: it must not come back anywhere.
-    !/map\.panTo\(/.test(way),
-    'the camera should be one panBy() from updateFollowCamera, off a screen-fraction CIRCLE, and panTo() should be gone')
+    (shared.match(/map\.panBy\(/g) || []).length === 1 &&
+    !!fnBody(way, 'updateFollowCamera') && fnBody(way, 'updateFollowCamera').includes('followDriver.update('),
+    'the camera should be one panBy() inside the shared engine, off a screen-fraction CIRCLE, and the page should only call it')
 
   // The camera is a CYCLE, and the cycle has three load-bearing parts: the zone
   // is a circle, the sweep goes to the OPPOSITE edge (the whole point of it --
   // twice the drift per recentre), and it lands a hair INSIDE that edge, since
   // landing exactly on it would re-arm the trigger on the same frame.
   check('the camera roams a circle, shoves through its edge, then sweeps to the far side',
-    !!cam && /followCam\.phase = 'push'/.test(cam) && /followCam\.phase = 'pull'/.test(cam) &&
-    cam.includes('followCam.pushUntil') && cam.includes('at.distanceTo(center) <= radius') &&
+    !!cam && /phase = 'push'/.test(cam) && /phase = 'pull'/.test(cam) &&
+    cam.includes('pushUntil') && cam.includes('at.distanceTo(center) <= radius') &&
     cam.includes('at.subtract(center)') &&
     // the sweep runs from the edge crossed to the aim, one eased step at a time
-    cam.includes('gap.add(aim.subtract(gap).multiplyBy(pullEase(t)))') &&
+    cam.includes('gap.add(aim.subtract(gap).multiplyBy(pullEase(t, FLUID.PULL_SPRING))') &&
     // WHERE it lands, numerically: strictly inside the circle (a landing ON it
     // leaves the device outside on the frame the pull ends, and the trigger
     // then fires forever) and not so far inside that the sweep barely moves.
     landing > 0.6 && landing < 1 &&
     // the old box/edge-pinned shapes must be gone, not merely unused
-    !/halfX|halfY/.test(way) && !way.includes('FOLLOW_GLIDE_DURATION') &&
+    !/halfX|halfY/.test(way + shared) && !way.includes('FOLLOW_GLIDE_DURATION') &&
     !way.includes('FOLLOW_DEAD_ZONE_SCREEN_FRACTION'),
     'the camera should run drift -> push -> sweep to the OPPOSITE edge of a circle, with the old box and its undo-the-overshoot glide gone')
 
@@ -957,21 +975,22 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // snapshot -- must land back INSIDE it, or the pull repeats for ever. The aim
   // is pinned to the circle for exactly that reason, and it is not the exit
   // offset mirrored.
+  const plan = fnBody(shared, 'planPull')
   check('a teleported device lands back inside the circle, not outside it again',
-    !!cam && cam.includes('followCam.aim = followCam.gap.multiplyBy(-(radius * CONFIG.FOLLOW_PULL_LANDING) / out)') &&
-    cam.includes('const jump = out > radius * 2') && cam.includes('followCam.gap.distanceTo(L.point(0, 0))') &&
+    !!plan && plan.includes('gap.multiplyBy(-(radius * FLUID.PULL_LANDING) / out)') &&
+    plan.includes('var jumped = out > radius * 2') && plan.includes('gap.distanceTo(pt(0, 0))') &&
     // and a jump is not allowed to time the sweep as if it were a drift
-    cam.includes('jump ? CONFIG.FOLLOW_PULL_MIN_MS'),
+    plan.includes('FLUID.PULL_MIN_MS'),
     'the sweep should aim at the point opposite the crossing ON the circle (never the mirrored exit offset, which a jump lands outside again), and a jump should not time it')
 
   // The sweep's LENGTH is measured, not configured: a ratio off the drift it
   // just watched, so the sweep looks the same relative to the movement at every
   // device speed. A fixed duration is what this replaced.
   check('the sweep is timed by the drift, not by a fixed number of seconds',
-    !!cam && cam.includes('driftMs / CONFIG.FOLLOW_PULL_RATIO') &&
-    cam.includes('CONFIG.FOLLOW_PULL_MIN_MS') && cam.includes('followCam.driftFrom = nowMs') &&
-    !way.includes('FOLLOW_PULL_DURATION'),
-    'the sweep should derive its duration from the drift it watched (FOLLOW_PULL_RATIO, floored by FOLLOW_PULL_MIN_MS), not a fixed FOLLOW_PULL_DURATION')
+    !!plan && plan.includes('driftMs / FLUID.PULL_RATIO') &&
+    plan.includes('FLUID.PULL_MIN_MS') && !!cam && cam.includes('driftFrom = nowMs') &&
+    !way.includes('FOLLOW_PULL_DURATION') && !shared.includes('PULL_DURATION'),
+    'the sweep should derive its duration from the drift it watched (PULL_RATIO, floored by PULL_MIN_MS), not a fixed duration')
 
   check('the pull moves with the device instead of aiming at a point',
     !!cam && cam.includes('at.subtract(want)') &&
@@ -983,26 +1002,102 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // 1 -> 1 so the device lands ON the centre, and a small overshoot past it on
   // the way, which is the whole difference between a spring and a slide.
   {
-    const pull = fnBody(way, 'pullEase')
-    const spring = Number((way.match(/FOLLOW_PULL_SPRING: ([0-9.]+)/) || [])[1])
-    let ok = false, why = 'pullEase is not in the served page'
+    const pull = fnBody(shared, 'pullEase')
+    const spring = Number((shared.match(/PULL_SPRING: ([0-9.]+)/) || [])[1])
+    let ok = false, why = 'pullEase is not in the shared engine'
     if (pull && spring) {
       try {
-        const f = new Function('CONFIG', 'return function pullEase(t) ' + pull)({ FOLLOW_PULL_SPRING: spring })
+        const f = new Function('return function pullEase(t, spring) ' + pull)()
         let peak = 0, peakAt = 0
-        for (let i = 0; i <= 200; i++) { const v = f(i / 200); if (v > peak) { peak = v; peakAt = i / 200 } }
-        ok = Math.abs(f(0)) < 1e-9 && Math.abs(f(1) - 1) < 1e-9 &&
+        for (let i = 0; i <= 200; i++) { const v = f(i / 200, spring); if (v > peak) { peak = v; peakAt = i / 200 } }
+        ok = Math.abs(f(0, spring)) < 1e-9 && Math.abs(f(1, spring) - 1) < 1e-9 &&
              peakAt > 0.25 && peakAt < 0.9 && peak > 1.02 && peak < 1.12
-        why = `pullEase(0)=${f(0).toFixed(4)} pullEase(1)=${f(1).toFixed(4)} peak=${peak.toFixed(4)} at t=${peakAt}`
+        why = `pullEase(0)=${f(0, spring).toFixed(4)} pullEase(1)=${f(1, spring).toFixed(4)} peak=${peak.toFixed(4)} at t=${peakAt}`
       } catch (e) { why = 'pullEase would not evaluate: ' + e.message }
     }
     check('the pull eases out with a small overshoot (a spring, not a slide)', ok, why)
   }
 
+  // The cursor's own two rules, which are the reason it is shared: it never
+  // passes a point that has not arrived (the exit guard holds pings back and
+  // delivers them later), and it never crawls across a trail break.
+  const cursorFn = fnBody(shared, 'cursorPosition')
+  check('the shared cursor waits for late points and never crawls a break',
+    !!cursorFn && cursorFn.includes('Math.min(clock, newestTs)') &&
+    cursorFn.includes('FLUID.GAP_SECONDS * 1000') && cursorFn.includes('FLUID.GLIDE_MS'),
+    'the cursor would run past a ping that has not arrived, or drag the marker across a hole in the trail')
+
+  // The lag is ONE number, in the module: neither page may carry its own.
+  check('the fluid lag lives in the shared engine, not in a page',
+    /LAG_SECONDS: 25/.test(shared) && way.includes('HomePlayback.FLUID.LAG_SECONDS') &&
+    !/PLAYBACK_LAG_SECONDS: [0-9]/.test(way),
+    'a page has its own copy of the lag, so the map and the share can drift apart again')
+
+  // ── and the engine RUNS here, on synthetic fixes ─────────────────
+  // Grepping a shared file proves it is shared, not that it is right. The
+  // module is pure arithmetic over a list of fixes, so the suite loads it into
+  // a bare `window` and asks it where the marker is at a series of instants:
+  // between two fixes, with no new data arriving, which is exactly what
+  // "fluid" means and what a screenshot cannot prove.
+  {
+    const win = {}
+    let HP = null
+    try { new Function('window', shared)(win); HP = win.HomePlayback } catch (e) { HP = null }
+    const FL = HP && HP.FLUID
+    check('the shared engine loads and exposes the motion, not just the file',
+      !!HP && !!FL && typeof HP.cursorPosition === 'function' && typeof FL.LAG_SECONDS === 'number',
+      'the module the pages load does not define HomePlayback — both maps would move by no rule at all')
+    if (HP) {
+      const iso = (s) => new Date(Date.UTC(2026, 8, 20, 12, 0, s)).toISOString()
+      const at = (s) => Date.UTC(2026, 8, 20, 12, 0, s)
+      const fixes = [
+        { latitude: -18.8,    longitude: 47.5, timestamp: iso(0) },
+        { latitude: -18.7973, longitude: 47.5, timestamp: iso(10) },
+        { latitude: -18.7946, longitude: 47.5, timestamp: iso(20) },
+        { latitude: -18.7919, longitude: 47.5, timestamp: iso(30) },
+      ]
+      const half = HP.cursorPosition(fixes, at(5))
+      const a = HP.cursorPosition(fixes, at(2)).lat
+      const b = HP.cursorPosition(fixes, at(3)).lat
+      const future = HP.cursorPosition(fixes, at(600))
+      check('the cursor is BETWEEN two fixes, and advances with the clock',
+        !!half && Math.abs(half.lat - -18.79865) < 1e-6 &&
+        Math.abs(Math.abs(a - b) - 0.0027 / 10) < 1e-9 && b > a,
+        `halfway=${half && half.lat}, one second moved ${(b - a).toExponential(3)}° — the marker is being snapped to fixes, not drawn between them`)
+      check('the cursor waits at the newest fix instead of running past it',
+        Math.abs(future.lat - fixes[3].latitude) < 1e-9 && future.alpha === 1,
+        `alpha=${future && future.alpha} — the exit guard delivers pings late, so a cursor that runs ahead draws a device somewhere it has never been`)
+      const gapped = [
+        { latitude: -18.8, longitude: 47.5, timestamp: iso(0) },
+        { latitude: -18.7, longitude: 47.5, timestamp: iso(180) },
+      ]
+      const inGap = HP.cursorPosition(gapped, at(90))
+      const arriving = HP.cursorPosition(gapped, at(180 - FL.GLIDE_MS / 2000))
+      check('a break in the trail holds the marker, then glides the last stretch',
+        Math.abs(inGap.lat - -18.8) < 1e-9 && arriving.lat > -18.8 && arriving.lat < -18.7,
+        'the marker is dragged across a hole in the record as if the device had driven through it')
+      const slow = HP.easeFactor(FL.EASE_PER_SECOND, 0.1)
+      const fast = 1 - (1 - HP.easeFactor(FL.EASE_PER_SECOND, 0.05)) * (1 - HP.easeFactor(FL.EASE_PER_SECOND, 0.05))
+      check('the marker ease is frame-rate independent',
+        Math.abs(slow - fast) < 1e-12,
+        `0.1s frame lands at ${slow}, two 0.05s frames at ${fast} — a slow phone would draw a different journey`)
+    }
+  }
+
+  // Where a trail BREAKS is shared too (the trail's threshold and the cursor's
+  // are the same rule), so its number moved into the module with the rest of
+  // the motion -- frozen there, and the page must point at it rather than
+  // restate it.
+  check('the trail break threshold is still 90s, out of the shared engine',
+    /GAP_SECONDS: 90/.test(shared) && way.includes('TRACK_GAP_SECONDS: HomePlayback.FLUID.GAP_SECONDS'),
+    'the gap rule is no longer one 90-second number the cursor and the trail both read')
+
   // Styling is FROZEN by this feature: the same numbers must still decide what
-  // a track looks like, or "visual only" stopped being true.
+  // a track looks like, or "visual only" stopped being true. A line may MOVE
+  // between the page and the shared motion module -- the speed ramp did, so the
+  // household map and the share's dial read one list -- but its values may not
+  // change, and the delegation guard below keeps a second copy from growing back.
   const frozen = [
-    "TRACK_GAP_SECONDS: 90",
     "TRACK_WEIGHT_DRIVING: 3.5",
     "TRACK_OPACITY_DRIVING: 0.9",
     "TRACK_WEIGHT_WALKING: 2.5",
@@ -1016,7 +1111,11 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     "STATIONARY_DOT_RADIUS_PX: 5",
     "STATIONARY_DOT_COLOR: '#2ecc71'"
   ]
-  const changed = frozen.filter((line) => !way.includes(line))
+  // Compared with runs of whitespace collapsed: these are VALUES frozen, not
+  // column alignment, and the shared module writes the ramp on its own terms.
+  const squash = (s) => s.replace(/\s+/g, ' ')
+  const styleHay = squash(way + ' ' + shared)
+  const changed = frozen.filter((line) => !styleHay.includes(squash(line)))
   check('every track style value is untouched (colour, dash, weights, dot)',
     changed.length === 0, `changed or missing: ${changed.join(' | ')}`)
 
@@ -2035,6 +2134,11 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   // ── public by design, and labelled as not-for-indexing ──
   const live = await req('/live') // signed in, but a viewer's request is anonymous
   const liveHtml = await body(live)
+  // The household map's SERVED page and the shared module, for the guards that
+  // pin the share's badge to that map's readout. The earlier blocks' `way` and
+  // `shared` are not in scope here.
+  const wayHtml = await body(await req('/way/index.html'))
+  const sharedSrc = await body(await req('/shared/playback.js'))
   const robots = live.headers.get('x-robots-tag') || ''
   check('/live answers without a session and is marked noindex',
     live.status === 200 && robots.includes('noindex'),
@@ -2364,6 +2468,101 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('the viewer says SINCE WHEN the track it is drawing began',
     /state\.since \? 'since '/.test(liveSrc),
     'the panel says "today" while showing a window that starts at the code — the one word that would misdescribe it')
+
+  // ── the viewer's map MOVES like the household's ──────────────────
+  // Same module, same cursor, same camera. And deliberately FLUID ONLY: the
+  // share has no pace switch, because the person holding it is asking "is she
+  // nearly here" and a dot that jumps every five seconds answers that worse
+  // than a gliding one -- while the NUMBERS stay live (see below).
+  const liveFrame = fnBody(liveSrc, 'frame')
+  check('the share draws the same fluid cursor as the household map',
+    /\/shared\/playback\.js/.test(liveHtml) &&
+    /HomePlayback\.cursorPosition\(/.test(liveSrc) && /HomePlayback\.easeFactor\(/.test(liveSrc) &&
+    /HomePlayback\.createFollowCamera\(/.test(liveSrc) &&
+    // It must READ the lag from the engine, never restate it.
+    /FLUID\.LAG_SECONDS \* 1000/.test(liveSrc),
+    'the share snaps to each poll instead of drawing the fluid cursor — the map and the share have gone their separate ways')
+  // The pace switch is matched case-insensitively AND by its clock: a
+  // `mapPace` local reading localStorage is exactly the feature this view must
+  // not have, and a guard that only knew the settings key would miss it (found
+  // by introducing precisely that variable).
+  check('the share has no pace switch, and no private copy of the motion',
+    !/map[_]?pace|pace[_]?note/i.test(liveSrc) &&
+    // the lag is applied unconditionally, off the engine's one number
+    /Date\.now\(\) - FLUID\.LAG_SECONDS \* 1000/.test(liveSrc) &&
+    // The easing itself must not be re-implemented here.
+    !/Math\.exp\(-/.test(liveSrc) && !/function pullEase|function cursorIndex/.test(liveSrc) &&
+    // and the marker is placed from the CURSOR, not from the newest fix
+    /marker\.setLatLng\(\[cursor\.lat, cursor\.lng\]\)/.test(liveSrc),
+    'the share carries its own version of the motion, or a live/realtime pace — the one thing this view must not have')
+  check('the drawn line ends at the marker, never past it',
+    !!liveFrame && /upto\.push\(\[cursor\.lat, cursor\.lng\]\)/.test(liveSrc) &&
+    /TAIL_MIN_METERS/.test(liveSrc),
+    'the trail runs ahead of its own dot: two stories on one screen, and the dot looks late rather than the line looking long')
+  check('the viewer\'s NUMBERS stay live while the drawing is delayed',
+    /state\.speed/.test(liveSrc) && !!liveFrame && !/foot/.test(liveFrame),
+    'the badge was moved onto the delayed clock, so the speed and the age would describe where the dot is drawn instead of where the device is')
+  check('the viewer\'s map is OpenStreetMap and nothing else',
+    (liveSrc.match(/L\.tileLayer\(/g) || []).length === 1 &&
+    /tile\.openstreetmap\.org/.test(liveSrc) && !/L\.control\.layers|baseMaps/.test(liveSrc),
+    'the share offers layers to switch: an outsider gets the map that always works, not a choice to make')
+  // ── the badge is a speedometer, and the household map's is its twin ──────
+  // WAY's readout is the model: a large tabular figure with the unit under it.
+  // The share's is checked against the SAME shape, so "a real dashboard font"
+  // is a thing a test can see rather than a matter of opinion, and so a later
+  // tidy-up cannot quietly shrink it back into the footer text it came from.
+  const spdSize = liveHtml.match(/\.hud \.spd-num \{[^}]*font-size: (\d+)px/)
+  const waySpdSize = wayHtml.match(/\.spd-num \{ font-size: (\d+)px/)
+  check('the share badge wears a speedometer, not a line of prose',
+    /<div class="spd">/.test(liveHtml) && /id="spd"/.test(liveHtml) &&
+    !!spdSize && Number(spdSize[1]) >= 32 &&
+    /class="spd-unit">km\/h</.test(liveHtml) && /tabular-nums/.test(liveHtml) &&
+    !!waySpdSize && /monospace/.test(liveHtml),
+    'the badge lost its big speed figure (or its unit), so the one number it exists for is plain body text again')
+  check('the speed figure is the LIVE number, coloured by the household ramp',
+    // LIVE: the newest fix out of the payload, never the delayed cursor.
+    /var kmh = \(state\.speed === null \|\| state\.speed < 0\)/.test(liveSrc) &&
+    /spdEl\.textContent = kmh === null \? '--' : String\(kmh\)/.test(liveSrc) &&
+    // and its colour is READ from the shared ramp, not restated here.
+    /typeof HomePlayback\.speedColor === 'function'/.test(liveSrc) &&
+    /rampColor\(kmh\)/.test(liveSrc) &&
+    // The lookup is GUARDED, and the call is not even spelled inline: an
+    // outsider's browser can hold the engine one deploy behind this document,
+    // and a bare call throws right there — leaving the dial grey and every line
+    // beneath it, the address and the window, never written. (Found live: the
+    // preview pane was holding exactly that older engine.)
+    !/HomePlayback\.speedColor\(/.test(liveSrc) &&
+    !/#f1c40f|#2ecc71|#38bdf8|#ef4444/.test(liveHtml),
+    'the dial is coloured by a private copy of the ramp, it shows the drawn position\'s speed instead of the device\'s, or a stale engine can take the badge\'s other lines down with it')
+  // One ramp, two surfaces. A palette that agrees today is exactly what two
+  // copies cannot promise, so neither page may hold the hex values.
+  // Scoped to the RAMP, not to the hex values: WAY uses these same colours as
+  // ordinary UI accents (pills, links, the office zone), so a guard that banned
+  // the hexes from the page would be permanently red and therefore ignored. A
+  // restated ramp is `maxKmh`, which only the shared module may know.
+  check('the speed ramp lives in ONE place, and both maps read it',
+    /SPEED_STOPS = \[/.test(sharedSrc) && /maxKmh: 10/.test(sharedSrc) && /'#f1c40f'/.test(sharedSrc) &&
+    /SPEED_COLOR_STOPS: HomePlayback\.SPEED_STOPS/.test(wayHtml) &&
+    /function speedColor\(kmh\) \{\s*return HomePlayback\.speedColor\(kmh\)/.test(wayHtml) &&
+    !/maxKmh/.test(wayHtml) && !/maxKmh/.test(liveSrc),
+    'the colour ramp is written out in a page again: WAY\'s trail and the share\'s dial can now disagree about what 50 km/h looks like')
+  check('the share\'s camera INHERITS the household cycle instead of overriding it',
+    /createFollowCamera\(\{ L: L, getMap: function \(\) \{ return map; \} \}\)/.test(liveSrc),
+    'the share now passes its own circle or push/pull numbers, so the two maps can move differently while both claim to share one engine')
+  // A local named `window` is not a typo, it is a whole function going dark: the
+  // `var` is hoisted, so every `window.` read inside that function is undefined
+  // and every statement after the first one is skipped. Found exactly that here
+  // — the speed figure appeared while its colour and the badge's whole footer
+  // never did, on every poll, forever.
+  check('no page shadows the global `window`',
+    !/(?:var|let|const)\s+window\b/.test(liveSrc) &&
+    !/(?:var|let|const)\s+window\b/.test(wayHtml),
+    'a local named `window` makes the global undefined inside that function, so every line after it silently stops running')
+  check('the badge footer WRAPS instead of truncating',
+    /\.hud-foot \{[^}]*flex-wrap: wrap/.test(liveHtml) &&
+    !/\.hud-foot \{[^}]*text-overflow: ellipsis/.test(liveHtml) &&
+    /function setFoot\(bits\)/.test(liveSrc) && /bits\[i\]\.text/.test(liveSrc),
+    'the footer is a single ellipsised string again, so on a phone it eats the fact that did not fit')
   check('the console asks the database for what ended',
     /listShares\(c\.env, 'ended'\)/.test(adminSrc) && /listShares\(c\.env, 'active'\)/.test(adminSrc),
     'the card only ever asks for active codes, so a revoked one is invisible rather than accountable')

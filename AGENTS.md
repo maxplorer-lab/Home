@@ -694,6 +694,21 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       5 s poll, and never at all while the device sits where we already resolved
       it. Past 400 m of drift the text is dropped, because a stale address is
       worse than a dash: it looks authoritative.
+    * **The badge wears the household map's speedometer, showing the LIVE
+      speed.** A large tabular figure with `km/h` under it, coloured by the same
+      four-stop ramp the household trail is drawn from — and that ramp lives in
+      `/shared/playback.js` (`HomePlayback.SPEED_STOPS`), because two copies of a
+      palette cannot promise to agree; WAY's `speedColor()` is a one-line
+      delegation to it. The figure is the **newest fix's** number, read straight
+      out of the payload, while the dot on the map is still gliding 25 s behind:
+      the delay lives in where the dot is DRAWN, never in what the badge SAYS.
+      `--` is a real answer (no speed reported yet), not a zero. Do not add a
+      second colour list, and do not move the figure onto the delayed clock.
+    * **The badge's footer WRAPS; it must not truncate.** It carries the state
+      word, the window, the point count and when the code dies — on a phone an
+      ellipsis ate whichever of those did not fit, usually the one being asked
+      about. Its parts are separate `<span>`s (separators are CSS `::before`, so
+      none is left dangling at a wrap point).
     `DO_BUILD` is `notify-v15-share-window`: a stale instance answers **404** on
     `/share-state`, which is how "the share is blank" stays distinguishable from
     "the instance is running old code" — and a *v14* instance would answer 200
@@ -811,6 +826,8 @@ have their own separate repositories and their own history.
 | The HUD's age reads `-1s ago` | the phone's clock runs ~1 s ahead of the viewer's: the age is `Date.now() - ping.timestamp` and must be **clamped at 0** (`now` under a second). Whatever the skew, an age can never be negative |
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
 | A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth is **case-sensitive** on `users.username` (`MaxX`, lowercase `niri` — a lowercase login works for the dashboard, not for a phone), and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h) |
+| The share badge shows the speed but NOT its colour, and the footer/address stay empty or frozen | a local named **`window`** inside that function. `var window = state.since ? …` was hoisted to the top of `render()`, so the global read `undefined` for the whole function and every statement *after* the speed figure was silently skipped — on every poll, forever, with nothing in the console but `Cannot read properties of undefined (reading 'HomePlayback')`. The local is `windowLabel` now, and section 20 fails any page that declares its own `window` |
+| The share's dial is grey while the digits are correct | the viewer's browser is holding `/shared/playback.js` from an older deploy (the preview pane did exactly that). The lookup is guarded, so a missing `speedColor` costs only the COLOUR — never the address and the window lines. A hard reload takes the new engine; the served file itself is checked by smoke (`SPEED_STOPS` + the four stops) |
 | The WAY marker is 25 s behind the device, or the map keeps moving | **not a bug** — the viewer draws on a delayed playback cursor and a follow camera that cycles on purpose. The HUD stays live, and the lag is named by the one blue line under the pace pills in **Settings → Map** (shown on Smooth, removed on Live). If you need the newest ping now, switch the pace to **Live**. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
 | The map drifts while the device is clearly inside the circle, or the device is left sitting at the edge after the camera moves | the follow cycle is DRIFT (map **still** while the device roams `FOLLOW_ZONE_DIAMETER_FRACTION` of the shorter side) → PUSH (map still for `FOLLOW_PUSH_MS` while the device shoves past the edge) → PULL (swept to the **opposite** edge, timed at `FOLLOW_PULL_RATIO` of the drift just watched). A camera that moves during the drift, that lands near the **middle** instead of the far edge, or that takes a fixed time regardless of speed, means `updateFollowCamera` was changed: smoke section 15 asserts all of it, that the sweep drives a live offset (`panBy`, never `panTo`/`setView`), and — by evaluating `pullEase` — that it overshoots its aim slightly on the way |
 | The map keeps pulling, over and over, on a device that is standing still just outside the circle | the sweep must come to rest just INSIDE the circle (`FOLLOW_PULL_LANDING` = 0.93). At exactly the opposite extreme the device is still outside on the frame the pull ends, so the trigger fires again on the next frame and it loops forever — one degree of hysteresis is what ends it |

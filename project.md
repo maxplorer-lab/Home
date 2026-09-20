@@ -336,11 +336,18 @@ smoke section 20 proves it live rather than by grepping.
   `no-store`, `noindex`, no cookie, no session, no socket, and no household
   names: the viewer learns a LABEL.
 * The viewer's lower badge is a **HUD panel** in the household map's shape
-  (dark in both themes, hairline over the status row) with the device's street
-  and number, suburb and first division from Nominatim on its own **10 s** clock
-  — not on the poll's 5 s, and not at all while the device sits where we already
-  resolved it. Past 400 m of drift the text is dropped: a stale address is worse
-  than a dash, because it looks authoritative.
+  (dark in both themes, hairline over the status row): the **speedometer** — the
+  household map's own readout, a large tabular figure with `km/h` beneath it,
+  coloured by the shared four-stop ramp — beside the device's street and number,
+  suburb and first division from Nominatim on its own **10 s** clock — not on the
+  poll's 5 s, and not at all while the device sits where we already resolved it.
+  Past 400 m of drift the text is dropped: a stale address is worse than a dash,
+  because it looks authoritative.
+* **The badge's numbers are live while the drawing is not.** The speed is the
+  newest fix's, straight out of the payload, and the age is the newest fix's age
+  — the 25 s lag lives only in where the dot is drawn. The speed's colour comes
+  from `HomePlayback.SPEED_STOPS` in `/shared/playback.js`, the same list the
+  household trail is coloured from, so the two surfaces cannot drift apart.
 * Refusals are separable and all recorded: `bad_pin` (400), `expired` /`revoked`
   (410), `rate_limited` (429 — ten failures an hour per caller, checked *before*
   the pin is resolved). A resolved pin clears that caller's failures. Every
