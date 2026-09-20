@@ -2014,6 +2014,8 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   try { doShareSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
   let adminSrc = ''
   try { adminSrc = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8') } catch (e) {}
+  let liveSrc = ''
+  try { liveSrc = readFileSync(new URL('../public/live/index.html', import.meta.url), 'utf8') } catch (e) {}
 
   // The `/admin` tree is gated by its own `use('*', requireAuth)`, so a LIVE
   // anonymous request answers 302 → /login whatever the handler does — which is
@@ -2043,6 +2045,12 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('the live page carries no household chrome',
     !/id="home-tabbar"|id="home-nav"|\/logout/.test(liveHtml),
     'the outsider page contains the app chrome: it leaks the household structure and what else exists')
+  // Not just the chrome: the DOCUMENT must not describe the app behind it either.
+  // A path to the console, a module, or the session cookie's name is a map of
+  // the house handed to a guest, and none of it is needed to draw one device.
+  check('the outsider page leaks nothing of the app behind it',
+    !/\/admin|\/way|\/laoka|\/budget|\/kine|\/debts|\/sales|\/chat|home_session/.test(liveHtml),
+    'the live document names one of the app\'s own routes or its session cookie — a viewer needs none of that')
 
   // ── an admin mints one, and the code is shown ONCE ──
   const adminPage = await req('/admin')
@@ -2070,6 +2078,11 @@ log('\n20. The live share: one device, one code, until midnight UTC')
     check('the create response offers the one-tap link with the code in the fragment',
       !!pin && created.includes(`/live#${pin}`),
       'the card does not offer a link, or offers one with the code in the QUERY (which reaches access logs)')
+    // A pin minted at 23:50 UTC lives ten minutes and reads exactly like one
+    // minted at noon until the viewer is already locked out.
+    check('the card says how long a code has left, not only until when',
+      /in \d+ h|in \d+ min/.test(created),
+      'the card prints the absolute instant only, so the cost of minting one at 23:50 UTC is invisible while it still matters')
 
     if (pin) {
       // ── a wrong code, and the receipt it must leave ──
@@ -2223,6 +2236,11 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('a bulk revoke only touches grants the clock has not already ended',
     /UPDATE share_links SET revoked_at = \?1 WHERE revoked_at IS NULL AND expires_at > \?1/.test(shareSrc),
     'Revoke all stamps expired grants as revoked, so the Ended list lies about who ended them')
+  const liveEndedBranch = liveSrc.slice(
+    liveSrc.indexOf("code === 'expired'"), liveSrc.indexOf('function gateOpen'))
+  check('a code that has ended is forgotten, not re-submitted on the next visit',
+    /removeItem\(PIN_KEY\)/.test(liveEndedBranch),
+    'the dead code stays in sessionStorage, so the next visit re-submits it and the page blames the viewer for a typo it did not make')
   check('the console asks the database for what ended',
     /listShares\(c\.env, 'ended'\)/.test(adminSrc) && /listShares\(c\.env, 'active'\)/.test(adminSrc),
     'the card only ever asks for active codes, so a revoked one is invisible rather than accountable')

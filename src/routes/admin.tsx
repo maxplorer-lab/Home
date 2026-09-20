@@ -11,7 +11,7 @@ import {
 import type { Env, User } from '../db/schema'
 import type { HomeUser } from '../identity'
 import { readDiag } from '../lib/diagnostics'
-import { createShare, listShares, revokeShare, revokeAllShares, WAY_SHARE_KIND } from '../lib/share'
+import { createShare, listShares, revokeShare, revokeAllShares, timeUntil, WAY_SHARE_KIND } from '../lib/share'
 
 /** The pin from the create that just happened, so it can be shown ONCE. */
 interface NewSharePin {
@@ -19,6 +19,8 @@ interface NewSharePin {
   label: string
   device: string
   expiresAt: string
+  /** "in 4 h 32 min" — the cost of a 23:50 code, visible while it still matters. */
+  expiresIn: string
 }
 
 const admin = new Hono<{ Bindings: Env; Variables: { user: User } }>()
@@ -207,7 +209,7 @@ async function renderAdmin(
               </div>
               <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
                 Send that link, or just read out the six digits — the page asks for the code either way.
-                Ends {newPin.expiresAt} UTC.
+                Ends {newPin.expiresAt} UTC ({newPin.expiresIn}).
               </p>
               <script dangerouslySetInnerHTML={{ __html: SHARE_COPY_JS }} />
             </div>
@@ -247,7 +249,7 @@ async function renderAdmin(
                   <span class="min-w-0">
                     <span class="block text-sm font-semibold truncate">{s.label} · {s.subject}</span>
                     <span class="block text-[11px] text-gray-400">
-                      ends {s.expires_at.replace('T', ' ').slice(0, 16)} UTC · by {s.created_by}
+                      ends {s.expires_at.replace('T', ' ').slice(0, 16)} UTC ({timeUntil(s.expires_at)}) · by {s.created_by}
                       {s.last_used_at ? ` · opened ${s.last_used_at.replace('T', ' ').slice(0, 16)}` : ' · not opened yet'}
                     </span>
                   </span>
@@ -329,6 +331,7 @@ admin.post('/share', async (c) => {
   return renderAdmin(c, { newPin: {
     pin: created.pin, label: created.share.label, device: created.share.subject,
     expiresAt: created.share.expires_at.replace('T', ' ').slice(0, 16),
+    expiresIn: timeUntil(created.share.expires_at),
   } })
 })
 

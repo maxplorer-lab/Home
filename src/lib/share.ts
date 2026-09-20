@@ -87,6 +87,24 @@ export function nextUtcMidnight(from: Date = new Date()): string {
   return new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + 1)).toISOString()
 }
 
+/**
+ * How long a grant has left, in words: "in 4 h 32 min".
+ *
+ * The absolute instant is already printed beside it, but a pin minted at 23:50
+ * UTC lives ten minutes and reads exactly like one minted at noon — the whole
+ * cost of "valid until midnight" is invisible until the viewer is already
+ * locked out. This is the number that makes it visible before minting.
+ */
+export function timeUntil(iso: string, now = Date.now()): string {
+  const ms = Date.parse(iso) - now
+  if (!Number.isFinite(ms) || ms <= 0) return 'ending now'
+  const mins = Math.round(ms / 60_000)
+  if (mins < 60) return `in ${mins} min`
+  const hours = Math.floor(mins / 60)
+  const rest = mins % 60
+  return rest ? `in ${hours} h ${rest} min` : `in ${hours} h`
+}
+
 /** A uniformly random 6-digit pin. `crypto`, not `Math.random`. */
 export function newPin(): string {
   const max = 10 ** SHARE_PIN_DIGITS

@@ -199,6 +199,11 @@
       var code = (res && res.body && res.body.code) || 'unavailable';
       if (code === 'expired' || code === 'revoked' || code === 'bad_pin') {
         clearInterval(timer); timer = null;
+        // Forget it. A dead code kept in sessionStorage would be re-submitted
+        // by the next visit and sit in the box looking like a typo, when the
+        // page's own sentence says to ask for a new one.
+        sessionStorage.removeItem(PIN_KEY);
+        $('pin').value = '';
         gateOpen(MESSAGES[code] || MESSAGES.unavailable);
         return;
       }
@@ -214,7 +219,6 @@
 
   function ago(ms) {
     var s = Math.max(0, Math.round(ms / 1000));
-    if (s < 10) return 'live · ' + s + 's ago';
     if (s < 60) return 'live · ' + s + 's ago';
     var m = Math.round(s / 60);
     if (m < 60) return 'last seen ' + m + ' min ago';
