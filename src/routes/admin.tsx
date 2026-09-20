@@ -11,6 +11,15 @@ import {
 import type { Env, User } from '../db/schema'
 import type { HomeUser } from '../identity'
 import { readDiag } from '../lib/diagnostics'
+import { createShare, listShares, revokeShare, revokeAllShares, WAY_SHARE_KIND } from '../lib/share'
+
+/** The pin from the create that just happened, so it can be shown ONCE. */
+interface NewSharePin {
+  pin: string
+  label: string
+  device: string
+  expiresAt: string
+}
 
 const admin = new Hono<{ Bindings: Env; Variables: { user: User } }>()
 admin.use('*', requireAuth)
@@ -29,6 +38,7 @@ function errMessage(code: string): string {
     case 'taken': return 'That username is already taken.'
     case 'no_pepper': return 'AUTH_PEPPER is not configured on this Worker.'
     case 'bad_target': return 'User not found.'
+    case 'share_failed': return 'Could not create that live code — check that a W.A.Y device is selected and AUTH_PEPPER is set.'
     default: return 'Something went wrong.'
   }
 }
@@ -37,7 +47,19 @@ function errMessage(code: string): string {
 admin.get('/', async (c) => {
   const gate = await requireCentralAdmin(c)
   if (!gate) return c.redirect('/settings?err=only_admins')
+  return renderAdmin(c, { err: c.req.query('err'), ok: c.req.query('ok') })
+})
 
+/**
+ * The console, rendered from every path into it — including the POST that mints
+ * a live-share pin, which is why this takes an option at all: the pin is shown
+ * in the RESPONSE to the create and never in a redirect URL, because a pin in
+ * an address bar is a pin in a browser history file and in an access log.
+ */
+async function renderAdmin(
+  c: Context<any>,
+  opts: { err?: string; ok?: string; newPin?: NewSharePin } = {}
+) {
   const user = c.get('user')
   const users = await listHomeUsers(c.env.HOME_DB)
 
@@ -51,8 +73,32 @@ admin.get('/', async (c) => {
     return { u, sompitra: !!sompitra, way: !!way, laoka: !!laoka }
   }))
 
-  const err = c.req.query('err')
-  const ok = c.req.query('ok')
+  const err = opts.err
+  const ok = opts.ok
+  const newPin = opts.newPin
+  // The devices a share can point at come from W.A.Y's own table: this is the
+  // one place the console reads module data, and it reads it to OFFER it, not
+  // to change it (project.md, "Databases").
+  interface DeviceRow { device_id: string; display_name: string }
+  let devices: DeviceRow[] = []
+  try {
+    // `c.env` is untyped on this Context<any>, so the generic form of `.all()`
+    // is unavailable — cast the result instead (the rows are used for a
+    // <select> and nothing else).
+    const res = (await c.env.WAY_DB
+      .prepare('SELECT device_id, display_name FROM devices ORDER BY display_name COLLATE NOCASE')
+      .all()) as { results?: DeviceRow[] }
+    devices = res.results ?? []
+  } catch {
+    // A way-db without the devices table still renders the console: the share
+    // half simply says there is nothing to share yet.
+    devices = []
+  }
+  const shares = await listShares(c.env, 'active')
+  // What ENDED, newest first: a revoked code is a fact worth keeping, and
+  // "did I already revoke that one?" is the question this answers.
+  const ended = (await listShares(c.env, 'ended')).slice(0, 5)
+  const shareLink = newPin ? `${new URL(c.req.url).origin}/live#${newPin.pin}` : null
 
   return c.html(
     <Layout title="Admin" user={user}>
@@ -130,6 +176,115 @@ admin.get('/', async (c) => {
           </div>
         </Card>
 
+        {/* ─── Live share — the ONE page an outsider can open ─────── */}
+        <Card title="📍 Live share (W.A.Y)" className="mb-4">
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+            A 6-digit code that lets somebody <b>outside</b> the household follow ONE
+            device on a map — live position and the whole of today's track — with no
+            account and nothing to install. It stops at the next <b>00:00&nbsp;UTC</b> and
+            cannot be extended. Admin-only, and the person being watched is not told:
+            the code records who created it, and every refused attempt appears in
+            Diagnostics.
+          </p>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            <b>Revoke</b> stops one code immediately; <b>Revoke all</b> ends every open
+            code at once — that is the button for "she has arrived". Both are instant:
+            the next thing the viewer's page does is say the link has ended.
+            Generating a new code does NOT revoke the old one.
+          </p>
+
+          {newPin && (
+            <div class="mb-4 rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-3">
+              <p class="text-xs font-semibold text-green-700 dark:text-green-400 mb-2">
+                Code for {newPin.label} — shown ONCE, now. It is stored hashed, so it cannot be
+                displayed again; generate a new one if it is lost.
+              </p>
+              <p class="font-mono text-3xl font-bold tracking-[.3em] text-center text-green-700 dark:text-green-400 mb-2" id="share-pin">{newPin.pin}</p>
+              <div class="flex gap-2">
+                <input id="share-link" readonly value={shareLink ?? ''} spellcheck={false}
+                  class="flex-1 min-w-0 bg-white dark:bg-gray-900 border border-green-200 dark:border-green-800 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none" />
+                <button type="button" id="share-copy" class="px-3 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white text-xs font-semibold whitespace-nowrap">Copy link</button>
+              </div>
+              <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                Send that link, or just read out the six digits — the page asks for the code either way.
+                Ends {newPin.expiresAt} UTC.
+              </p>
+              <script dangerouslySetInnerHTML={{ __html: SHARE_COPY_JS }} />
+            </div>
+          )}
+
+          <form method="post" action="/admin/share" class="space-y-3">
+            <select name="device" required
+              class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500">
+              {devices.length === 0
+                ? <option value="">No W.A.Y devices yet</option>
+                : devices.map((d) => <option value={d.device_id}>{d.display_name} ({d.device_id})</option>)}
+            </select>
+            <input type="text" name="label" maxlength={40} placeholder="What the viewer sees (e.g. MaxX)"
+              class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
+            <button type="submit" disabled={devices.length === 0}
+              class="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl">
+              🔗 Generate a live code
+            </button>
+          </form>
+
+          {shares.length > 0 && (
+            <div class="mt-4 space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">
+                  Active codes ({shares.length})
+                </p>
+                {shares.length > 1 && (
+                  <form method="post" action="/admin/share/revoke-all">
+                    <button type="submit" class="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-[11px] font-semibold whitespace-nowrap">
+                      Revoke all
+                    </button>
+                  </form>
+                )}
+              </div>
+              {shares.map((s) => (
+                <div class="flex items-center justify-between gap-2 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl px-3 py-2">
+                  <span class="min-w-0">
+                    <span class="block text-sm font-semibold truncate">{s.label} · {s.subject}</span>
+                    <span class="block text-[11px] text-gray-400">
+                      ends {s.expires_at.replace('T', ' ').slice(0, 16)} UTC · by {s.created_by}
+                      {s.last_used_at ? ` · opened ${s.last_used_at.replace('T', ' ').slice(0, 16)}` : ' · not opened yet'}
+                    </span>
+                  </span>
+                  <form method="post" action={`/admin/share/${s.id}/revoke`}>
+                    <button type="submit" class="px-3 py-2 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 text-xs font-semibold whitespace-nowrap">Revoke</button>
+                  </form>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {ended.length > 0 && (
+            <div class="mt-4 space-y-1.5">
+              <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">
+                Ended codes
+              </p>
+              {ended.map((s) => (
+                <div class="flex items-baseline justify-between gap-2 bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-700 rounded-xl px-3 py-2">
+                  <span class="min-w-0">
+                    <span class="block text-xs font-semibold text-gray-500 dark:text-gray-400 truncate">
+                      {s.label} · {s.subject}
+                    </span>
+                    <span class="block text-[11px] text-gray-400">
+                      {s.state === 'revoked'
+                        ? `revoked ${(s.revoked_at ?? '').replace('T', ' ').slice(0, 16)} UTC`
+                        : `expired ${s.expires_at.replace('T', ' ').slice(0, 16)} UTC`}
+                      {' · by '}{s.created_by}
+                      {s.last_used_at ? ` · last watched ${s.last_used_at.replace('T', ' ').slice(0, 16)} UTC` : ''}
+                    </span>
+                  </span>
+                  <span class="text-[11px] text-gray-400 whitespace-nowrap">{s.state}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
         <p class="text-[11px] text-gray-400 text-center">
           Deactivating blocks the central login; module accounts are kept for their data.
           Resetting a password does NOT end existing sessions — sign them out by changing the password
@@ -138,6 +293,63 @@ admin.get('/', async (c) => {
       </div>
     </Layout>
   )
+}
+
+/** Copy-to-clipboard for the one-tap link, with a select-and-copy fallback for
+ *  the browsers that refuse `clipboard` outside a secure context (a phone on a
+ *  plain-http LAN is exactly that case, and it is where this gets used). */
+const SHARE_COPY_JS = `
+(function(){
+  var b = document.getElementById('share-copy'), f = document.getElementById('share-link');
+  if (!b || !f) return;
+  b.addEventListener('click', function(){
+    f.select();
+    var done = function(){ b.textContent = 'Copied'; setTimeout(function(){ b.textContent = 'Copy link'; }, 1500); };
+    if (navigator.clipboard) { navigator.clipboard.writeText(f.value).then(done, done); }
+    else { try { document.execCommand('copy'); } catch (e) {} done(); }
+  });
+})();
+`
+
+// ─── POST /admin/share (mint a live code) ───────────────────
+admin.post('/share', async (c) => {
+  const gate = await requireCentralAdmin(c)
+  if (!gate) return c.redirect('/settings?err=only_admins')
+
+  const body = await c.req.parseBody()
+  const device = String(body.device || '').trim()
+  const label = String(body.label || '').trim() || device
+
+  const created = await createShare(c.env, {
+    kind: WAY_SHARE_KIND, subject: device, label, createdBy: gate.username,
+  })
+  if (!created.ok) return c.redirect('/admin?err=share_failed')
+
+  // Rendered, not redirected: the pin is in the response body and never in a URL.
+  return renderAdmin(c, { newPin: {
+    pin: created.pin, label: created.share.label, device: created.share.subject,
+    expiresAt: created.share.expires_at.replace('T', ' ').slice(0, 16),
+  } })
+})
+
+// ─── POST /admin/share/:id/revoke ───────────────────────────
+admin.post('/share/:id/revoke', async (c) => {
+  const gate = await requireCentralAdmin(c)
+  if (!gate) return c.redirect('/settings?err=only_admins')
+  const id = Number(c.req.param('id'))
+  if (Number.isFinite(id)) await revokeShare(c.env, id)
+  return c.redirect('/admin?ok=1')
+})
+
+// ─── POST /admin/share/revoke-all ───────────────────────────
+// "She has arrived — stop sharing." Registered as its own literal path (not a
+// `:id`), so the per-grant route above can never swallow it. Idempotent: with
+// nothing open it does nothing and still lands back on the console.
+admin.post('/share/revoke-all', async (c) => {
+  const gate = await requireCentralAdmin(c)
+  if (!gate) return c.redirect('/settings?err=only_admins')
+  await revokeAllShares(c.env)
+  return c.redirect('/admin?ok=1')
 })
 
 // ─── POST /admin/users (create) ─────────────────────────────

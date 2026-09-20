@@ -28,6 +28,7 @@
 // are unaffected.
 
 import { Hono } from 'hono'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
 
 import type { Env } from './env'
 import { getHomeUserFromCookie, promoteSession, isSecureRequest, HOME_COOKIE } from './identity'
@@ -48,6 +49,10 @@ import settings from './routes/settings'
 
 import { handleWay, handleWayWebSocket, handleWayIngest, flushFleet } from './way/worker'
 import { handleLaoka } from './laoka/worker'
+import {
+  resolveSharePin, readLiveView, pinRateLimited, notePinFailure, noteShareRefusal,
+  touchShare, clearPinFailures, validPinShape,
+} from './lib/share'
 
 // Hono's c.executionCtx type and workers-types' ExecutionContext disagree
 // about `tracing`; only waitUntil is ever used, so cast once here.
@@ -125,6 +130,87 @@ for (const p of ['/chat/', '/chat/index.html']) {
     if (!user) return c.redirect('/login')
     return c.env.ASSETS.fetch(new Request(new URL('/chat/index.html', c.req.url), { headers: c.req.raw.headers }))
   })
+}
+
+// ══ The public live view (/live) ════════════════════════════════
+// The ONE page in this app that an OUTSIDER can open: an admin mints a PIN for
+// one device, it lives until the next 00:00 UTC, and whoever holds it watches
+// that device drive — no account, no app, nothing to install.
+//
+// It is the exception to "everything is behind one login", so it is written as
+// though every request is hostile:
+//   • the document is served with `X-Robots-Tag: noindex` and is linked from
+//     nowhere in the product (it exists to be sent to one person);
+//   • the viewer gets NO cookie and no session — nothing is minted here, so a
+//     viewer can never be mistaken for a household member;
+//   • the only data it can reach is ONE device's live state, chosen by the
+//     grant's subject, never by anything the viewer sends (src/lib/share.ts);
+//   • `no-store` on the state, because a cached location is a location the
+//     household cannot un-share by revoking the pin;
+//   • every refusal is counted: a wrong pin is rate-limited per caller and the
+//     first failure leaves a receipt in the diagnostics ledger, so "somebody is
+//     guessing pins" is something the household can find afterwards rather than
+//     a line in a log nobody is tailing.
+//
+// It is served through the Worker (run_worker_first) for the header and for the
+// same reason the other module documents are: the edge must never hand out a
+// document the Worker has not decided about.
+for (const p of ['/live', '/live/', '/live/index.html']) {
+  app.get(p, async (c) => {
+    const res = await c.env.ASSETS.fetch(
+      new Request(new URL('/live/index.html', c.req.url), { headers: c.req.raw.headers })
+    )
+    const out = new Response(res.body, res) // fresh Response → mutable headers
+    out.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet')
+    out.headers.set('Referrer-Policy', 'no-referrer')
+    return out
+  })
+}
+
+app.get('/live/api/state', async (c) => {
+  const noStore = {
+    'Cache-Control': 'no-store, max-age=0',
+    'X-Robots-Tag': 'noindex, nofollow, noarchive',
+  } as const
+  const ip =
+    c.req.header('CF-Connecting-IP') ||
+    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+    'unknown'
+  const pin = String(c.req.query('pin') || '')
+
+  const fail = (code: string, status: ContentfulStatusCode) => c.json({ ok: false, code }, status, noStore)
+
+  if (await pinRateLimited(c.env, ip)) return fail('rate_limited', 429)
+
+  const resolved = await resolveSharePin(c.env, pin)
+  if (!resolved.ok) {
+    // A pin that matches a real grant but is past its life is not an attack:
+    // it is a relative holding yesterday's link, and it gets its own sentence.
+    if (resolved.code === 'bad_pin') await notePinFailure(c.env, ip, pinFailureReason(pin))
+    else await noteShareRefusal(c.env, resolved.code, null, ip)
+    return resolved.code === 'bad_pin' ? fail('bad_pin', 400) : fail(resolved.code, 410)
+  }
+
+  const share = resolved.share
+  if (share.kind !== 'way-live') return fail('bad_pin', 400)
+
+  const state = await readLiveView(c.env, share)
+  if (!state.ok) return fail('unavailable', 503)
+  await touchShare(c.env, share.id)
+  // Resolving a pin clears this caller's failures: someone who mistypes twice
+  // and then gets it right must not be two steps closer to a lockout tomorrow
+  // (an attacker never resolves anything).
+  await clearPinFailures(c.env, ip)
+  return c.json(state, 200, noStore)
+})
+
+// `notePinFailure` writes a slightly different sentence for a value that never
+// even looked like a pin; this keeps that distinction at the call site, where
+// the raw string is still visible. The shape rule is imported rather than
+// restated, so the receipt cannot describe something the resolver did not
+// actually reject.
+function pinFailureReason(pin: string): 'shape' | 'mismatch' {
+  return validPinShape(pin) ? 'mismatch' : 'shape'
 }
 
 // ══ W.A.Y under /way ═════════════════════════════════════════════

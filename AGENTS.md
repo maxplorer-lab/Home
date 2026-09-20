@@ -61,6 +61,7 @@ npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0002_notific
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0003_laoka_imports.sql
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0004_two_channels.sql
 npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0005_diagnostics.sql
+npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0006_share_links.sql
 npx wrangler d1 execute DB           --local --file=migrations-sompitra/0001_initial_schema.sql   # + 0002…0009
 npx wrangler d1 execute WAY_DB       --local --file=migrations-way/0000_baseline.sql              # + 0001…0007
 npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.sql                # + 0002…0008
@@ -432,7 +433,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
     halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v13-sum-partition`).
+    (`notify-v14-live-share`).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -613,6 +614,82 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     success, raise the counter AND sample its reason) as well as reading the
     contracts a test cannot reach.
 
+31. **A live share is a GRANT, not a page — and it is the ONE door an outsider
+    can open.** `/live` (the document) plus `/live/api/state?pin=…` (the data)
+    let an admin show ONE device to ONE person who has no account: they type a
+    6-digit code and watch that device's map, and nothing else in the app is
+    reachable from there. `migrations-home/0006` creates `share_links` (subject
+    device, label, the pin HASH, who created it, `expires_at`, `revoked_at`,
+    `last_used_at`). Every choice below is a refusal of something easier, and
+    each one has a guard in smoke section 20 — which proves the live flow (mint,
+    wrong code, resolve, revoke) as well as the contracts a test cannot stage:
+    * **The pin is hashed, never looked up.** `createShare` stores it with the
+      same peppered scheme as a password, so `resolveSharePin` VERIFIES it
+      against the recent grants (`created_at` inside 7 days, `LIMIT 25`) rather
+      than selecting a row by it. Nothing may `SELECT * FROM share_links`:
+      `SHARE_COLUMNS` is the console's allowlist, and the hash columns are
+      selected only on the resolve path.
+    * **The viewer mints nothing.** No cookie, no session, no socket into the
+      chat's DO. `/live` is served with `X-Robots-Tag: noindex` and is linked
+      from nowhere in the product, and the state answers `no-store` — a cached
+      location is one that revoking the code cannot take back.
+    * **ONE device, by the grant's subject, from the DO.** `buildShareState`
+      reads a single `device_id` in BOTH its query and its bind, and reads the
+      **FleetDO and not `way-db`**: D1 learns positions only at the nightly
+      flush, so a share reading it would show yesterday's commute. The answer is
+      a bounded slice of today's `pending_sync` (strided above
+      `SHARE_TRACK_MAX`, with `trackTotal` so the page can say it is sampled) —
+      no chat, no other device, no distance totals, no battery, no accuracy.
+    * **Refusals are separable, and recorded.** `expired` and `revoked` are NOT
+      reported as `bad_pin`: the viewer is a close one, so "this link ended at
+      midnight" is actionable while "wrong pin" sends them hunting a typo that
+      is not there. Every refusal lands in the diagnostics ledger as
+      `share-refused` — **on both paths** (a pin matching nothing, and a pin
+      matching a grant that has ended), because a guard that searches the whole
+      file keeps passing while one path quietly stops receipting.
+    * **Guessing is not free.** `pinRateLimited` runs BEFORE the pin is verified
+      (per caller, 10 failures an hour), and a resolved pin CLEARS that caller's
+      failures: a relative who fat-fingers twice and then gets it right must not
+      be two steps closer to a lockout, and an attacker never resolves anything.
+    * **It ends.** The code expires at the next **00:00 UTC**, computed from the
+      clock and not extendable, and an admin can revoke it immediately. Note
+      this is deliberately NOT the app's own day boundary (21:00 UTC, the W.A.Y
+      flush): a person thinks in calendar days, so a pin minted at 23:50 UTC
+      lives ten minutes. The admin card says so.
+    * **Revoking is one button, and the console keeps the receipt.** The card
+      offers Revoke per code, plus **Revoke all** ("she has arrived") once more
+      than one is open. A bulk revoke touches only grants the CLOCK has not
+      already ended (`revoked_at IS NULL AND expires_at > now`) — stamping an
+      expired one would credit an admin with an ending that never happened, and
+      the Ended list would then lie about who ended what. Both revoke routes
+      carry their OWN `requireCentralAdmin` gate: the live half of that guard
+      cannot prove it, because `/admin`'s `use('*', requireAuth)` answers
+      302 → /login whether or not the handler is gated (found by deleting the
+      handler's gate and watching all 354 checks stay green), so the handler
+      bodies are read as source too. What ended STAYS on the card — `Ended
+      codes`, saying whether an admin or the clock ended it, because "who
+      stopped sharing, and when" is the question a revoked code exists to
+      answer — and an ended code leaves the active list (the two lists are one
+      query apart, and a bug there is how a revoked code kept offering a Revoke
+      button).
+    * **`last_used_at` is a HEARTBEAT, not an audit log.** The viewer polls every
+      few seconds, so the stamp is written only when it is older than a minute,
+      decided IN the statement (one round trip, no read-then-write). The console
+      prints it to the minute ("opened 12:40"), which is the resolution anyone
+      reads; an unconditional write would be a D1 write every few seconds per
+      viewer for a number nobody looks at that closely.
+    `DO_BUILD` is `notify-v14-live-share`: a stale instance answers **404** on
+    `/share-state`, which is how "the share is blank" stays distinguishable from
+    "the instance is running old code". `0006` must be applied to **home-db**
+    (local and remote) or the admin card lists nothing — `listShares` returns an
+    empty list rather than 500ing the console, so the failure is quiet by
+    design.
+    What it deliberately does NOT do: tell the person being watched. That is an
+    ADMIN capability, exercised by someone acting for the household (as when
+    creating accounts or resetting a password); the grant records WHO created
+    it, and every refused attempt is receipted, so it is accountable even where
+    it is not announced.
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -694,6 +771,8 @@ have their own separate repositories and their own history.
 | A save or a chat message "did nothing at all" | the network path, not the server: `apiJson` answers a rejected fetch as `{ok:false, status:0}` so the caller's alert runs, and the chat composer clears only after `sendWs` returns true — smoke sections 15 and 12 fail if either goes back to silence. DevTools' Offline switch reproduces it in one step |
 | "Did the tracking rules actually do anything?" after a real-world test | `/admin/diagnostics` (admin-only). It is the ONLY way to tell "the phone was correctly filtered" from "the phone never uploaded" — every gate drops silently by contract (rule 30). Read the sums first: `received = accuracy + glitch + accepted`, `accepted = drawn + collapsed + unwitnessed + paused`. `collapsed` climbing with `drawn` flat is a parked phone working as designed, not a broken pipeline |
 | `/admin/diagnostics` shows no gates at all | the counters are **DURABLE and build-scoped**, so exactly three things empty them: a fresh deployment, a **build-marker bump** (`ensureSchema` clears them when `DO_BUILD` changes), or the **Reset counters** button. A restart or an eviction does NOT — so if a restart seems to have cleared them, the code changed too. An empty list right after a deploy is normal; send one upload and they reappear. If it persists with `"ingest": null`, the FleetDO binding or `/debug-notify` is the problem (rule 30) |
+| The share link says the code has ended, or the viewer's map is blank | first the easy half: `expired`/`revoked` (410) means the grant is spent — midnight UTC passed, or an admin revoked it — while `bad_pin` (400) means the code is simply wrong. A blank map with a 200 is the DO half: `GET /way/api/debug/notify` must report `notify-v14-live-share`, because a stale instance 404s `/share-state` and the page then honestly says it has nothing (rule 31) |
+| `/live` asks for a code and nothing is listed in `/admin` | `migrations-home/0006_share_links.sql` was never applied to THIS database (local or remote). `listShares` swallows the missing table on purpose, so the card is empty rather than broken — the console's own silence is the symptom |
 | A notification vanished last Tuesday and nobody can say why | `diag_events` in **home-db** (`/admin/diagnostics` → Notification ledger). It holds every push that did NOT reach a phone, with ntfy's own words. Rows expire after 90 days (the daily cron's prune), and `ledger.total: 0` means every push has been landing. If the ledger is unreadable, migration `migrations-home/0005_diagnostics.sql` was never applied |
 | A ping with a silly accuracy (say 50 m) still moves the dashboard | the gate is the FIRST thing in `FleetDO.handleIngest` (rule 29) — check `accuracyIsAcceptable` is still called before the speed filters and still reads `PRE_FILTER_MAX_ACCURACY_M` from config. And note the other direction: a client that sends NO accuracy always passes by design (null is accepted), so first check whether the field was sent at all |
 | A track spikes out and back from a geofence while the phone is parked | two separate causes, and the rows tell them apart. **Same-second pair?** judged against `GLITCH_TIME_FLOOR_S`, never skipped (rule 27) — a pre-floor DO accepts it unseen. **First row of the pair exactly on the exit radius?** that is the guard's interpolated edge point, so read the ping that STARTS the exit: a far-out ping after a long silence passed every speed gate (0.5 km/h implied over hours) and the guard then confirmed on wall time. `pingsFlushed` counts only accepted pings, so it is the first honest number to read |
@@ -735,7 +814,10 @@ have their own separate repositories and their own history.
 ### What is actually served
 
 The assets binding is `./public` **only** (`wrangler.jsonc`). W.A.Y's live
-document is `public/way/index.html`; Laoka's is `public/laoka/index.html`.
+document is `public/way/index.html`; Laoka's is `public/laoka/index.html`; the
+chat's is `public/chat/index.html` and the one public page in the app is
+`public/live/index.html` (served through the Worker for its `noindex` header —
+never linked, never session-gated).
 The root `dashboard/` (an older copy of W.A.Y's frontend) and the empty
 `sql/` were deleted for exactly this reason — they were never served, and
 editing them for a "fix that did nothing" was a real false lead. Don't

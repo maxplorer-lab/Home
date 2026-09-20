@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Live view</title>
+<!-- The one page an OUTSIDER opens. It is deliberately outside the app's
+     chrome: no header, no tabs, no manifest, no service worker, no cookie. -->
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --accent: #16a34a; --ink: #0f172a; --muted: #64748b; --card: #ffffff; --line: #e2e8f0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --accent: #22c55e; --ink: #e2e8f0; --muted: #94a3b8; --card: #1e293b; --line: #334155; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #eef2f6; color: var(--ink); overscroll-behavior: none;
+  }
+  #map { position: fixed; inset: 0; }
+  .frame { position: fixed; inset: 0; display: none; }
+  .frame.on { display: block; }
+
+  /* ── the chip: who, and how fresh ─────────────────────────────── */
+  .chip {
+    position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 10px; z-index: 1000;
+    display: flex; align-items: center; gap: 9px; max-width: calc(100vw - 20px);
+    padding: 9px 13px; border-radius: 999px; background: color-mix(in srgb, var(--card) 88%, transparent);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--line); box-shadow: 0 4px 16px rgba(15, 23, 42, .16);
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; position: relative; }
+  .dot.live::after {
+    content: ""; position: absolute; inset: -4px; border-radius: 50%;
+    border: 2px solid var(--accent); animation: ring 2s ease-out infinite;
+  }
+  .dot.stale { background: #f59e0b; }
+  @keyframes ring { 0% { transform: scale(.7); opacity: .9 } 100% { transform: scale(1.9); opacity: 0 } }
+  .chip b { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+  .chip .sub { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+  .pill {
+    position: fixed; bottom: calc(12px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+    z-index: 1000; font-size: 11.5px; color: var(--muted); text-align: center;
+    background: color-mix(in srgb, var(--card) 88%, transparent); padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  #recentre {
+    position: fixed; right: 12px; bottom: calc(46px + env(safe-area-inset-bottom)); z-index: 1000;
+    display: none; align-items: center; gap: 6px; padding: 10px 14px; border: 1px solid var(--line);
+    border-radius: 999px; background: var(--card); color: var(--ink); font-size: 13px; font-weight: 600;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, .18); cursor: pointer;
+  }
+  #recentre.on { display: flex; }
+  .leaflet-control-attribution { font-size: 10px; }
+
+  /* ── the gate: type the pin ───────────────────────────────────── */
+  #gate {
+    position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: linear-gradient(180deg, #f8fafc, #e2e8f0);
+  }
+  @media (prefers-color-scheme: dark) { #gate { background: linear-gradient(180deg, #0f172a, #1e293b); } }
+  #gate.off { display: none; }
+  .card {
+    width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 20px; padding: 24px; box-shadow: 0 12px 40px rgba(15, 23, 42, .18); text-align: center;
+  }
+  .brand { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; }
+  .brand span { font-size: 18px; font-weight: 800; letter-spacing: -.02em; color: var(--accent); }
+  .card h1 { font-size: 17px; margin: 6px 0 2px; }
+  .card p { margin: 0 0 16px; font-size: 13px; color: var(--muted); }
+  #pin {
+    width: 100%; padding: 15px 12px; font-size: 30px; font-weight: 700; letter-spacing: .34em;
+    text-align: center; text-indent: .34em; border-radius: 14px; border: 2px solid var(--line);
+    background: transparent; color: var(--ink); font-variant-numeric: tabular-nums;
+  }
+  #pin:focus { outline: none; border-color: var(--accent); }
+  button.go {
+    width: 100%; margin-top: 12px; padding: 14px; font-size: 15px; font-weight: 700; color: #fff;
+    background: var(--accent); border: 0; border-radius: 14px; cursor: pointer;
+  }
+  button.go:disabled { opacity: .6; cursor: default; }
+  #err { margin-top: 12px; font-size: 13px; color: #dc2626; min-height: 18px; }
+  @media (prefers-color-scheme: dark) { #err { color: #f87171; } }
+</style>
+</head>
+<body>
+
+<!-- The gate. It is the whole page until a pin resolves, and it says nothing
+     about the household — not the names, not how many devices there are. -->
+<div id="gate">
+  <div class="card">
+    <div class="brand"><span>Home</span></div>
+    <h1>Live view</h1>
+    <p id="gate-sub">Enter the 6-digit code you were given.</p>
+    <input id="pin" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"
+           maxlength="6" placeholder="••••••" aria-label="6-digit code">
+    <button class="go" id="go">Watch</button>
+    <div id="err" role="alert"></div>
+  </div>
+</div>
+
+<div class="frame" id="frame">
+  <div id="map"></div>
+  <div class="chip" id="chip">
+    <span class="dot" id="dot"></span>
+    <span><b id="who">—</b><br><span class="sub" id="when">connecting…</span></span>
+  </div>
+  <button id="recentre">◎ Recentre</button>
+  <div class="pill" id="foot"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  'use strict';
+  // The pin lives in this tab's sessionStorage so a reload does not ask a
+  // grandparent to retype it — and dies with the tab, never survives as a
+  // bookmark, and is never written to the URL we keep (see boot()).
+  var PIN_KEY = 'live_pin';
+  var POLL_MS = 5000;
+  var STALE_MS = 120000;   // "live" stops claiming to be live after 2 min
+  var map = null, marker = null, line = null, timer = null, following = true, watchOn = false;
+
+  function $(id) { return document.getElementById(id); }
+  function fail(msg) { $('err').textContent = msg; }
+
+  var MESSAGES = {
+    bad_pin: 'That code is not right. Check the six digits and try again.',
+    expired: 'This link ended at midnight UTC. Ask for a new code.',
+    revoked: 'This link was switched off. Ask for a new code.',
+    rate_limited: 'Too many attempts from this device. Try again in an hour.',
+    unavailable: 'The map cannot be reached right now. Retrying…'
+  };
+
+  function boot() {
+    // A link may carry the pin in the fragment (#123456): the fragment never
+    // reaches a server, so it stays out of access logs and Referer headers.
+    // A ?pin= query works too, and is stripped from the address bar at once.
+    var fromHash = (location.hash || '').replace(/^#/, '').trim();
+    var qs = new URLSearchParams(location.search);
+    var fromQuery = (qs.get('pin') || '').trim();
+    if (fromHash && /^[0-9]{6}$/.test(fromHash)) { $('pin').value = fromHash; }
+    else if (fromQuery && /^[0-9]{6}$/.test(fromQuery)) { $('pin').value = fromQuery; }
+    else {
+      var saved = sessionStorage.getItem(PIN_KEY);
+      if (saved && /^[0-9]{6}$/.test(saved)) { $('pin').value = saved; }
+    }
+    if (location.hash || qs.has('pin')) {
+      history.replaceState(null, '', location.pathname);
+    }
+    if ($('pin').value.length === 6) { submit(); }
+    else { $('pin').focus(); }
+  }
+
+  function submit() {
+    var pin = ($('pin').value || '').replace(/[^0-9]/g, '').slice(0, 6);
+    $('pin').value = pin;
+    if (pin.length !== 6) { fail('The code is six digits.'); return; }
+    $('go').disabled = true;
+    fetchState(pin).then(function (res) {
+      $('go').disabled = false;
+      if (!res || !res.ok) {
+        var code = (res && res.body && res.body.code) || 'unavailable';
+        fail(MESSAGES[code] || MESSAGES.unavailable);
+        if (code === 'rate_limited') return;      // do not keep hammering
+        return;
+      }
+      sessionStorage.setItem(PIN_KEY, pin);
+      show(res.body);
+    });
+  }
+
+  function fetchState(pin) {
+    return fetch('/live/api/state?pin=' + encodeURIComponent(pin), { cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
+      .catch(function () { return { ok: false, status: 0, body: { code: 'unavailable' } }; });
+  }
+
+  function show(state) {
+    $('gate').classList.add('off');
+    $('frame').classList.add('on');
+    $('who').textContent = state.label || 'Device';
+    render(state);
+    if (!timer) timer = setInterval(poll, POLL_MS);
+    // A stale tab that comes back should not sit on a five-minute-old dot.
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
+  }
+
+  function poll() {
+    var pin = sessionStorage.getItem(PIN_KEY);
+    if (!pin) return;
+    fetchState(pin).then(function (res) {
+      if (res && res.ok) { render(res.body); return; }
+      var code = (res && res.body && res.body.code) || 'unavailable';
+      if (code === 'expired' || code === 'revoked' || code === 'bad_pin') {
+        clearInterval(timer); timer = null;
+        gateOpen(MESSAGES[code] || MESSAGES.unavailable);
+        return;
+      }
+      $('when').textContent = 'reconnecting…';
+    });
+  }
+
+  function gateOpen(msg) {
+    $('frame').classList.remove('on');
+    $('gate').classList.remove('off');
+    fail(msg);
+  }
+
+  function ago(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    if (s < 10) return 'live · ' + s + 's ago';
+    if (s < 60) return 'live · ' + s + 's ago';
+    var m = Math.round(s / 60);
+    if (m < 60) return 'last seen ' + m + ' min ago';
+    return 'last seen ' + Math.round(m / 60) + ' h ago';
+  }
+
+  function render(state) {
+    var stale = state.ageMs === null || state.ageMs > STALE_MS;
+    $('dot').className = 'dot' + (stale ? ' stale' : ' live');
+    $('when').textContent = state.updatedAt ? ago(state.ageMs || 0) : 'hasn’t reported yet';
+
+    var bits = [];
+    if (state.place) bits.push('at ' + state.place);
+    else if (state.driving) bits.push('driving' + (state.speed !== null ? ' · ' + state.speed + ' km/h' : ''));
+    else if (state.stationary) bits.push('stopped');
+    if (state.trackTotal) {
+      bits.push('today · ' + state.trackTotal + ' points' +
+        (state.track.length !== state.trackTotal ? ' (showing ' + state.track.length + ')' : ''));
+    }
+    var ends = state.expiresAt ? new Date(state.expiresAt) : null;
+    if (ends) {
+      var hh = String(ends.getUTCHours()).padStart(2, '0');
+      bits.push('code ends ' + hh + ':00 UTC');
+    }
+    $('foot').textContent = bits.join(' · ');
+
+    if (state.lat === null || state.lng === null) return;
+
+    var at = [state.lat, state.lng];
+    if (!map) {
+      map = L.map('map', { zoomControl: true, attributionControl: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      }).addTo(map);
+      map.setView(at, 14);
+      line = L.polyline([], { color: '#16a34a', weight: 4, opacity: .55, lineJoin: 'round' }).addTo(map);
+      marker = L.circleMarker(at, {
+        radius: 9, color: '#ffffff', weight: 3, fillColor: '#16a34a', fillOpacity: 1
+      }).addTo(map);
+      // Following is the default and it stops the moment the viewer takes the
+      // map themselves — nothing is more annoying than a map that keeps
+      // yanking itself back while someone is looking around.
+      map.on('dragstart', function () { following = false; $('recentre').classList.add('on'); });
+      $('recentre').addEventListener('click', function () {
+        following = true; $('recentre').classList.remove('on');
+        if (marker) map.setView(marker.getLatLng(), Math.max(map.getZoom(), 14));
+      });
+    }
+
+    if (state.track && state.track.length) {
+      line.setLatLngs(state.track.map(function (p) { return [p[0], p[1]]; }));
+    }
+    marker.setStyle({ fillColor: stale ? '#f59e0b' : '#16a34a' });
+    marker.setLatLng(at);
+    if (following) map.panTo(at, { animate: true, duration: .6 });
+  }
+
+  $('go').addEventListener('click', submit);
+  $('pin').addEventListener('input', function () {
+    this.value = this.value.replace(/[^0-9]/g, '').slice(0, 6);
+    if (this.value.length === 6) submit();
+  });
+  $('pin').addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+  boot();
+})();
+</script>
+</body>
+</html>

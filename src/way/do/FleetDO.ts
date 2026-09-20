@@ -64,7 +64,20 @@ const NTFY_SERVER_HOME_KEY = "ntfy_server";
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v13-sum-partition";
+const DO_BUILD = "notify-v14-live-share";
+
+/** What the public live-share view is allowed to know about ONE device. Its
+ *  narrowness is the feature: no chat, no other device, no totals. */
+interface ShareState {
+  position: {
+    lat: number; lng: number; at: string | null; speed: number | null;
+    driving: boolean; stationary: boolean; place: string | null;
+  } | null;
+  /** [lat, lng, ISO] — today's track, possibly strided (see trackTotal). */
+  track: Array<[number, number, string]>;
+  trackTotal: number;
+  now: number;
+}
 
 interface LiveDeviceStatus extends PingResult {
   timestamp: string;
@@ -113,6 +126,11 @@ interface IngestBody {
 // position and loses only the speed field (see handleIngest). One constant
 // feeds both halves, so they cannot drift apart.
 const PRE_FILTER_SPEED_LIMIT = WAY_CONFIG.PRE_FILTER_SPEED_LIMIT;
+
+/** Most points a live-share track may carry. A long commute is a few thousand
+ *  raw fixes; the public view is a status, not an archive, so above this the
+ *  track is strided and says so (see buildShareState). */
+const SHARE_TRACK_MAX = 1500;
 
 // Push-notification policy. A per-(source, event type, geofence) cooldown
 // keeps GPS jitter / fence flapping from becoming a notification storm, and
@@ -588,6 +606,17 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(null, { status: 204 });
     }
 
+    // ONE device's live state, for the public live-share view (the Worker's
+    // /live/api/state -- see src/lib/share.ts). Reached with a device id and
+    // nothing else: a grant for one device has no way to ask about another,
+    // because the id in the query IS the grant's subject, never a parameter a
+    // viewer supplies.
+    if (url.pathname === "/share-state" && request.method === "GET") {
+      return new Response(JSON.stringify(this.buildShareState(url.searchParams.get("device") ?? "")), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // Diagnostic probe (reachable only via the Worker's /api/debug/notify):
     // reports this instance's build marker and exactly what it has cached,
     // so we can tell "stale code" from "stale config" without a live tail.
@@ -620,6 +649,13 @@ export class FleetDO extends DurableObject<Env> {
             //       the two sums stay true across a deploy (rule 30).
             // v12 = POST /reset-gates, so a test can start from a clean zero
             //       without changing any code (rule 30).
+            // v13 = the paused branch stops double-counting an unwitnessed ping,
+            //       so `accepted = drawn + collapsed + unwitnessed + paused`
+            //       holds in every combination (rule 30).
+            // v14 = /share-state: ONE device's live position + today's track,
+            //       for the public live-share view (rule 31). A stale instance
+            //       answers 404 here, which is how "the share is blank" and
+            //       "the share is running old code" stay distinguishable.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
@@ -746,6 +782,77 @@ export class FleetDO extends DurableObject<Env> {
     );
 
     return { type: "snapshot", devices, tracks, chat, approaches };
+  }
+
+  /**
+   * ONE device's live position + TODAY's track, for the public live-share view
+   * (reached only through the Worker's /live/api/state). A deliberately narrow
+   * slice of buildSnapshot(), and every narrowing is the point:
+   *
+   *   * ONE device, by id. Never a list, so a grant cannot widen into one;
+   *   * no chat, no other device, no distance totals, no battery, no accuracy;
+   *   * today only, out of pending_sync -- which IS today's unflushed track (the
+   *     nightly flush empties it) and is exactly what the household's own map
+   *     draws. The outsider sees the SAME record, not a second opinion;
+   *   * bounded. Above SHARE_TRACK_MAX the track is strided, and trackTotal
+   *     still reports the real count so the page can be honest about it rather
+   *     than quietly showing a subset;
+   *   * and it starts at a real fix: with no `device_state` row yet there is no
+   *     position at all, which the viewer renders as "hasn't reported yet"
+   *     rather than pinning a marker on a default coordinate.
+   */
+  private buildShareState(deviceId: string): ShareState {
+    if (!deviceId) return { position: null, track: [], trackTotal: 0, now: Date.now() };
+
+    let position: ShareState["position"] = null;
+    try {
+      const row = this.sql
+        .exec<{ state_json: string }>(`SELECT state_json FROM device_state WHERE device_id = ?`, deviceId)
+        .toArray()[0];
+      const last = row ? ((JSON.parse(row.state_json) as Partial<StoredDeviceState>).lastStatus ?? null) : null;
+      if (last) {
+        position = {
+          lat: last.latitude,
+          lng: last.longitude,
+          at: last.timestamp ?? null,
+          // Same fallback the HUD uses: the reported speed when there is one,
+          // else what the positions imply (a parked phone reports none).
+          speed: typeof last.speed === "number" ? Math.round(last.speed) : Math.round(last.speedAvg ?? 0),
+          driving: last.isDriving === true,
+          stationary: last.isStationary === true,
+          place: last.isInside ? last.geofenceName ?? null : null,
+        };
+      }
+    } catch {
+      position = null;
+    }
+
+    let rows: Array<{ latitude: number; longitude: number; timestamp: string }> = [];
+    try {
+      rows = this.sql
+        .exec<{ latitude: number; longitude: number; timestamp: string }>(
+          `SELECT latitude, longitude, timestamp FROM pending_sync WHERE device_id = ? ORDER BY id`,
+          deviceId
+        )
+        .toArray();
+    } catch {
+      rows = [];
+    }
+
+    const stride = Math.max(1, Math.ceil(rows.length / SHARE_TRACK_MAX));
+    const track: Array<[number, number, string]> = [];
+    for (let i = 0; i < rows.length; i += stride) {
+      track.push([rows[i].latitude, rows[i].longitude, rows[i].timestamp]);
+    }
+    // Always end at the newest point: a strided track that stops short of where
+    // the device actually is would draw the live marker off the end of its own
+    // line, which reads as two different stories on one screen.
+    const newest = rows[rows.length - 1];
+    if (newest && (track.length === 0 || track[track.length - 1][2] !== newest.timestamp)) {
+      track.push([newest.latitude, newest.longitude, newest.timestamp]);
+    }
+
+    return { position, track, trackTotal: rows.length, now: Date.now() };
   }
 
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {

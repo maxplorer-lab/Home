@@ -308,13 +308,56 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
 * **Logout** (`/logout`) destroys the central session and every module
   session it can reach server-side, then clears all four cookies.
 
+### The live share (`/live`) — the ONE public door
+
+An admin can show **one device to one person outside the household**: they open
+`/live`, type a 6-digit code, and watch that device drive on a full-bleed OSM
+map with nothing else in it — no account, no app, nothing to install. This is
+the case the app is for ("she is still driving; here is how you watch her"), and
+it is the single exception to "everything is behind one login", so it is built
+as though every request were hostile. `AGENTS.md` rule 31 carries the traps;
+smoke section 20 proves it live rather than by grepping.
+
+* `migrations-home/0006` (`share_links`): subject device, label, the **hashed**
+  pin, who created it, `expires_at`, `revoked_at`, `last_used_at`.
+* `POST /admin/share` mints one and shows the code **once**. It is hashed before
+  it is stored, so a "show it again" button could only lie; the card offers
+  *Regenerate* instead, and the one-tap link puts the code in the **fragment**
+  (`/live#123456`) so it never reaches a request line, an access log or a
+  referrer. Minting a second code does not silently kill the first — revoking is
+  a button, and the list stays visible because the grant is a fact worth keeping.
+* `GET /live/api/state?pin=…` answers one device's newest fix plus today's
+  bounded track, straight from the **FleetDO** — never `way-db`, which knows
+  positions only after the nightly flush. `no-store`, `noindex`, no cookie, no
+  session, no socket, and no household names: the viewer learns a LABEL.
+* Refusals are separable and all recorded: `bad_pin` (400), `expired` /`revoked`
+  (410), `rate_limited` (429 — ten failures an hour per caller, checked *before*
+  the pin is resolved). A resolved pin clears that caller's failures. Every
+  refusal leaves a `share-refused` row in the diagnostics ledger, which is what
+  makes "somebody is guessing codes" findable afterwards.
+* A grant dies at the next **00:00 UTC** and cannot be extended; an admin can
+  revoke it sooner. Deliberately NOT the app's own day boundary (21:00 UTC, the
+  W.A.Y flush): a person thinks in calendar days, and "valid until midnight" is
+  what the admin promises the viewer.
+* Revoking is per code, and **all at once** once more than one is open ("she has
+  arrived"). A bulk revoke only touches grants the clock has not already ended —
+  an expired code is ended by time, and stamping it revoked would credit an admin
+  with an ending that never happened. What ended stays on the card (`Ended codes`,
+  saying whether an admin or the clock ended it); the viewer's page says the link
+  has ended on its very next poll and stops asking.
+* The viewer sees the **newest** fix, not the household's 25 s smooth cursor —
+  someone asking "is she nearly here" wants the live dot, and the cinematic
+  stays ours.
+
 ## Request routing rules
 
 1. `run_worker_first` sends `/ws`, `/laoka-ws`, `/ulogger*` — **plus all three
    module documents (`/way/index.html`, `/laoka/index.html`, `/chat/index.html`)
    and their shell URLs (`/way/`, `/laoka/`, `/chat`, `/chat/`)** — to the
    Worker before static assets. The docs are session-gated; without this the
-   edge would serve them signed-out.
+   edge would serve them signed-out. `/live`, `/live/`, `/live/index.html` and
+   `/live/api/*` ride the same list — they are not session-gated, but they still
+   have to pass through the Worker (rule 6).
 2. Module mounts are registered **before** Sompitra's routes — Sompitra's
    `use('*', requireAuth)` catch-all would otherwise swallow `/way/*` and
    `/laoka/*`.
@@ -326,6 +369,10 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
 5. Laoka's own credential endpoints (`/api/auth/login|signup|logout|password`,
    `/api/invites*`) are **blocked with 403** — Home owns identity; this also
    closes a deactivation bypass.
+6. `/live`, `/live/` and `/live/api/state` go through the Worker: the document
+   for its `noindex` / `no-referrer` headers, the endpoint because a location
+   must never be answered from a cache. It is the ONE public path — not
+   session-gated, and it answers nothing without a live grant.
 
 ## Databases
 
@@ -336,7 +383,8 @@ schemas, untouched data):
   attempts; 0002: the first per-person ntfy channel + household
   `home_settings`; 0003: `laoka_imports`, the Laoka→Sompitra hand-off ledger;
   0004: the SECOND channel, `users.way_topic`; 0005: `diag_events`, the
-  cross-module diagnostics ledger).
+  cross-module diagnostics ledger; 0006: `share_links`, the live-share grants —
+  the one public door, see below).
   It holds identity AND notification identity — a channel belongs to a person,
   not to an app — and there are **two** of them, because the two halves of the
   app are filtered differently (see "Notifications" below). It also holds the
@@ -867,7 +915,13 @@ the follow it had just started.
   page must never say falsely. So a new branch must be counted, and counted
   once. `report-unbelievable` is a correction rather than a drop and is
   deliberately outside both sums (see "The diagnostics ledger" above).
-* One login per person, admin-managed; no self-signup anywhere.
+* One login per person, admin-managed; no self-signup anywhere. The one
+  exception is the live share — and it is a **grant**, not a door left open: it
+  shows exactly one device, chosen by the grant's own subject, mints no session
+  for the viewer, is unreachable by search or by link from the product, is
+  rate-limited and receipted, and ends at midnight UTC whether or not anyone
+  remembers it. Widening what a viewer sees (a second device, the day's totals,
+  reverse-geocoded streets) is a design decision, not a detail to slip in.
 * Colour palettes of each module are untouched — Laoka stays orange, W.A.Y
   **sky** (`#0284c7`, the colour its own tab carries), Sompitra's Tailwind theme
   as it was. The **chrome** is shared; the module internals are never restyled.
@@ -926,7 +980,9 @@ Run both against a live dev server with `npm run verify` before deploying.
 The smoke suite covers exactly the invariants above: one login → four
 cookies, every tab/API 200, module documents gated, bad credentials
 rejected, chrome identical everywhere, `home_session`-only self-repair,
-and the two module-to-module hand-offs (Sompitra↔chat, Laoka→Sompitra).
+the two module-to-module hand-offs (Sompitra↔chat, Laoka→Sompitra), and the
+whole live-share flow (mint a code, refuse a wrong one and receipt it, resolve
+the right one, revoke it) — section 20.
 Where a check would write to the household's own data it reports **skipped**
 rather than passing quietly — a green suite must never mean "wiped the
 family's week to prove it could".

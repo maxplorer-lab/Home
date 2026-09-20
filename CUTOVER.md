@@ -76,12 +76,16 @@ npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0002_notificatio
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0003_laoka_imports.sql
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0004_two_channels.sql
 npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0005_diagnostics.sql
+npx wrangler d1 execute HOME_DB --remote --file=migrations-home/0006_share_links.sql
 ```
-(0001–0004 are applied in production; **0005 is the one that must be applied
-before the release that ships `/admin/diagnostics`** — without it the page
-renders an honest "the ledger is unreadable" instead of the notification
-ledger, and nothing is recorded. A fresh environment needs all five, in this
-order — 0004 rewrites the channel columns 0002 created.)
+(0001–0004 are applied in production, and **0005 was applied on 2026-09-20**
+(the diagnostics ledger — without it `/admin/diagnostics` renders an honest "the
+ledger is unreadable" and nothing is recorded). **0006 is the one still to
+apply**, before the release that ships `/live`: without it the admin card lists
+no shares and a minted code goes nowhere (`listShares` returns an empty list
+rather than 500ing the console, so the console's own silence is the symptom).
+A fresh environment needs all six, in this order — 0004 rewrites the channel
+columns 0002 created.)
 The three module databases are already migrated in production (their schemas
 exist) — only the new one needs this. Do **not** blindly re-run the module
 migrations remotely; several use bare `CREATE TABLE` / `ALTER TABLE` and will
@@ -241,7 +245,7 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v13-sum-partition   (kept honest by `npm run smoke`,
+#   expect build notify-v14-live-share   (kept honest by `npm run smoke`,
 #   which reads THIS line and compares it with the DO's source AND with what
 #   the running DO reports — otherwise "the DO is stale" and "this doc is
 #   stale" look identical from the outside)

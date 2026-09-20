@@ -219,6 +219,29 @@ has scrolled off a phone. It is written unconditionally, like the `arrived` and
 `moving again` and `stopped at …` pushes stay push-only on purpose: they fire on
 every trip segment and would bury the rows that matter.)
 
+## Showing someone the map (the live share)
+
+An admin can hand a relative a **6-digit code** for **one device**: they open
+`/live`, type it, and watch that device drive on a full-bleed map until
+**midnight UTC**. Nothing to install, no account for them — and nothing else
+visible: not the other device, not the chat, not the household's names (the
+viewer sees a label).
+
+Mint, regenerate and revoke from **`/admin`** — one code at a time, or **Revoke
+all** at once once more than one is open ("she has arrived"). The code is shown
+**once** — it is stored only as a hash, so there is no "show it again" that could
+be honest — and the link the card copies carries it in the fragment
+(`/live#123456`) so it stays out of logs. What ended stays listed, saying whether
+an admin or midnight ended it, and the viewer's page says the link has ended on
+its next poll. Ten wrong tries an hour lock a caller out, and every refusal is
+recorded in **`/admin/diagnostics`**, so "somebody is guessing codes" is
+something you can find afterwards.
+
+`migrations-home/0006_share_links.sql` has to be applied (locally and in
+production) or the card lists nothing. The map shows the device's *newest* fix,
+not the household's smoothed cursor — someone asking "is she nearly here" wants
+the live dot.
+
 ## One login, how it works
 
 * An admin creates each person at **`/admin`** (username + password + role), and
@@ -264,10 +287,11 @@ module documents are session-gated, bad credentials are rejected without
 setting a cookie, the tab bar is identical (real icons, no emoji) on every
 tab, each tab keeps its own colour whether or not it is active, both shapes
 carry the same six tabs, a jar holding only `home_session` self-repairs on all
-three modules, and the install assets are genuinely installable (manifest
-fields, icon sizes that match the files, a maskable icon that is not a copy of
-the plain one, a service worker that handles fetches). It exits non-zero on any
-regression.
+three modules, the live share hands out exactly one device (mint → wrong code
+refused and receipted → resolve → revoke), and the install assets are genuinely
+installable (manifest fields, icon sizes that match the files, a maskable icon
+that is not a copy of the plain one, a service worker that handles fetches). It
+exits non-zero on any regression.
 
 Secrets live in `.dev.vars` (never committed): `AUTH_PEPPER` (required,
 ≥16 chars) and `SESSION_SECRET` (signs W.A.Y tokens). First run: open
@@ -306,7 +330,7 @@ live `home-db`, which would create a second, empty identity database:
 
 ```bash
 wrangler d1 create home-db     # paste the id into wrangler.jsonc (HOME_DB)
-for f in migrations-home/000{1,2,3,4,5}*.sql; do
+for f in migrations-home/000{1,2,3,4,5,6}*.sql; do
   wrangler d1 execute HOME_DB --remote --file="$f"
 done
 ```

@@ -43,10 +43,14 @@
   //   /sw.js, /manifest.webmanifest, /favicon.svg, /icons/*  → Home/Sompitra PWA
   //   /way/manifest.json, /way/sw.js, /way/icon-512.png …    → WAY PWA bits
   //   /laoka/*                                               → Laoka SPA files
+  //
+  // Everything in run_worker_first is either a socket, an ingest endpoint or a
+  // DOCUMENT the Worker has to decide about (/live is the public one: it needs
+  // its noindex header and must never be handed out by the edge unlabelled).
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/ws", "/laoka-ws", "/ulogger", "/ulogger/*", "/way/", "/way/index.html", "/laoka/", "/laoka/index.html", "/chat", "/chat/", "/chat/index.html"],
+    "run_worker_first": ["/ws", "/laoka-ws", "/ulogger", "/ulogger/*", "/way/", "/way/index.html", "/laoka/", "/laoka/index.html", "/chat", "/chat/", "/chat/index.html", "/live", "/live/", "/live/index.html", "/live/api/*"],
     "not_found_handling": "none"
   },
 

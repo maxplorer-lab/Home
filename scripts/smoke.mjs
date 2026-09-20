@@ -1999,6 +1999,248 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
     'the surface exists but nothing links to it')
 }
 
+// ─── 20. the live share (the ONE page an outsider can open) ──────
+// This is the only unauthenticated door into the app, so it is checked the way
+// it was built: as though every request is hostile. The refusals that need a
+// changed clock or a tampered row (an EXPIRED pin, a lockout) are guarded in the
+// source below and proved by hand in the run doc — see the note on each.
+log('\n20. The live share: one device, one code, until midnight UTC')
+{
+  let shareSrc = ''
+  try { shareSrc = readFileSync(new URL('../src/lib/share.ts', import.meta.url), 'utf8') } catch (e) {}
+  let idxShareSrc = ''
+  try { idxShareSrc = readFileSync(new URL('../src/index.tsx', import.meta.url), 'utf8') } catch (e) {}
+  let doShareSrc = ''
+  try { doShareSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
+  let adminSrc = ''
+  try { adminSrc = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8') } catch (e) {}
+
+  // The `/admin` tree is gated by its own `use('*', requireAuth)`, so a LIVE
+  // anonymous request answers 302 → /login whatever the handler does — which is
+  // how a handler that had lost its own gate still looked gated (found by
+  // deleting the gate and watching all 354 checks stay green). Both revoke
+  // routes are therefore read as source too, one slice each.
+  const revokeOneBody = adminSrc.slice(
+    adminSrc.indexOf("admin.post('/share/:id/revoke'"),
+    adminSrc.indexOf("admin.post('/share/revoke-all'"))
+  const revokeAllBody = adminSrc.slice(
+    adminSrc.indexOf("admin.post('/share/revoke-all'"),
+    adminSrc.indexOf("admin.post('/users'"))
+  const hasOwnAdminGate = (src) =>
+    /const gate = await requireCentralAdmin\(c\)/.test(src) &&
+    /if \(!gate\) return c\.redirect\('\/settings\?err=only_admins'\)/.test(src)
+
+  // ── public by design, and labelled as not-for-indexing ──
+  const live = await req('/live') // signed in, but a viewer's request is anonymous
+  const liveHtml = await body(live)
+  const robots = live.headers.get('x-robots-tag') || ''
+  check('/live answers without a session and is marked noindex',
+    live.status === 200 && robots.includes('noindex'),
+    `status ${live.status}, x-robots-tag "${robots}" — a public page that search engines may keep is a household's position in an index`)
+  check('the live page mints no cookie, so a viewer can never hold a session',
+    (live.headers.getSetCookie?.() ?? []).length === 0,
+    'the public page set a cookie — a viewer must never be able to look like a household member')
+  check('the live page carries no household chrome',
+    !/id="home-tabbar"|id="home-nav"|\/logout/.test(liveHtml),
+    'the outsider page contains the app chrome: it leaks the household structure and what else exists')
+
+  // ── an admin mints one, and the code is shown ONCE ──
+  const adminPage = await req('/admin')
+  const adminHtml = await body(adminPage)
+  const device = (adminHtml.match(/<option value="([^"]+)">[^<]*\(/g) || [])
+    .map((m) => m.replace(/.*value="|".*/g, ''))[0]
+  if (!device) {
+    log('  \x1b[90m– skipped the mint flow: no W.A.Y device exists in way-db yet\x1b[0m')
+  } else {
+    const create = await req('/admin/share', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form({ device, label: 'Smoke viewer' }),
+    })
+    const created = await body(create)
+    const pin = (created.match(/id="share-pin">(\d{6})</) || [])[1]
+    // The create response lists the active codes newest-first, so the FIRST
+    // revoke form in it is this share. (Taking it from the /admin page fetched
+    // above would revoke whatever was active BEFORE this one — found by this
+    // guard failing while the share stayed alive.)
+    const shareId = (created.match(/\/admin\/share\/(\d+)\/revoke/) || [])[1] ?? '999999'
+    check('an admin can mint a code, and it is shown in the response',
+      create.status === 200 && !!pin && !create.headers.get('location'),
+      `status ${create.status}, pin ${pin ?? 'missing'}, location ${create.headers.get('location') ?? 'none'} — a pin in a redirect URL is a pin in a browser history file and an access log`)
+    check('the create response offers the one-tap link with the code in the fragment',
+      !!pin && created.includes(`/live#${pin}`),
+      'the card does not offer a link, or offers one with the code in the QUERY (which reaches access logs)')
+
+    if (pin) {
+      // ── a wrong code, and the receipt it must leave ──
+      const wrong = await req('/live/api/state?pin=000000')
+      const wrongBody = await wrong.json().catch(() => ({}))
+      check('a wrong code is refused as a wrong code',
+        wrong.status === 400 && wrongBody.code === 'bad_pin',
+        `status ${wrong.status}, code ${wrongBody.code ?? 'none'} — a refusal must be distinguishable from an outage`)
+      // Resolving a pin CLEARS this caller's failures, so the first failure of
+      // every run writes a receipt again — which is what makes this checkable
+      // live rather than by grepping. (Note: the guard reads this run's own
+      // failure, so it must stay after it.)
+      const diagBody = JSON.parse(await body(await req('/admin/diagnostics.json')))
+      const refused = (diagBody.ledger?.counts ?? [])
+        .find((c) => c.kind === 'share-refused' && c.outcome === 'refused')
+      check('a refused code leaves a receipt an admin can find',
+        !!refused && Number(refused.n) > 0,
+        'a wrong pin wrote nothing to the ledger: guessing the only public door would be invisible after the fact')
+
+      // ── and the real thing: the code resolves, and the payload is narrow ──
+      const state = await req(`/live/api/state?pin=${pin}`)
+      const stateBody = await state.json().catch(() => ({}))
+      check('a correct code resolves and the viewer sees the device',
+        state.status === 200 && stateBody.ok === true && !!stateBody.label,
+        `status ${state.status}, body ${JSON.stringify(stateBody).slice(0, 200)}`)
+      check('the state is never cacheable',
+        (state.headers.get('cache-control') || '').includes('no-store'),
+        `cache-control "${state.headers.get('cache-control')}" — a cached location is a location revoking the code cannot take back`)
+      check('the viewer payload carries ONE device and no household data',
+        stateBody.ok === true &&
+        !('chat' in stateBody) && !('devices' in stateBody) && !('users' in stateBody) &&
+        !('subject' in stateBody) && !('device' in stateBody),
+        `keys: ${Object.keys(stateBody).join(', ')} — the outsider learns a LABEL, not the household's device names or anything else`)
+
+      // ── a SECOND code, because "Revoke all" only means something while more
+      //    than one is open (and that is exactly when the card offers it) ──
+      const second = await req('/admin/share', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form({ device, label: 'Smoke viewer 2' }),
+      })
+      const secondHtml = await body(second)
+      const secondPin = (secondHtml.match(/id="share-pin">(\d{6})</) || [])[1]
+      check('two open codes are offered a way to end them together',
+        !!secondPin && /action="\/admin\/share\/revoke-all"/.test(secondHtml),
+        `second pin ${secondPin ?? 'missing'}, revoke-all form ${/action="\/admin\/share\/revoke-all"/.test(secondHtml) ? 'present' : 'missing'} — "she has arrived" must not mean revoking them one by one`)
+
+      // ── revoking is what ends a share early, and only an admin can ──
+      const id = shareId
+      const anon = await fetch(`${BASE}/admin/share/${id}/revoke`, { method: 'POST', redirect: 'manual' })
+      const anonTarget = anon.headers.get('location') || ''
+      check('revoking a code is admin-only',
+        anon.status !== 200 && /\/settings\?err=only_admins|\/login/.test(anonTarget) && hasOwnAdminGate(revokeOneBody),
+        `anonymous revoke answered ${anon.status} → ${anonTarget || '(no redirect)'}, handler gate ${hasOwnAdminGate(revokeOneBody) ? 'present' : 'MISSING'} — an unauthenticated caller must not be able to change who can watch a person, and the handler has to hold its own gate: the /admin middleware would answer the live half identically if it had lost one`)
+
+      const revoke = await req(`/admin/share/${id}/revoke`, { method: 'POST' })
+      const after = await req(`/live/api/state?pin=${pin}`)
+      const afterBody = await after.json().catch(() => ({}))
+      check('a revoked code stops working, and says which',
+        revoke.status === 302 && after.status === 410 && afterBody.code === 'revoked',
+        `revoke ${revoke.status}, state ${after.status} ${afterBody.code ?? ''} — a revoked code that still resolves is a door with no lock`)
+
+      // ── the one action for "she has arrived": every open code, at once ──
+      const anonAll = await fetch(`${BASE}/admin/share/revoke-all`, { method: 'POST', redirect: 'manual' })
+      const anonAllTarget = anonAll.headers.get('location') || ''
+      check('revoking ALL codes is admin-only',
+        anonAll.status !== 200 && /\/settings\?err=only_admins|\/login/.test(anonAllTarget) && hasOwnAdminGate(revokeAllBody),
+        `anonymous revoke-all answered ${anonAll.status} → ${anonAllTarget || '(no redirect)'}, handler gate ${hasOwnAdminGate(revokeAllBody) ? 'present' : 'MISSING'} — one unauthenticated request must not be able to close every share at once`)
+
+      const all = await req('/admin/share/revoke-all', { method: 'POST' })
+      const afterAll = secondPin ? await req(`/live/api/state?pin=${secondPin}`) : null
+      const afterAllBody = afterAll ? await afterAll.json().catch(() => ({})) : {}
+      check('Revoke all ends every open code at once',
+        all.status === 302 && (!secondPin || (afterAll.status === 410 && afterAllBody.code === 'revoked')),
+        `revoke-all ${all.status}, second code ${afterAll?.status ?? 'not minted'} ${afterAllBody.code ?? ''} — a bulk revoke that leaves a code alive is worse than no button`)
+
+      // The console has to KEEP what ended, and say which of the two clocks
+      // ended it; and the ended code must leave the active list, or the card is
+      // describing a state that is no longer true.
+      const cardAfter = await body(await req('/admin'))
+      check('the console keeps what ended, and says how',
+        /Ended codes/.test(cardAfter) && /revoked 20\d\d-\d\d-\d\d/.test(cardAfter),
+        'a revoked code vanishes from the console entirely, so "who stopped sharing, and when" has no answer')
+      check('an ended code leaves the active list',
+        !/\/admin\/share\/\d+\/revoke/.test(cardAfter),
+        'the card still offers a revoked code as revocable — the two lists are not filtered apart')
+    }
+  }
+
+  // ── the source contracts: the refusals a test cannot stage ──
+  check('the code is hashed before it is ever stored',
+    /hashPassword\(env, pin\)[\s\S]{0,600}?INSERT INTO share_links/.test(shareSrc),
+    'the pin reaches the database before it is hashed, so home-db holds live codes in clear')
+  check('the console never reads a pin hash into a page',
+    /const SHARE_COLUMNS/.test(shareSrc) && !/SELECT \* FROM share_links/.test(shareSrc),
+    'a `SELECT * FROM share_links` carries the hash into the rendered console')
+  check('a pin is matched by verifying, not by looking it up',
+    /verifyPassword\(env, pin/.test(shareSrc),
+    'the resolve path compares hashes itself instead of using the tested constant-time compare')
+  check('an expired or revoked code is reported as such, not as a wrong one',
+    /code: 'expired'/.test(shareSrc) && /code: 'revoked'/.test(shareSrc),
+    'both collapse into bad_pin — so a relative holding yesterday\'s link is told to check their typing, and an admin cannot tell a stale link from an attack')
+  check('the code expires at the next 00:00 UTC, and cannot be extended',
+    /Date\.UTC\(from\.getUTCFullYear\(\), from\.getUTCMonth\(\), from\.getUTCDate\(\) \+ 1\)/.test(shareSrc),
+    'the expiry is not computed from the clock, so a share can outlive the day it was minted for')
+  // Scoped to the HANDLER's body on purpose: the import line lists both names,
+  // so a whole-file indexOf compares the import order and passes no matter what
+  // the route does (found by this guard passing while the calls were swapped).
+  const stateHandler = idxShareSrc.slice(idxShareSrc.indexOf("app.get('/live/api/state'"))
+  const rateAt = stateHandler.indexOf('pinRateLimited(c.env, ip)')
+  const resolveAt = stateHandler.indexOf('resolveSharePin(c.env, pin)')
+  check('the rate limiter is consulted BEFORE a pin is resolved',
+    rateAt > -1 && resolveAt > -1 && rateAt < resolveAt,
+    `limiter at ${rateAt}, resolve at ${resolveAt} — the limiter runs after the verify, so guessing is unlimited work for the Worker even when the caller is locked out`)
+  check('a resolved pin clears that caller\'s failures',
+    /clearPinFailures\(c\.env, ip\)/.test(stateHandler),
+    'failures accumulate across a legitimate viewer\'s typos, so two slips a day walk someone into a lockout')
+  // Each refusal PATH in its own body, on purpose: there are two (a pin that
+  // matches nothing, and a pin that matches a grant which has ended), and a
+  // guard that searched the whole file needed only one of them to keep passing
+  // -- found by mutating the stale-grant receipt and watching all 346 stay green.
+  const notePinBody = shareSrc.slice(
+    shareSrc.indexOf('export async function notePinFailure'),
+    shareSrc.indexOf('export async function noteShareRefusal'))
+  const noteStaleBody = shareSrc.slice(
+    shareSrc.indexOf('export async function noteShareRefusal'),
+    shareSrc.indexOf('export async function touchShare'))
+  const receiptSites = [notePinBody, noteStaleBody]
+  check('every refused attempt is receipted',
+    receiptSites.every((src) =>
+      (src.match(/kind: 'share-refused'/g) || []).length === 1 && /recordDiag\(env/.test(src)),
+    'a refusal is only a console.log, so an attack on the only public door is invisible to the household',
+  )
+  // Both the SQL and the BIND are checked: a `WHERE device_id = ?` that is then
+  // bound to a hardcoded id is scoped in appearance only.
+  // Scoped to `buildShareState`'s own body: `loadDeviceState` issues the very
+  // same `SELECT state_json FROM device_state WHERE device_id = ?` (with the
+  // same bind), so a file-wide search stayed green while the PUBLIC read lost
+  // its WHERE -- found by mutating exactly that.
+  const shareReadBody = doShareSrc.slice(
+    doShareSrc.indexOf('private buildShareState'),
+    doShareSrc.indexOf('webSocketMessage(ws: WebSocket'))
+  // The heartbeat, not a write per poll: the comparison has to live IN the
+  // statement, since the viewer polls every few seconds and `last_used_at` is
+  // read to the minute.
+  check('the last-watched stamp is a heartbeat, not a write per poll',
+    /UPDATE share_links SET last_used_at = \?1[\s\S]{0,140}?AND \(last_used_at IS NULL OR last_used_at < \?3\)/.test(shareSrc),
+    'touchShare writes on every poll again — that is a D1 write every few seconds per viewer for a number nobody reads at that resolution')
+  // An expired grant is ended by the CLOCK. Stamping it revoked would rewrite
+  // what happened and credit an admin with an ending they never caused.
+  check('a bulk revoke only touches grants the clock has not already ended',
+    /UPDATE share_links SET revoked_at = \?1 WHERE revoked_at IS NULL AND expires_at > \?1/.test(shareSrc),
+    'Revoke all stamps expired grants as revoked, so the Ended list lies about who ended them')
+  check('the console asks the database for what ended',
+    /listShares\(c\.env, 'ended'\)/.test(adminSrc) && /listShares\(c\.env, 'active'\)/.test(adminSrc),
+    'the card only ever asks for active codes, so a revoked one is invisible rather than accountable')
+  check('the DO hands out ONE device, and only by the grant\'s id',
+    /SELECT state_json FROM device_state WHERE device_id = \?`, deviceId/.test(shareReadBody) &&
+    /FROM pending_sync WHERE device_id = \? ORDER BY id`,\s*deviceId/.test(shareReadBody),
+    'a live-share read is not scoped to one device by BOTH its query and its bind — a grant for one person could be widened into the whole household')
+  // The declaration AND the stride, not just the name: `buildShareState`'s own
+  // docstring explains the bound, so a guard that searches for the identifier
+  // anywhere passes on the prose alone (found by this check staying green while
+  // the constant was renamed out of the code).
+  check('the live track is bounded, and says when it is sampled',
+    /const SHARE_TRACK_MAX = \d+/.test(doShareSrc) &&
+    /Math\.ceil\(rows\.length \/ SHARE_TRACK_MAX\)/.test(doShareSrc) &&
+    /trackTotal/.test(doShareSrc),
+    'the public read is unbounded, so a long drive is a payload nobody asked for')
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {
