@@ -229,8 +229,12 @@ viewer sees a label).
 
 The viewer sees where the device is **now** and where it has been **since the code was created** — never the whole day, so an outsider handed a code at 14:00 cannot see the morning. Their lower badge is the household map's HUD, speedometer included: the **live** speed as a large figure coloured by the same ramp the household trail uses, then the street and number, suburb and first division (Nominatim, refreshed on a 10 s clock of its own). The map moves exactly like the household's — the same fluid cursor and follow camera from one shared engine, with no live/real-time switch — so the numbers are live while the dot glides about 25 s behind.
 
-Mint, regenerate and revoke from **`/admin`** — one code at a time, or **Revoke
-all** at once once more than one is open ("she has arrived"). The code is shown
+Mint from **WAY → Settings → Map**, under the *Map pace* switch: it acts on the
+device you have selected, shows the code **once** with a copy-link button, and
+puts **Stop sharing** right there. The household-wide card — every open code,
+what ended, and **Revoke all** ("she has arrived") — stays in **Home → You →
+Console** (`/admin`). Both doors ask the same authority before minting, so they
+cannot disagree about who may hand out a code. The code is shown
 **once** — it is stored only as a hash, so there is no "show it again" that could
 be honest — and the link the card copies carries it in the fragment
 (`/live#123456`) so it stays out of logs. What ended stays listed, saying whether

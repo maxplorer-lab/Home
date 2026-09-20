@@ -2589,6 +2589,128 @@ log('\n20. The live share: one device, one code, until midnight UTC')
     'the public read is unbounded, so a long drive is a payload nobody asked for')
 }
 
+// ─── 21. the same share, asked from the map's own settings ────────
+// The console at /admin owns the household-wide card. Settings → Map is the
+// same grant asked from the device you are looking at — so there are now TWO
+// doors to one capability, and these guards are about them being ONE answer.
+log('\n21. Settings → Map: the share row')
+{
+  const waySrc21 = await body(await req('/way/index.html'))
+  const apiSrc21 = readFileSync(new URL('../src/way/routes/dashboard-api.ts', import.meta.url), 'utf8')
+  const shareBlock = apiSrc21.slice(apiSrc21.indexOf('// ---- Live share'), apiSrc21.indexOf('// ---- Users (admin)'))
+  const minter = fnBody(apiSrc21, 'shareMinter')
+
+  // ── ONE authority for "who may hand out a code" ──
+  check('the map decides who may mint the same way the console does',
+    !!minter && /env\.HOME_DB/.test(minter) && /HOME_COOKIE/.test(minter) &&
+    /getHomeUserFromCookie\(env\.HOME_DB, cookie\)/.test(minter) &&
+    /homeUser\.role === "admin"/.test(minter) &&
+    // and the W.A.Y role is only a STANDALONE fallback, never the primary
+    minter.indexOf('homeUser.role') < minter.indexOf('wayUser.role'),
+    'the map grew its own idea of who may hand out a code — a second answer to a privacy question, and the weaker one wins')
+
+  check('every map share route is gated, and a refusal cannot mint',
+    (shareBlock.match(/shareMinter\(request, env, user\)/g) || []).length === 3 &&
+    (shareBlock.match(/if \(!miner\) return jsonError\("Admin only", 403\)/g) || []).length === 2,
+    'a share route skipped the admin gate: letting a relative watch a family member is not a member-level action')
+
+  check('the settings list never carries the pin or its hash',
+    /Never the pin or its hash/.test(shareBlock) && !/pin_hash|pin_salt/.test(shareBlock),
+    'the list handed the page the pin, or the material to verify one offline')
+
+  check('stop-sharing only ends grants the clock has not already ended',
+    /listShares\(shareEnv, "active"\)\)\.filter\(\(s\) => s\.subject === device\)/.test(shareBlock),
+    'stop-sharing revokes whatever it finds, so an expired code gets credited to the admin who pressed stop')
+
+  check('a device that does not exist cannot be shared',
+    /getUsers\(env\.WAY_DB\)\)\.some\(\(u\) => u\.username === device\)/.test(shareBlock),
+    'a grant can be minted for a typo, so the relative holding it gets a link that can never answer')
+
+  // ── the UI sits where it was asked for: Settings → Map, under the switch ──
+  const mapSection = waySrc21.slice(waySrc21.indexOf("settingsSection('map'"), waySrc21.indexOf("settingsSection('notif'"))
+  const paceAt = mapSection.indexOf('pace-pill')
+  // Anchored on the RENDERED element (its emoji and its container), never on
+  // the word alone: a code comment in this section says "Live share" too, and
+  // a guard satisfied by prose stayed green when the row itself was deleted
+  // (found by deleting exactly that line).
+  const shareAt = mapSection.indexOf('🔗 Live share')
+  check('the share row lives in Settings → Map, under the pace switch',
+    paceAt > -1 && shareAt > paceAt &&
+    /settings-title[^>]*>🔗 Live share<\/div>/.test(mapSection) &&
+    /id="share-block">/.test(mapSection),
+    'the share controls moved out of the map settings, or above the pace switch they were asked to sit under')
+
+  check('the share row offers nothing to someone who cannot mint',
+    /if \(!shareState\.canShare\) return '<div class="settings-hint">Only an admin can hand out a code\.<\/div>'/.test(waySrc21),
+    'a non-admin is shown a button that can only fail')
+
+  check('a code is never persisted by the page',
+    /let shareState = null/.test(waySrc21) &&
+    !/localStorage\.setItem\([^)]*[Pp]in/.test(waySrc21) &&
+    !/sessionStorage\.setItem\([^)]*[Pp]in/.test(waySrc21),
+    'the page kept a live code somewhere it outlives the tab — a code is a key to a person\'s movements')
+
+  check('stopping a share clears the code from the screen',
+    /shareState\.lastPin = null/.test(waySrc21),
+    'a revoked code stayed on screen as a copyable link')
+
+  // ── live: anonymous, then the admin path that the UI actually walks ──
+  const anonMint = await fetch(`${BASE}/way/api/share`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device: 'MaxX' }),
+  })
+  check('an anonymous request cannot mint a code from the map',
+    anonMint.status === 401,
+    `status ${anonMint.status} — the map's share routes are not behind a session at all`)
+
+  const device21 = (await body(await req('/admin'))).match(/<option value="([^"]+)">[^<]*\(/)?.[1]
+  if (!device21) {
+    log('  \x1b[90m– skipped the live map-share flow: no W.A.Y device exists in way-db yet\x1b[0m')
+  } else {
+    const can = await (await req(`/way/api/share?device=${encodeURIComponent(device21)}`)).json()
+    check('an admin asking the map is told they can share',
+      can.canShare === true && Array.isArray(can.open) && !JSON.stringify(can).includes('pin'),
+      `canShare ${can.canShare}, open ${can.open?.length} — and the listing must never mention a pin`)
+
+    const minted = await (await req('/way/api/share', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: device21, label: 'From the map' }),
+    })).json()
+    const mapPin = minted.pin
+    check('the map can mint a real code',
+      /^\d{6}$/.test(mapPin || '') && minted.device === device21,
+      `pin ${mapPin ?? 'missing'} — a code the map shows must be a code /live answers`)
+
+    const live = await fetch(`${BASE}/live/api/state?pin=${mapPin}`)
+    const liveState = await live.json()
+    check('the code the MAP minted resolves on /live, from its own creation instant',
+      live.status === 200 && !liveState.error && !!liveState.since && liveState.since >= minted.createdAt,
+      `status ${live.status}, since ${liveState.since} vs createdAt ${minted.createdAt} — the window must be the grant, whichever door made it`)
+
+    const listed = await (await req(`/way/api/share?device=${encodeURIComponent(device21)}`)).json()
+    check('the settings list shows the open grant, and never the code',
+      listed.open.length === 1 && listed.open[0].created_by && !JSON.stringify(listed).includes(mapPin),
+      `open ${listed.open.length}, and the list must not repeat the pin it was shown once`)
+
+    const stopped = await (await req('/way/api/share/revoke', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: device21 }),
+    })).json()
+    const afterStop = await fetch(`${BASE}/live/api/state?pin=${mapPin}`)
+    check('stop-sharing from the map really ends the code',
+      stopped.revoked === 1 && afterStop.status === 410,
+      `revoked ${stopped.revoked}, the code then answers ${afterStop.status}`)
+
+    const unknown = await req('/way/api/share', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device: 'NoSuchDevice' }),
+    })
+    check('a grant cannot be minted for a device that does not exist',
+      unknown.status === 400,
+      `status ${unknown.status} — a typo would hand out a link that can never answer`)
+  }
+}
+
 // ─── summary ─────────────────────────────────────────────────────
 log('')
 if (failures.length === 0) {

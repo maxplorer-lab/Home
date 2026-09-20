@@ -26,7 +26,9 @@ import {
   GeofenceInput,
 } from "../db/queries";
 import { buildCsv, buildKml } from "../lib/export";
-import { findHomeUserByName, listNtfyChannels, setWayTopic } from "../../identity";
+import { findHomeUserByName, getHomeUserFromCookie, listNtfyChannels, setWayTopic, HOME_COOKIE } from "../../identity";
+import { WAY_SHARE_KIND, createShare, listShares, revokeShare, timeUntil } from "../../lib/share";
+import type { Env as HomeEnv } from "../../env";
 import {
   NOTIFY_EVENT_TYPES, NotifyEventType, generateNtfyTopic,
   NTFY_URL_SETTING_KEY, DEFAULT_NTFY_URL, normalizeNtfyServer,
@@ -44,6 +46,22 @@ function jsonSuccess(data: unknown): Response {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Who may mint a live-share code, decided the SAME way /admin decides it: the
+ * central account and its role, when the identity database is bound. A
+ * standalone W.A.Y deployment has no HOME_DB and no central account at all, so
+ * there the W.A.Y role stands in — the answer a standalone deployment has
+ * always had. Returns the username to credit, or null to refuse. */
+async function shareMinter(request: Request, env: Env, wayUser: UserRow): Promise<string | null> {
+  if (env.HOME_DB) {
+    const cookie = getCookie(request, HOME_COOKIE);
+    if (!cookie) return null;
+    const homeUser = await getHomeUserFromCookie(env.HOME_DB, cookie);
+    if (!homeUser) return null;
+    return homeUser.role === "admin" ? homeUser.username : null;
+  }
+  return wayUser.role === "admin" ? wayUser.username : null;
 }
 
 /** Resolve the human behind the session cookie to a full, AUTHORITATIVE
@@ -158,6 +176,12 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
   }
   const isAdmin = user.role === "admin";
   const url = new URL(request.url);
+  // lib/share.ts is typed against the CENTRAL Env, because that is where the
+  // grants live. This Worker is handed the outer env at runtime (a superset of
+  // these declarations), and every share route checks `env.HOME_DB` through
+  // shareMinter BEFORE calling in, so this cast cannot paper over a binding
+  // that is genuinely absent.
+  const shareEnv = env as unknown as HomeEnv;
 
   // ---- Devices (= users) ----
   if (pathname === "/api/devices" && request.method === "GET") {
@@ -276,6 +300,72 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
       // Never let an error here turn into a non-JSON 500 page.
       return jsonError(e instanceof Error ? e.message : "Flush failed", 500);
     }
+  }
+
+  // ---- Live share (admin): mint, list, stop — from the MAP's own settings ----
+  //
+  // The console at /admin is the household-wide card (every code, the ended
+  // ones, revoke-all); this is the same grant reached from the device you are
+  // looking at, which is where the question "can I show someone this trip?"
+  // actually comes up. Both doors decide WHO may mint the same way (see
+  // shareMinter), so the answer cannot differ between them.
+  if (pathname === "/api/share" && request.method === "GET") {
+    const device = (url.searchParams.get("device") || "").trim();
+    const miner = await shareMinter(request, env, user);
+    const open = miner
+      ? (await listShares(shareEnv, "active")).filter((s) => s.subject === device)
+      : [];
+    return jsonSuccess({
+      device,
+      // Reported for ANY signed-in person, so a non-admin is told why the
+      // button is not there instead of being shown one that fails.
+      canShare: !!miner,
+      // Never the pin or its hash: a code is shown once, at mint time.
+      open: open.map((s) => ({
+        id: s.id, label: s.label, created_at: s.created_at, created_by: s.created_by,
+        expires_at: s.expires_at, expiresIn: timeUntil(s.expires_at),
+        last_used_at: s.last_used_at,
+      })),
+    });
+  }
+  if (pathname === "/api/share" && request.method === "POST") {
+    const miner = await shareMinter(request, env, user);
+    if (!miner) return jsonError("Admin only", 403);
+    let body: Record<string, unknown> = {};
+    try { body = (await request.json()) as Record<string, unknown>; } catch { /* empty body */ }
+    const device = String(body.device || "").trim();
+    if (!device) return jsonError("A device is required", 400);
+    // The subject must be a device this household actually has: minting a grant
+    // for a typo would hand out a link that can never answer.
+    const known = (await getUsers(env.WAY_DB)).some((u) => u.username === device);
+    if (!known) return jsonError("Unknown device", 400);
+    const created = await createShare(shareEnv, {
+      kind: WAY_SHARE_KIND, subject: device,
+      label: String(body.label || "").trim() || device,
+      createdBy: miner,
+    });
+    if (!created.ok) return jsonError("Could not create that code", 500);
+    // The ONE response that ever carries the pin.
+    return jsonSuccess({
+      pin: created.pin, device, label: created.share.label,
+      createdAt: created.share.created_at, expiresAt: created.share.expires_at,
+      expiresIn: timeUntil(created.share.expires_at),
+    });
+  }
+  if (pathname === "/api/share/revoke" && request.method === "POST") {
+    const miner = await shareMinter(request, env, user);
+    if (!miner) return jsonError("Admin only", 403);
+    let body: Record<string, unknown> = {};
+    try { body = (await request.json()) as Record<string, unknown>; } catch { /* empty body */ }
+    const device = String(body.device || "").trim();
+    if (!device) return jsonError("A device is required", 400);
+    // Only the grants the clock has not already ended: stamping `revoked_at` on
+    // one that midnight already closed would credit this admin with an ending
+    // that never happened, and the console's ended list would then lie about it.
+    const open = (await listShares(shareEnv, "active")).filter((s) => s.subject === device);
+    let revoked = 0;
+    for (const s of open) if (await revokeShare(shareEnv, s.id)) revoked++;
+    return jsonSuccess({ device, revoked });
   }
 
   // ---- Users (admin): list + ntfy topic management ----

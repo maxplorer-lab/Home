@@ -348,6 +348,19 @@ smoke section 20 proves it live rather than by grepping.
   — the 25 s lag lives only in where the dot is drawn. The speed's colour comes
   from `HomePlayback.SPEED_STOPS` in `/shared/playback.js`, the same list the
   household trail is coloured from, so the two surfaces cannot drift apart.
+* The grant is minted from **two doors, one authority**: the console
+  (`/admin`, household-wide: every open code, what ended, revoke-all) and
+  **WAY → Settings → Map**, which acts on the selected device and is where the
+  question actually comes up. Both decide who may mint in ONE place —
+  `shareMinter` in `src/way/routes/dashboard-api.ts`, which reads the CENTRAL
+  account's role when the identity database is bound and falls back to the
+  W.A.Y role only for a standalone deployment. The map's JSON surface is
+  `GET/POST /way/api/share` and `POST /way/api/share/revoke`; the GET answers
+  `canShare` to ANY signed-in person so a non-admin is told why the button is
+  not there, while every write is `403` for them. A code is shown once, is
+  never listed afterwards (the list carries no pin and no hash), and is never
+  written to storage by the page — it lives in memory until Stop sharing clears
+  it.
 * Refusals are separable and all recorded: `bad_pin` (400), `expired` /`revoked`
   (410), `rate_limited` (429 — ten failures an hour per caller, checked *before*
   the pin is resolved). A resolved pin clears that caller's failures. Every

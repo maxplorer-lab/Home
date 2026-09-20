@@ -93,6 +93,10 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 .pace-pill.active { background: #38bdf8; color: #0a0a0c; }
 .pace-pill[data-pace="live"].active { background: #34d399; color: #0a0a0c; }
 .pace-note { font-size: 10px; line-height: 1.45; color: #38bdf8; background: transparent; }
+/* The live-share code, shown ONCE under the pace switch (Settings → Map). It
+   is the one moment the digits exist in readable form — the database holds only
+   a hash — so it gets the size of a readout, not of body text. */
+.share-pin { font-family: 'JetBrains Mono', monospace; font-size: 30px; font-weight: 800; letter-spacing: 0.28em; color: #34d399; line-height: 1.1; }
 
 /* ---- Together / peer pill ---- */
 #peer-pill {
@@ -1234,6 +1238,128 @@ function updatePaceNote() {
     el.style.display = mapPace === 'live' ? 'none' : 'block';
 }
 
+// ── Live share: the ONE public door, reached from the map itself ────────────
+// The console at /admin owns the household-wide card (every open code, what
+// ended, revoke-all). This block is the same grant asked from the device you
+// are looking at, because that is where "can I show someone this trip?"
+// actually comes up. Both doors decide WHO may mint from one place
+// (src/way/routes/dashboard-api.ts, shareMinter), so the answer cannot differ.
+let shareState = null;   // { device, canShare, open: [], lastPin: null }
+let shareBusy = false;
+
+/** The device the block acts on: the SELECTED one, so switching the map
+ *  switches the offer rather than sharing whichever device is first. */
+function shareDevice() {
+    return selectedDevice || (DEVICES.length === 1 ? DEVICES[0] : null);
+}
+
+function renderShareBlock() {
+    const dev = shareDevice();
+    if (!dev) return '<div class="settings-hint">Pick a device on the map first \u2014 a code shares exactly one.</div>';
+    // A stale answer for a DIFFERENT device would offer the wrong person: show
+    // \"checking\" until the reply for this device is in hand.
+    if (!shareState || shareState.device !== dev) return '<div class="settings-hint">Checking\u2026</div>';
+    if (!shareState.canShare) return '<div class="settings-hint">Only an admin can hand out a code.</div>';
+
+    let html = '';
+    if (shareState.lastPin) {
+        // The ONE place the code is ever readable: the database keeps only its
+        // hash, so this box is not a \"show it again\", it is the only time it
+        // is shown. The link carries it in the fragment, so it never reaches a
+        // request line or an access log.
+        const link = location.origin + '/live#' + shareState.lastPin.pin;
+        html += '<div class="settings-card" style="gap:6px;">' +
+            '<div style="font-size:10px;color:#9ca3af;">For whoever is watching <b>' + escapeHtml(dev) + '</b> \u2014 shown once:</div>' +
+            '<div class="share-pin">' + escapeHtml(shareState.lastPin.pin) + '</div>' +
+            '<div style="font-size:10px;color:#6b7280;word-break:break-all;">' + escapeHtml(link) + '</div>' +
+            '<button class="export-btn" onclick="copyShareLink()">Copy link</button>' +
+            '<div id="share-msg" style="font-size:10px;color:#9ca3af;"></div>' +
+        '</div>';
+    }
+    const open = shareState.open || [];
+    if (open.length) {
+        const o = open[0];
+        html += '<div class="settings-row"><span>' + escapeHtml(dev) + ' is shared' +
+            (o.last_used_at ? ' \u00b7 last watched ' + escapeHtml(formatTime(o.last_used_at)) : ' \u00b7 not opened yet') +
+            '</span></div>' +
+            '<div class="settings-hint">Ends ' + escapeHtml(String(o.expires_at).replace('T', ' ').slice(0, 16)) +
+            ' UTC (' + escapeHtml(o.expiresIn) + '), code made by ' + escapeHtml(o.created_by) + '.</div>' +
+            '<button class="export-btn" onclick="stopSharing()">Stop sharing</button>' +
+            (open.length > 1 ? '<div class="settings-hint">' + open.length + ' codes are open for this device; this stops all of them.</div>' : '');
+    } else {
+        html += '<div class="settings-row"><span>' + escapeHtml(dev) + ' \u00b7 not shared</span>' +
+            '<button class="export-btn" id="share-mint" onclick="mintShare()">Generate a code</button></div>' +
+            '<div id="share-msg" style="font-size:10px;color:#9ca3af;"></div>';
+    }
+    return html;
+}
+
+function updateShareBlock() {
+    const el = document.getElementById('share-block');
+    if (el) el.innerHTML = renderShareBlock();
+}
+
+async function loadShareState() {
+    const dev = shareDevice();
+    if (!dev) { shareState = null; updateShareBlock(); return; }
+    const r = await apiJson('GET', '/way/api/share?device=' + encodeURIComponent(dev));
+    // Keep the just-minted code on screen across this refresh for the SAME
+    // device; a refresh must not eat the one moment it is readable.
+    const keepPin = shareState && shareState.device === dev ? shareState.lastPin : null;
+    shareState = r.ok
+        ? Object.assign({ lastPin: keepPin }, r.data)
+        : { device: dev, canShare: false, open: [], lastPin: keepPin };
+    updateShareBlock();
+}
+
+async function mintShare() {
+    if (shareBusy) return;
+    const dev = shareDevice();
+    if (!dev) return;
+    shareBusy = true;
+    setMsg('share-msg', 'Generating\u2026');
+    const r = await apiJson('POST', '/way/api/share', { device: dev, label: dev });
+    shareBusy = false;
+    if (!r.ok) {
+        updateShareBlock();
+        setMsg('share-msg', (r.data && r.data.message) ? r.data.message : 'Could not generate a code.');
+        return;
+    }
+    shareState = { device: dev, canShare: true, open: [], lastPin: {
+        pin: r.data.pin, expiresAt: r.data.expiresAt, expiresIn: r.data.expiresIn,
+    } };
+    updateShareBlock();
+    loadShareState();   // picks up the open grant that was just created
+}
+
+async function stopSharing() {
+    if (shareBusy) return;
+    const dev = shareDevice();
+    if (!dev) return;
+    shareBusy = true;
+    setMsg('share-msg', 'Stopping\u2026');
+    const r = await apiJson('POST', '/way/api/share/revoke', { device: dev });
+    shareBusy = false;
+    if (shareState) shareState.lastPin = null;   // a stopped code is not a copyable link
+    await loadShareState();
+    setMsg('share-msg', r.ok ? 'Stopped.' : 'Could not stop that code.');
+}
+
+function copyShareLink() {
+    if (!shareState || !shareState.lastPin) return;
+    const link = location.origin + '/live#' + shareState.lastPin.pin;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(
+            function () { setMsg('share-msg', 'Link copied.'); },
+            // Clipboard refused (not a secure context, permission denied): the
+            // link is on screen above, which is the honest fallback.
+            function () { setMsg('share-msg', 'Copy the link shown above.'); }
+        );
+    } else {
+        setMsg('share-msg', 'Copy the link shown above.');
+    }
+}
+
 // ── The map pace (VISUAL ONLY) ───────────────────────────────────
 // Smooth is the default and the reason the motion reads as motion: 25s of
 // buffer means a ping is always already in hand, so the marker is interpolated
@@ -1875,6 +2001,11 @@ function renderSettingsMenu() {
         // (updatePaceNote owns it, so a redraw cannot leave it stale).
         '<div class="pace-note" id="pace-note" style="display:none;">Map trails are drawn ~' + CONFIG.PLAYBACK_LAG_SECONDS + 's behind live.</div>' +
         '<div class="settings-hint">Smooth trails live by ' + CONFIG.PLAYBACK_LAG_SECONDS + 's so a long trip glides. Live draws the newest ping now \u2014 for finding someone, not for watching a commute. Per device, not per account.</div>' +
+        // ---- Live share: the same grant the console owns, asked from the
+        // device you are looking at. Only an admin sees the controls.
+        '<div class="settings-title" style="margin-top:6px;">🔗 Live share</div>' +
+        '<div id="share-block"><div class="settings-hint">Checking\u2026</div></div>' +
+        '<div class="settings-hint">Hand ONE relative a 6-digit code for the SELECTED device: they watch it at <b>/live</b> until midnight UTC, then it dies. A code is shown <b>once</b> \u2014 only its hash is stored. The household-wide card (every code, what ended, stop-all) stays in <b>Home → You → Console</b>.</div>' +
         '<div class="settings-row"><span>Follow zoom (8-19)</span><input id="set-follow-zoom" type="number" min="8" max="19" value="' + userPrefs.followZoom + '" style="width:60px;"></div>' +
         '<div class="settings-row"><span>Home view</span><select id="set-home-fence" class="date-input">' + fenceOptions + '</select></div>' +
         '<button class="export-btn" onclick="savePrefs()">Save map settings</button>'
@@ -1968,6 +2099,8 @@ function renderSettingsMenu() {
 
     list.innerHTML = parts.join('');
     updatePaceNote();   // the note is re-created with the section, so repaint it
+    updateShareBlock(); // and the share block, which re-renders from its cache
+    if (openSettingsSection === 'map') loadShareState();
     if (isAdmin && openSettingsSection === 'invites') loadInviteCodes();
     if (isAdmin && openSettingsSection === 'users' && !adminUsers) loadAdminUsers();
     if (openSettingsSection === 'notif' && !notifConfig) loadNotifConfig();

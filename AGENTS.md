@@ -694,6 +694,19 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       5 s poll, and never at all while the device sits where we already resolved
       it. Past 400 m of drift the text is dropped, because a stale address is
       worse than a dash: it looks authoritative.
+    * **Minting has TWO doors and ONE authority.** The console (`/admin`) is
+      the household-wide card; **WAY → Settings → Map**, under the pace switch,
+      is the same grant asked from the device you are looking at (routes
+      `GET/POST /way/api/share`, `POST /way/api/share/revoke`). Do not add a
+      third place that decides who may share: `shareMinter` in
+      `src/way/routes/dashboard-api.ts` is that decision, and it reads the
+      CENTRAL account's role whenever `HOME_DB` is bound (falling back to the
+      W.A.Y role only for a standalone deployment). The GET answers
+      `canShare` to any signed-in person so a non-admin is told WHY the button
+      is missing; every write is `403` for them. A granted code is shown once,
+      is never listed afterwards (no pin, no hash), is never written to
+      `localStorage`/`sessionStorage`, and Stop sharing clears it from memory so
+      a revoked code cannot linger as a copyable link.
     * **The badge wears the household map's speedometer, showing the LIVE
       speed.** A large tabular figure with `km/h` under it, coloured by the same
       four-stop ramp the household trail is drawn from — and that ramp lives in
@@ -827,6 +840,8 @@ have their own separate repositories and their own history.
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
 | A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth is **case-sensitive** on `users.username` (`MaxX`, lowercase `niri` — a lowercase login works for the dashboard, not for a phone), and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h) |
 | The share badge shows the speed but NOT its colour, and the footer/address stay empty or frozen | a local named **`window`** inside that function. `var window = state.since ? …` was hoisted to the top of `render()`, so the global read `undefined` for the whole function and every statement *after* the speed figure was silently skipped — on every poll, forever, with nothing in the console but `Cannot read properties of undefined (reading 'HomePlayback')`. The local is `windowLabel` now, and section 20 fails any page that declares its own `window` |
+| The share button is missing from WAY → Settings → Map | first check WHO you are signed in as: the row is admin-only, and a non-admin sees the sentence "Only an admin can hand out a code" in its place. If you are an admin and it still says **Checking…**, the device list has not loaded — the row acts on the SELECTED device and refuses to show a stale answer for a different one. A `403` from `POST /way/api/share` while `/admin` mints fine means `shareMinter` is failing to read the central session: `HOME_DB` must be bound and `home_session` must be present (the console uses the same cookie) |
+| A code minted from the map is not listed in the console | both doors write the same `share_links` rows, so an empty console means the row is not there at all: check `wrangler d1 execute HOME_DB --local` for `SELECT id, subject, revoked_at, expires_at FROM share_links`. Note the console lists ACTIVE codes for every device while the map shows only the SELECTED device's |
 | The share's dial is grey while the digits are correct | the viewer's browser is holding `/shared/playback.js` from an older deploy (the preview pane did exactly that). The lookup is guarded, so a missing `speedColor` costs only the COLOUR — never the address and the window lines. A hard reload takes the new engine; the served file itself is checked by smoke (`SPEED_STOPS` + the four stops) |
 | The WAY marker is 25 s behind the device, or the map keeps moving | **not a bug** — the viewer draws on a delayed playback cursor and a follow camera that cycles on purpose. The HUD stays live, and the lag is named by the one blue line under the pace pills in **Settings → Map** (shown on Smooth, removed on Live). If you need the newest ping now, switch the pace to **Live**. See `project.md` → "The W.A.Y map is drawn on a playback clock" |
 | The map drifts while the device is clearly inside the circle, or the device is left sitting at the edge after the camera moves | the follow cycle is DRIFT (map **still** while the device roams `FOLLOW_ZONE_DIAMETER_FRACTION` of the shorter side) → PUSH (map still for `FOLLOW_PUSH_MS` while the device shoves past the edge) → PULL (swept to the **opposite** edge, timed at `FOLLOW_PULL_RATIO` of the drift just watched). A camera that moves during the drift, that lands near the **middle** instead of the far edge, or that takes a fixed time regardless of speed, means `updateFollowCamera` was changed: smoke section 15 asserts all of it, that the sweep drives a live offset (`panBy`, never `panTo`/`setView`), and — by evaluating `pullEase` — that it overshoots its aim slightly on the way |
