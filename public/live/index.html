@@ -355,8 +355,9 @@
     if (state.trackTotal) {
       // The window is the GRANT, not the day: say which, and when it started.
       var window = state.since ? 'since ' + clock(state.since) : 'today';
-      bits.push(window + ' · ' + state.trackTotal + ' points' +
-        (state.track.length !== state.trackTotal ? ' (showing ' + state.track.length + ')' : ''));
+      var n = state.trackTotal;
+      bits.push(window + ' · ' + n + (n === 1 ? ' point' : ' points') +
+        (state.track.length !== n ? ' (showing ' + state.track.length + ')' : ''));
     }
     maybeResolveAddress(state);
     renderAddress();
