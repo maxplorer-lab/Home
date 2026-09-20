@@ -227,6 +227,8 @@ An admin can hand a relative a **6-digit code** for **one device**: they open
 visible: not the other device, not the chat, not the household's names (the
 viewer sees a label).
 
+The viewer sees where the device is **now** and where it has been **since the code was created** — never the whole day, so an outsider handed a code at 14:00 cannot see the morning. Their lower badge is a HUD panel in the household map's shape: the street and number, suburb and first division (Nominatim, refreshed on a 10 s clock of its own).
+
 Mint, regenerate and revoke from **`/admin`** — one code at a time, or **Revoke
 all** at once once more than one is open ("she has arrived"). The code is shown
 **once** — it is stored only as a hash, so there is no "show it again" that could

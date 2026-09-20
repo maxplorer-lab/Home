@@ -2169,6 +2169,107 @@ log('\n20. The live share: one device, one code, until midnight UTC')
       check('an ended code leaves the active list',
         !/\/admin\/share\/\d+\/revoke/.test(cardAfter),
         'the card still offers a revoked code as revocable — the two lists are not filtered apart')
+
+      // ── the WINDOW: the track starts when the code did, not at midnight ──
+      // Proven with real uploads through the µlogger path, which takes three of
+      // them, because pending_sync only ever holds DRAWN points and the motion
+      // engine will not confirm a departure from ONE: it holds the first ping
+      // outside the anchor until MOVEMENT_CONFIRM_SECONDS (15 s) of sustained
+      // movement has passed, and only the ping that CONFIRMS it is persisted.
+      // (A first attempt at this used a single 3-hour-old ping and skipped
+      // itself whenever the device had pinged more recently than that.)
+      //   anchor : the device's OWN current fix, read from the payload above — a
+      //            zero-metre move, so it can never be a "glitch" whatever
+      //            instant the previous ping carried. It pins the position and
+      //            the clock the next two are judged against.
+      //   start  : ~280 m away, 16 s later — the ping that STARTS the departure
+      //            (280 m in 16 s = 63 km/h, under the 120 gate). Not persisted.
+      //   before : another ~280 m, 32 s after the anchor — the CONFIRMED
+      //            departure, the point that lands in pending_sync, and
+      //            therefore the one the window must exclude.
+      //   after  : inside the grant, so the share is not simply empty.
+      // The 32 s of GPS time between the anchor and `before` are bought with
+      // TIMESTAMPS, not by sleeping: the three uploads leave together and the
+      // clock they carry is what the engine reads.
+      // The proof is then a PAIR of codes minted either side of `before`: the
+      // first must still show that point and the second must not, which is the
+      // difference between "the window works" and "the window happens to be
+      // empty".
+      const upload = (fields) => req('/ulogger/client/index.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form(fields),
+      })
+      // The device login is case-sensitive (the dashboard's is not).
+      await upload({ action: 'auth', user: device, pass: PASS })
+      const mintShare = async (label) => {
+        const at = Date.now()
+        const res = await req('/admin/share', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: form({ device, label }),
+        })
+        const p = ((await body(res)).match(/id="share-pin">(\d{6})</) || [])[1]
+        return { pin: p, at }
+      }
+      const shareState = async (pin) =>
+        pin ? await (await req(`/live/api/state?pin=${pin}`)).json().catch(() => ({})) : {}
+      const send = (lat, lon, timeSec, speed) => upload({
+        action: 'addpos', trackid: '1', lat: String(lat), lon: String(lon),
+        time: String(timeSec ?? Math.floor(Date.now() / 1000)), accuracy: '6', speed,
+      })
+      // A FRESH probe, not the `stateBody` read earlier in this run: the anchor
+      // has to be the device's CURRENT fix, or it is a real jump from wherever
+      // the phone is now and the glitch gate may drop every ping below.
+      const probe = await mintShare('Smoke window probe')
+      const live = await shareState(probe.pin)
+      const baseLat = Number.isFinite(live.lat) ? live.lat : -18.8360
+      const baseLon = Number.isFinite(live.lng) ? live.lng : 47.5500
+      const dLat = 0.0025   // ~280 m north per step
+      const dLon = 0.0027   // ~285 m east per step (at 19°S)
+      // Tight on purpose: 0.0002° is ~22 m, so the ~95 m step that separates
+      // the pre-grant point from the in-window one stays distinguishable. (A
+      // 0.001 tolerance — ~110 m — cannot tell them apart, and did not.)
+      const near = (p, lat, lon) =>
+        Array.isArray(p) && Math.abs(p[0] - lat) < 0.0002 && Math.abs(p[1] - lon) < 0.0002
+
+      const grantA = await mintShare('Smoke window A')
+      // GPS instants reach the DO in whole seconds while a grant is stamped in
+      // milliseconds, so sleep past that boundary: the pre-grant point has to be
+      // unambiguously INSIDE code A's window and OUTSIDE code B's.
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const t0 = Math.floor(Date.now() / 1000)
+      await send(baseLat, baseLon, t0 - 32, '0')
+      await send(baseLat + dLat, baseLon + dLon, t0 - 16, '45')
+      await send(baseLat + dLat * 2, baseLon + dLon * 2, t0, '45')
+      const aState = await shareState(grantA.pin)
+      const beforeShown = (aState.track || []).some((p) => near(p, baseLat + dLat * 2, baseLon + dLon * 2))
+
+      const grantB = await mintShare('Smoke window B')
+      // 4 s of real time before the last ping: it must be unambiguously INSIDE
+      // code B's window, and ~95 m in 4 s stays under the 120 km/h glitch gate.
+      await new Promise((resolve) => setTimeout(resolve, 4000))
+      await send(baseLat + dLat * 2 + 0.0006, baseLon + dLon * 2 + 0.00064, null, '45')
+      const winState = await shareState(grantB.pin)
+
+      if (!beforeShown) {
+        log('  \x1b[90m– skipped the window proof: the pre-grant ping was not persisted (the device is parked inside a\n    fence, or its departure was not confirmed), so this run has nothing older than the grant to exclude\x1b[0m')
+      } else {
+        check('the shared track starts at the grant, not at midnight',
+          winState.ok === true && winState.trackTotal === 1 && winState.track.length === 1 &&
+          !(winState.track || []).some((p) => near(p, baseLat + dLat * 2, baseLon + dLon * 2)) &&
+          near(winState.track[0], baseLat + dLat * 2 + 0.0006, baseLon + dLon * 2 + 0.00064),
+          `track has ${winState.trackTotal ?? '?'} point(s) ${JSON.stringify(winState.track ?? []).slice(0, 160)} — the share that was minted AFTER a drawn point must not show it (code A, minted before it, did)`)
+      }
+      check('the window it reports is the grant that created it',
+        winState.ok === true && !!winState.since &&
+        Math.abs(Date.parse(winState.since) - grantB.at) < 15000 &&
+        aState.ok === true && !!aState.since &&
+        Math.abs(Date.parse(aState.since) - grantA.at) < 15000,
+        `since ${winState.since ?? 'missing'} vs minted ${new Date(grantB.at).toISOString()} — the payload has to name the window its own data starts at`)
+      // Both codes were minted by this test; leaving them open would hand the
+      // next viewer page (and the console) codes nobody meant to keep.
+      await req('/admin/share/revoke-all', { method: 'POST' })
     }
   }
 
@@ -2248,13 +2349,36 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('a code that has ended is forgotten, not re-submitted on the next visit',
     /removeItem\(PIN_KEY\)/.test(liveEndedBranch),
     'the dead code stays in sessionStorage, so the next visit re-submits it and the page blames the viewer for a typo it did not make')
+  check('the viewer badge resolves an address itself',
+    /nominatim\.openstreetmap\.org\/reverse/.test(liveSrc) && /class="hud"/.test(liveHtml) && /id="addr"/.test(liveHtml),
+    'the lower badge is not the HUD panel, or nothing in it resolves where the device actually is')
+  check('the address is asked on its own clock, never on every poll',
+    /ADDRESS_MS = 10000/.test(liveSrc) && /parkedHere/.test(liveSrc),
+    'the address follows the 5 s poll instead of its own 10 s clock — and a parked device is asked again for an answer we already hold')
+  check('an address that no longer describes the device is dropped',
+    /ADDRESS_MAX_AGE_M = 400/.test(liveSrc) && /address = null;/.test(liveSrc),
+    'a stale address keeps being shown, which is worse than a dash because it looks authoritative')
+  check('the address lines are distinct, so one word cannot print twice',
+    /function describeAddress/.test(liveSrc) && /seen\[candidates\[i\]\]/.test(liveSrc),
+    'the address repeats the same place name on two lines — the old rule printed the suburb as line 1 and again as line 2')
+  check('the viewer says SINCE WHEN the track it is drawing began',
+    /state\.since \? 'since '/.test(liveSrc),
+    'the panel says "today" while showing a window that starts at the code — the one word that would misdescribe it')
   check('the console asks the database for what ended',
     /listShares\(c\.env, 'ended'\)/.test(adminSrc) && /listShares\(c\.env, 'active'\)/.test(adminSrc),
     'the card only ever asks for active codes, so a revoked one is invisible rather than accountable')
   check('the DO hands out ONE device, and only by the grant\'s id',
     /SELECT state_json FROM device_state WHERE device_id = \?`, deviceId/.test(shareReadBody) &&
-    /FROM pending_sync WHERE device_id = \? ORDER BY id`,\s*deviceId/.test(shareReadBody),
+    /FROM pending_sync\s+WHERE device_id = \? AND timestamp >= \? ORDER BY id`,\s*deviceId, since/.test(shareReadBody),
     'a live-share read is not scoped to one device by BOTH its query and its bind — a grant for one person could be widened into the whole household')
+  // The window travels WITH the request and is REQUIRED at the far end: the
+  // reader asks for the grant's own creation instant, and a request without it
+  // gets no track at all rather than the whole day.
+  check('the shared track starts when the grant was created, not at midnight',
+    /since=\$\{encodeURIComponent\(share\.created_at\)\}/.test(shareSrc) &&
+    /rows = since\s*\?\s*this\.sql/.test(shareReadBody) &&
+    /:\s*\[\];/.test(shareReadBody),
+    'the window is not required end to end — a share that cannot say when it started would hand the viewer the whole day')
   // The declaration AND the stride, not just the name: `buildShareState`'s own
   // docstring explains the bound, so a guard that searches for the identifier
   // anywhere passes on the prose alone (found by this check staying green while

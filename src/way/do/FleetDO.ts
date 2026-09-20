@@ -64,7 +64,7 @@ const NTFY_SERVER_HOME_KEY = "ntfy_server";
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v14-live-share";
+const DO_BUILD = "notify-v15-share-window";
 
 /** What the public live-share view is allowed to know about ONE device. Its
  *  narrowness is the feature: no chat, no other device, no totals. */
@@ -73,9 +73,13 @@ interface ShareState {
     lat: number; lng: number; at: string | null; speed: number | null;
     driving: boolean; stationary: boolean; place: string | null;
   } | null;
-  /** [lat, lng, ISO] — today's track, possibly strided (see trackTotal). */
+  /** [lat, lng, ISO] — the track SINCE the grant was created, possibly strided
+   *  (see trackTotal). Empty when the caller sent no `since`. */
   track: Array<[number, number, string]>;
+  /** Points the window holds, before striding. */
   trackTotal: number;
+  /** The window's own start, echoed back so the page can say "since 14:02". */
+  since: string | null;
   now: number;
 }
 
@@ -612,9 +616,15 @@ export class FleetDO extends DurableObject<Env> {
     // because the id in the query IS the grant's subject, never a parameter a
     // viewer supplies.
     if (url.pathname === "/share-state" && request.method === "GET") {
-      return new Response(JSON.stringify(this.buildShareState(url.searchParams.get("device") ?? "")), {
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify(
+          this.buildShareState(
+            url.searchParams.get("device") ?? "",
+            url.searchParams.get("since") ?? ""
+          )
+        ),
+        { headers: { "Content-Type": "application/json" } }
+      );
     }
 
     // Diagnostic probe (reachable only via the Worker's /api/debug/notify):
@@ -656,6 +666,10 @@ export class FleetDO extends DurableObject<Env> {
             //       for the public live-share view (rule 31). A stale instance
             //       answers 404 here, which is how "the share is blank" and
             //       "the share is running old code" stay distinguishable.
+            // v15 = /share-state takes `since`: the track starts when the GRANT
+            //       was created, not at midnight (rule 31). An instance that is
+            //       still v14 would quietly answer with the whole day, which is
+            //       exactly why the marker has to move.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
@@ -791,7 +805,14 @@ export class FleetDO extends DurableObject<Env> {
    *
    *   * ONE device, by id. Never a list, so a grant cannot widen into one;
    *   * no chat, no other device, no distance totals, no battery, no accuracy;
-   *   * today only, out of pending_sync -- which IS today's unflushed track (the
+   *   * the track starts when the SHARE was created, not at midnight: the window
+   *     IS the grant (creation to revoke/expiry), so an outsider handed a code
+   *     at 14:00 cannot see where the car went this morning. `since` is required
+   *     and an absent one yields NO track -- a share that cannot say when it
+   *     started is a broken request, never a licence to hand out the day. Only
+   *     the live POSITION is always served, because that is the whole point;
+   *     it comes from device_state (the current fix), not from the window;
+   *   * out of pending_sync -- which is today's unflushed, DRAWN track (the
    *     nightly flush empties it) and is exactly what the household's own map
    *     draws. The outsider sees the SAME record, not a second opinion;
    *   * bounded. Above SHARE_TRACK_MAX the track is strided, and trackTotal
@@ -801,8 +822,8 @@ export class FleetDO extends DurableObject<Env> {
    *     position at all, which the viewer renders as "hasn't reported yet"
    *     rather than pinning a marker on a default coordinate.
    */
-  private buildShareState(deviceId: string): ShareState {
-    if (!deviceId) return { position: null, track: [], trackTotal: 0, now: Date.now() };
+  private buildShareState(deviceId: string, since: string): ShareState {
+    if (!deviceId) return { position: null, track: [], trackTotal: 0, since: since || null, now: Date.now() };
 
     let position: ShareState["position"] = null;
     try {
@@ -827,14 +848,22 @@ export class FleetDO extends DurableObject<Env> {
       position = null;
     }
 
+    // The window: points from the grant's creation onward. ISO instants in one
+    // canonical shape compare correctly as strings, which is what pending_sync
+    // stores (ingest writes `new Date(timeSec * 1000).toISOString()`), so the
+    // filter is one indexed-free comparison rather than a date parse per row.
+    // No `since` means no track at all -- see the method comment.
     let rows: Array<{ latitude: number; longitude: number; timestamp: string }> = [];
     try {
-      rows = this.sql
-        .exec<{ latitude: number; longitude: number; timestamp: string }>(
-          `SELECT latitude, longitude, timestamp FROM pending_sync WHERE device_id = ? ORDER BY id`,
-          deviceId
-        )
-        .toArray();
+      rows = since
+        ? this.sql
+          .exec<{ latitude: number; longitude: number; timestamp: string }>(
+            `SELECT latitude, longitude, timestamp FROM pending_sync
+              WHERE device_id = ? AND timestamp >= ? ORDER BY id`,
+            deviceId, since
+          )
+          .toArray()
+        : [];
     } catch {
       rows = [];
     }
@@ -852,7 +881,7 @@ export class FleetDO extends DurableObject<Env> {
       track.push([newest.latitude, newest.longitude, newest.timestamp]);
     }
 
-    return { position, track, trackTotal: rows.length, now: Date.now() };
+    return { position, track, trackTotal: rows.length, since: since || null, now: Date.now() };
   }
 
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {

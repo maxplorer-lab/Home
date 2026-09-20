@@ -399,10 +399,14 @@ export interface LiveViewState {
   stationary: boolean
   /** Current geofence name, when it is inside one ("At Home"). */
   place: string | null
-  /** [lat, lng, ISO] — today's track, possibly downsampled (see trackTotal). */
+  /** [lat, lng, ISO] — the track SINCE the grant was created, possibly
+   *  downsampled (see trackTotal). The window IS the share: an outsider handed a
+   *  code at 14:00 has no business seeing where the car went this morning. */
   track: Array<[number, number, string]>
-  /** Points the day actually has, so the viewer can say "showing every Nth". */
+  /** Points the window holds, so the viewer can say "showing every Nth". */
   trackTotal: number
+  /** The window's start — the grant's own creation instant. */
+  since: string | null
 }
 
 /**
@@ -412,7 +416,10 @@ export interface LiveViewState {
  * learns where a phone has been at the NIGHTLY flush, so a viewer reading the
  * database would be watching yesterday's commute. The DO is where today is.
  * It is asked for one device by id and answers with one device — a grant for
- * `MaxX` has no path to any other row.
+ * `MaxX` has no path to any other row — and it is told WHEN this share started,
+ * so the track it returns begins at the grant's creation rather than at
+ * midnight. Both scopes travel with the request: without one of them the answer
+ * is not this grant's to give.
  */
 export async function readLiveView(env: Env, share: ShareStatus): Promise<LiveViewState | { ok: false; error: string }> {
   if (!env.FLEET_DO) return { ok: false, error: 'no_do' }
@@ -420,12 +427,17 @@ export async function readLiveView(env: Env, share: ShareStatus): Promise<LiveVi
     const id = env.FLEET_DO.idFromName('fleet')
     const res = await env.FLEET_DO
       .get(id)
-      .fetch(`https://fleet-do/share-state?device=${encodeURIComponent(share.subject)}`, { method: 'GET' })
+      .fetch(
+        `https://fleet-do/share-state?device=${encodeURIComponent(share.subject)}` +
+        `&since=${encodeURIComponent(share.created_at)}`,
+        { method: 'GET' }
+      )
     if (!res.ok) return { ok: false, error: `do_${res.status}` }
     const data = (await res.json()) as {
       position?: { lat: number; lng: number; at: string | null; speed: number | null; driving: boolean; stationary: boolean; place: string | null } | null
       track?: Array<[number, number, string]>
       trackTotal?: number
+      since?: string | null
       now?: number
     }
     const p = data.position ?? null
@@ -445,6 +457,11 @@ export async function readLiveView(env: Env, share: ShareStatus): Promise<LiveVi
       place: p?.place ?? null,
       track: Array.isArray(data.track) ? data.track : [],
       trackTotal: Number(data.trackTotal ?? (data.track?.length ?? 0)),
+      // Passed through, never defaulted: `since` is the DO confirming where its
+      // data begins. A pre-v15 instance ignores the window and answers without
+      // it — and the page then says "today", which is the truth about THAT
+      // answer. Defaulting it here would label a whole day as "since 14:02".
+      since: data.since ?? null,
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }

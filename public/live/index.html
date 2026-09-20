@@ -43,14 +43,29 @@
   .chip b { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
   .chip .sub { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
-  .pill {
-    position: fixed; bottom: calc(12px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
-    z-index: 1000; font-size: 11.5px; color: var(--muted); text-align: center;
-    background: color-mix(in srgb, var(--card) 88%, transparent); padding: 6px 12px; border-radius: 999px;
-    border: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  /* ── the lower badge: a HUD panel, the shape the household's own map wears.
+        Dark in BOTH themes on purpose — it sits on tiles, and the light card
+        this replaced washed out the very text it existed to carry. ────────── */
+  .hud {
+    position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom));
+    z-index: 1000; padding: 9px 12px 7px; border-radius: 14px;
+    background: rgba(10, 10, 14, .92); color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, .12); box-shadow: 0 10px 24px rgba(0, 0, 0, .55);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  /* On anything wide enough to be a desk or a tablet it stops being a bar and
+     becomes the panel the phone map already shows, anchored left. */
+  @media (min-width: 700px) { .hud { right: auto; width: 380px; } }
+  .hud .addr { font-size: 12.5px; font-weight: 650; line-height: 1.35; letter-spacing: -.01em; }
+  .hud .addr .line2 { display: block; font-size: 11px; font-weight: 500; color: #94a3b8; }
+  .hud .addr.loading { color: #64748b; font-weight: 500; }
+  .hud-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-top: 6px; padding-top: 5px; border-top: 1px solid rgba(255, 255, 255, .08);
+    font-size: 10px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   #recentre {
-    position: fixed; right: 12px; bottom: calc(46px + env(safe-area-inset-bottom)); z-index: 1000;
+    position: fixed; right: 12px; bottom: calc(92px + env(safe-area-inset-bottom)); z-index: 1000;
     display: none; align-items: center; gap: 6px; padding: 10px 14px; border: 1px solid var(--line);
     border-radius: 999px; background: var(--card); color: var(--ink); font-size: 13px; font-weight: 600;
     box-shadow: 0 4px 16px rgba(15, 23, 42, .18); cursor: pointer;
@@ -111,7 +126,13 @@
     <span><b id="who">—</b><br><span class="sub" id="when">connecting…</span></span>
   </div>
   <button id="recentre">◎ Recentre</button>
-  <div class="pill" id="foot"></div>
+  <!-- The lower badge: where the device IS (reverse-geocoded, refreshed on its
+       own clock) above the one line of state. Both are outside the map's own
+       attribution, which stays where Leaflet puts it. -->
+  <div class="hud" id="hud">
+    <div class="addr loading" id="addr">Locating…</div>
+    <div class="hud-foot" id="foot"></div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -217,6 +238,95 @@
     fail(msg);
   }
 
+  // ── the address ──────────────────────────────────────────────────
+  // What the household's own map shows, asked the polite way: at most one
+  // request every ADDRESS_MS, and none while the device sits where we already
+  // resolved it. "Every 10 s" is about a MOVING car; a parked one that kept
+  // asking would be six requests a minute for an answer we already hold.
+  var ADDRESS_MS = 10000;
+  // Past this drift the text we hold no longer describes where the device is,
+  // and a stale address is worse than a dash because it looks authoritative.
+  var ADDRESS_MAX_AGE_M = 400;
+  var address = null;   // { lat, lon, at, lines: [primary, secondary] }
+
+  function distanceM(lat1, lon1, lat2, lon2) {
+    var R = 6371000, rad = Math.PI / 180;
+    var dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  // Nominatim's address object -> two lines: the street (with its number when
+  // OpenStreetMap has one), then the suburb and the first division. Each line
+  // takes the next DISTINCT value, so where OSM has no street names the same
+  // word cannot print twice. Same rule the household's map uses.
+  function describeAddress(addr) {
+    function pick(keys) {
+      for (var i = 0; i < keys.length; i++) { if (addr[keys[i]]) return String(addr[keys[i]]); }
+      return '';
+    }
+    var street = pick(['road', 'pedestrian', 'footway', 'residential', 'lane', 'path']);
+    var house = pick(['house_number']);
+    var candidates = [
+      street ? ((house ? house + ' ' : '') + street) : '',
+      pick(['suburb', 'neighbourhood', 'quarter', 'hamlet']),
+      pick(['municipality', 'city', 'town', 'village']),
+      pick(['county', 'state_district', 'state', 'region'])
+    ];
+    var seen = {}, lines = [];
+    for (var i = 0; i < candidates.length && lines.length < 3; i++) {
+      if (!candidates[i] || seen[candidates[i]]) continue;
+      seen[candidates[i]] = true;
+      lines.push(candidates[i]);
+    }
+    return [lines[0] || '', lines[1] || '', lines[2] || ''];
+  }
+
+  function maybeResolveAddress(state) {
+    if (typeof L === 'undefined' || state.lat === null || state.lng === null) return;
+    var now = Date.now();
+    if (address && distanceM(address.lat, address.lon, state.lat, state.lng) > ADDRESS_MAX_AGE_M) address = null;
+    var parkedHere = state.stationary === true &&
+      address && distanceM(address.lat, address.lon, state.lat, state.lng) < 150;
+    if (parkedHere) return;
+    if (address && address.at && now - address.at < ADDRESS_MS) return;
+    // Stamped BEFORE the request resolves, which is what actually throttles it.
+    address = { lat: state.lat, lon: state.lng, at: now, lines: address ? address.lines : null };
+    fetch('https://nominatim.openstreetmap.org/reverse?lat=' + state.lat + '&lon=' + state.lng +
+      '&format=jsonv2&zoom=18&addressdetails=1')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) { if (data && data.address && address) address.lines = describeAddress(data.address); })
+      .catch(function () {});
+  }
+
+  function renderAddress() {
+    var el = $('addr');
+    var lines = address && address.lines;
+    el.textContent = '';
+    if (!lines || !lines[0]) {
+      el.className = 'addr loading';
+      el.textContent = '—';
+      return;
+    }
+    el.className = 'addr';
+    var first = document.createElement('span');
+    first.textContent = lines[0];
+    el.appendChild(first);
+    var rest = [lines[1], lines[2]].filter(function (v) { return !!v; }).join(' · ');
+    if (rest) {
+      var second = document.createElement('span');
+      second.className = 'line2';
+      second.textContent = rest;
+      el.appendChild(second);
+    }
+  }
+
+  function clock(iso) {
+    try { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+    catch (e) { return ''; }
+  }
+
   function ago(ms) {
     var s = Math.max(0, Math.round(ms / 1000));
     if (s < 60) return 'live · ' + s + 's ago';
@@ -243,9 +353,13 @@
     else if (state.driving) bits.push('driving' + (state.speed !== null ? ' · ' + state.speed + ' km/h' : ''));
     else if (state.stationary) bits.push('stopped');
     if (state.trackTotal) {
-      bits.push('today · ' + state.trackTotal + ' points' +
+      // The window is the GRANT, not the day: say which, and when it started.
+      var window = state.since ? 'since ' + clock(state.since) : 'today';
+      bits.push(window + ' · ' + state.trackTotal + ' points' +
         (state.track.length !== state.trackTotal ? ' (showing ' + state.track.length + ')' : ''));
     }
+    maybeResolveAddress(state);
+    renderAddress();
     var ends = state.expiresAt ? new Date(state.expiresAt) : null;
     if (ends) {
       var hh = String(ends.getUTCHours()).padStart(2, '0');

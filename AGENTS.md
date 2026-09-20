@@ -433,7 +433,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
     halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v14-live-share`).
+    (`notify-v15-share-window`).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -678,9 +678,27 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       prints it to the minute ("opened 12:40"), which is the resolution anyone
       reads; an unconditional write would be a D1 write every few seconds per
       viewer for a number nobody looks at that closely.
-    `DO_BUILD` is `notify-v14-live-share`: a stale instance answers **404** on
+    * **The window IS the grant — creation to revoke-or-midnight.** The track a
+      viewer sees starts at the moment the code was minted, not at midnight: an
+      outsider handed a code at 14:00 has no business seeing where the car went
+      this morning. It travels as `since` on the DO request and is REQUIRED at
+      the far end — `buildShareState` with no `since` returns NO track rather
+      than the whole day, and the only thing always served is the live position,
+      because that is the point of the share. The page prints the two apart
+      ("since 14:02 · 6 points"), and falls back to "today" only when the DO
+      answers without a window, which is the truth about that answer.
+    * **The lower badge is a HUD panel that resolves its own address.** Same
+      shape as the household map's HUD (dark in both themes, hairline over the
+      status row), showing the street with its number and then the suburb and
+      first division from Nominatim, on the page's own 10 s clock — never on the
+      5 s poll, and never at all while the device sits where we already resolved
+      it. Past 400 m of drift the text is dropped, because a stale address is
+      worse than a dash: it looks authoritative.
+    `DO_BUILD` is `notify-v15-share-window`: a stale instance answers **404** on
     `/share-state`, which is how "the share is blank" stays distinguishable from
-    "the instance is running old code". `0006` must be applied to **home-db**
+    "the instance is running old code" — and a *v14* instance would answer 200
+    while ignoring the window, which is why the marker has to move with this
+    feature rather than with the next one. `0006` must be applied to **home-db**
     (local and remote) or the admin card lists nothing — `listShares` returns an
     empty list rather than 500ing the console, so the failure is quiet by
     design.
@@ -771,7 +789,7 @@ have their own separate repositories and their own history.
 | A save or a chat message "did nothing at all" | the network path, not the server: `apiJson` answers a rejected fetch as `{ok:false, status:0}` so the caller's alert runs, and the chat composer clears only after `sendWs` returns true — smoke sections 15 and 12 fail if either goes back to silence. DevTools' Offline switch reproduces it in one step |
 | "Did the tracking rules actually do anything?" after a real-world test | `/admin/diagnostics` (admin-only). It is the ONLY way to tell "the phone was correctly filtered" from "the phone never uploaded" — every gate drops silently by contract (rule 30). Read the sums first: `received = accuracy + glitch + accepted`, `accepted = drawn + collapsed + unwitnessed + paused`. `collapsed` climbing with `drawn` flat is a parked phone working as designed, not a broken pipeline |
 | `/admin/diagnostics` shows no gates at all | the counters are **DURABLE and build-scoped**, so exactly three things empty them: a fresh deployment, a **build-marker bump** (`ensureSchema` clears them when `DO_BUILD` changes), or the **Reset counters** button. A restart or an eviction does NOT — so if a restart seems to have cleared them, the code changed too. An empty list right after a deploy is normal; send one upload and they reappear. If it persists with `"ingest": null`, the FleetDO binding or `/debug-notify` is the problem (rule 30) |
-| The share link says the code has ended, or the viewer's map is blank | first the easy half: `expired`/`revoked` (410) means the grant is spent — midnight UTC passed, or an admin revoked it — while `bad_pin` (400) means the code is simply wrong. A blank map with a 200 is the DO half: `GET /way/api/debug/notify` must report `notify-v14-live-share`, because a stale instance 404s `/share-state` and the page then honestly says it has nothing (rule 31) |
+| The share link says the code has ended, or the viewer's map is blank | first the easy half: `expired`/`revoked` (410) means the grant is spent — midnight UTC passed, or an admin revoked it — while `bad_pin` (400) means the code is simply wrong. A blank map with a 200 is the DO half: `GET /way/api/debug/notify` must report `notify-v15-share-window`, because a stale instance 404s `/share-state` and the page then honestly says it has nothing (rule 31) — and a **v14** instance is the subtler failure: it answers 200 while IGNORING the window, so the viewer sees points from earlier today |
 | `/live` asks for a code and nothing is listed in `/admin` | `migrations-home/0006_share_links.sql` was never applied to THIS database (local or remote). `listShares` swallows the missing table on purpose, so the card is empty rather than broken — the console's own silence is the symptom |
 | A notification vanished last Tuesday and nobody can say why | `diag_events` in **home-db** (`/admin/diagnostics` → Notification ledger). It holds every push that did NOT reach a phone, with ntfy's own words. Rows expire after 90 days (the daily cron's prune), and `ledger.total: 0` means every push has been landing. If the ledger is unreadable, migration `migrations-home/0005_diagnostics.sql` was never applied |
 | A ping with a silly accuracy (say 50 m) still moves the dashboard | the gate is the FIRST thing in `FleetDO.handleIngest` (rule 29) — check `accuracyIsAcceptable` is still called before the speed filters and still reads `PRE_FILTER_MAX_ACCURACY_M` from config. And note the other direction: a client that sends NO accuracy always passes by design (null is accepted), so first check whether the field was sent at all |

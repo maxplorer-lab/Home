@@ -326,10 +326,21 @@ smoke section 20 proves it live rather than by grepping.
   (`/live#123456`) so it never reaches a request line, an access log or a
   referrer. Minting a second code does not silently kill the first — revoking is
   a button, and the list stays visible because the grant is a fact worth keeping.
-* `GET /live/api/state?pin=…` answers one device's newest fix plus today's
-  bounded track, straight from the **FleetDO** — never `way-db`, which knows
-  positions only after the nightly flush. `no-store`, `noindex`, no cookie, no
-  session, no socket, and no household names: the viewer learns a LABEL.
+* `GET /live/api/state?pin=…` answers one device's newest fix plus a bounded
+  track **since the code was created** — the window IS the grant, so an outsider
+  handed a code at 14:00 cannot see where the car went this morning. The window
+  travels as `since` and is required at the far end: with no window the DO
+  returns no track at all, never the day (only the live position is always
+  served, because that is the point). It comes straight from the **FleetDO** —
+  never `way-db`, which knows positions only after the nightly flush.
+  `no-store`, `noindex`, no cookie, no session, no socket, and no household
+  names: the viewer learns a LABEL.
+* The viewer's lower badge is a **HUD panel** in the household map's shape
+  (dark in both themes, hairline over the status row) with the device's street
+  and number, suburb and first division from Nominatim on its own **10 s** clock
+  — not on the poll's 5 s, and not at all while the device sits where we already
+  resolved it. Past 400 m of drift the text is dropped: a stale address is worse
+  than a dash, because it looks authoritative.
 * Refusals are separable and all recorded: `bad_pin` (400), `expired` /`revoked`
   (410), `rate_limited` (429 — ten failures an hour per caller, checked *before*
   the pin is resolved). A resolved pin clears that caller's failures. Every
