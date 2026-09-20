@@ -64,7 +64,7 @@ const NTFY_SERVER_HOME_KEY = "ntfy_server";
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v12-gate-reset";
+const DO_BUILD = "notify-v13-sum-partition";
 
 interface LiveDeviceStatus extends PingResult {
   timestamp: string;
@@ -1039,9 +1039,15 @@ export class FleetDO extends DurableObject<Env> {
     // exactly one of them, so `accepted = drawn + collapsed + unwitnessed +
     // paused` has to hold. A pause is counted rather than skipped because an
     // uncounted branch is indistinguishable from a broken one later.
+    //
+    // The `!unwitnessed` on the paused branch is what MAKES that exhaustive: an
+    // unwitnessed ping on a paused device was already counted, and sampled with
+    // its reason, as `unwitnessed` above — counting it as `paused` too would
+    // make the sum exceed `accepted`, which the page prints as a warning saying
+    // a gate nobody counts exists. It does not; one ping was counted twice.
     if (shouldPersist) {
       this.countGate("drawn", ping.deviceId, "written as a track point", false);
-    } else if (stored.recordingPaused) {
+    } else if (stored.recordingPaused && !unwitnessed) {
       this.countGate("paused", ping.deviceId, "recording is paused for this device", false);
     } else if (!unwitnessed) {
       // Not a failure and not an anomaly: the deliberate noise collapse (a phone

@@ -432,7 +432,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
     halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v12-gate-reset`).
+    (`notify-v13-sum-partition`).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -576,7 +576,16 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       sums: `received = accuracy + glitch + accepted` and `accepted = drawn +
       collapsed + unwitnessed + paused`. A sum that does not hold means a gate
       exists that nobody counts. Every branch of the persistence decision is
-      exhaustive for exactly that reason — do not add one without counting it.
+      exhaustive for exactly that reason — do not add one without counting it,
+      and never let two of them count the same ping: a double count makes a sum
+      *exceed* its total, which the page prints as "a gate nobody counts". The
+      paused branch therefore excludes `unwitnessed` pings (those were already
+      counted with their reason), which is the one combination that could hit
+      both. `report-unbelievable` is a CORRECTION, not a drop, and sits outside
+      both sums on purpose: its ping keeps going with the position-derived speed
+      (rule 26), so it is counted in `accepted` — it is on the page because "we
+      did not believe this device's km/h" is worth seeing, not because anything
+      was dropped by it. The sums partition what was DROPPED, not every counter.
     * **Notification non-deliveries → home-db `diag_events`** (migration
       0005), written by `recordDiag()` from `src/lib/notify.ts`. A few rows a
       day, pruned to 90 days by the daily cron. This is the table that answers

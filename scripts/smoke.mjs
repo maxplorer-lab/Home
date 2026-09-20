@@ -1936,6 +1936,26 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   check('every drop gate is named, not lumped together',
     namedGates.length === 4,
     `counted by name: ${namedGates.join(', ') || 'none'} — a drop with no name cannot be acted on`)
+  // The page renders a FIXED list (its GATE_ORDER) because the DO only stores the
+  // gates it has counted — so a gate the DO counts but the page does not render
+  // disappears from the very reading it exists to explain, and a missing row
+  // reads as "this gate does not exist". Both directions are checked: a name in
+  // the list the DO never counts is just as misleading in reverse.
+  const countedGates = [...new Set((doLedgerSrc.match(/countGate\(\s*"([a-z-]+)"/g) || [])
+    .map((s) => s.match(/"([a-z-]+)"/)[1]))].sort()
+  const pageGates = [...new Set((((adminSrc.match(/const GATE_ORDER = \[([\s\S]*?)\]/) || [])[1]) || '')
+    .match(/'[a-z-]+'/g) || [])].map((s) => s.replace(/'/g, '')).sort()
+  check('every gate the intake counts is rendered on the diagnostics page',
+    countedGates.length > 0 && countedGates.join() === pageGates.join(),
+    `the DO counts [${countedGates.join(', ')}], the page renders [${pageGates.join(', ')}] — a gate that is counted but not rendered reads as a gate that does not exist`)
+  // The sums hold only while no ping is counted by two branches. A paused
+  // device found outside its fence after a silence was counted as
+  // `unwitnessed` AND `paused`, which makes the printed sum exceed `accepted`
+  // and reads as "a gate nobody counts" — found by reading the branches against
+  // the two equations, not by a test failing.
+  check('no persistence branch can count the same ping twice',
+    /else if \(stored\.recordingPaused && !unwitnessed\) \{/.test(doLedgerSrc),
+    'the paused branch counts unwitnessed pings too, so one ping lands in two of the four branches and `accepted = drawn + collapsed + unwitnessed + paused` cannot hold')
 
   check('the intake ledger cannot itself break ingest',
     /private countGate[\s\S]{0,2500}?\} catch \{/.test(doLedgerSrc),

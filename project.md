@@ -106,10 +106,12 @@ you are in.
   engine (message bubbles, replies, reactions, system messages), moved out
   of WAY's dashboard rather than re-written: same `/ws` socket, same
   FleetDO, so history/replies/reactions stay one stream. WAY no longer has
-  any chat — no pill, no modal, no CSS, no JS, no `?view=chat` mode — and
-  Sompitra's old WebSocket chat re-implementation was deleted earlier
-  (`src/routes/chat.tsx`, `src/lib/way.ts`). There is exactly one chat in
-  the product and it has one home.
+  any chat — no pill, no modal, no CSS, no JS, no `?view=chat` mode. Sompitra's
+  old WebSocket chat re-implementation never came across: it is still in the
+  standalone Sompitra repo (`src/routes/chat.tsx` + `src/lib/way.ts` there,
+  untouched) and Home simply does not mount it — nothing was deleted from this
+  repo to achieve that, the code was never carried in. There is exactly one chat
+  in the product and it has one home.
 * **That one chat is also the app's activity feed.** Because the chat is the
   only place the household already looks, every module reports into it as a
   system message rather than each growing its own notification list. WAY's
@@ -451,7 +453,18 @@ unwitnessed + paused`. That is what turns "0 drawn" from alarming into explained
 — the phone was parked — and a sum that does not hold means a gate exists that
 nobody counts. Every branch of the persistence decision is exhaustive for the
 same reason: a new branch that is not counted is indistinguishable from a broken
-one later.
+one later — and no two branches may count the same ping, since a double count
+makes a sum *exceed* its total, which reads on the page as a gate that does not
+exist.
+
+One counter is deliberately outside both sums. **`report-unbelievable` is a
+correction, not a drop**: the ping that reported a speed its own coordinates do
+not show keeps going, with that speed replaced by what the positions imply
+(rule 26), so it is counted in `accepted` like everything else that survives the
+gates. It appears on the page because "we did not believe this device's km/h"
+is worth seeing; it is outside the equations because nothing was removed by it.
+The two sums partition what the intake **dropped** — they are not a list of
+every counter the ledger keeps.
 
 Three limits worth knowing before trusting it:
 
@@ -846,6 +859,14 @@ the follow it had just started.
   silently — a dead network answers in the same shape as any other error, and
   the chat composer keeps unsent text in the box (see "A user ACTION must fail
   loudly" above; smoke sections 12 and 15 guard it).
+* **A deliberate silence is counted, and every ping lands in exactly one branch
+  of the count.** Everything the intake drops on purpose — for the phone's sake —
+  is readable after the fact at `/admin/diagnostics`, and the two sums printed
+  there hold only while *no branch counts the same ping twice*: a sum that
+  exceeds its total reads as a gate nobody counts, which is the one thing that
+  page must never say falsely. So a new branch must be counted, and counted
+  once. `report-unbelievable` is a correction rather than a drop and is
+  deliberately outside both sums (see "The diagnostics ledger" above).
 * One login per person, admin-managed; no self-signup anywhere.
 * Colour palettes of each module are untouched — Laoka stays orange, W.A.Y
   **sky** (`#0284c7`, the colour its own tab carries), Sompitra's Tailwind theme

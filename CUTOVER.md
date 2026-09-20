@@ -241,7 +241,7 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v12-gate-reset   (kept honest by `npm run smoke`,
+#   expect build notify-v13-sum-partition   (kept honest by `npm run smoke`,
 #   which reads THIS line and compares it with the DO's source AND with what
 #   the running DO reports — otherwise "the DO is stale" and "this doc is
 #   stale" look identical from the outside)

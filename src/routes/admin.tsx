@@ -230,12 +230,20 @@ interface IngestGate { gate: string; n: number; firstAt: string; lastAt: string 
 interface IngestDrop { at: string; deviceId: string | null; gate: string; detail: string }
 
 /**
- * The gates in the order a ping meets them, INCLUDING the ones that never
- * fired. The DO only stores gates it has counted, so a fresh reading would
- * otherwise omit `drawn` entirely — and "0 drawn" is the single most important
- * number to see after a parked-phone test (it is the difference between "the
- * phone was collapsed on purpose" and "nothing is being stored"). A missing row
- * reads as "this gate does not exist".
+ * The gates in the order a ping meets them — and the persistence branches last,
+ * in the order the two equations below name them, so the grid and the sums read
+ * left to right in the same order. (That is why `unwitnessed` sits after
+ * `collapsed` here although the intake meets it earlier: it is a branch of the
+ * persistence decision to the reader, and `drawn + collapsed + unwitnessed +
+ * paused` is how the sum is spelled.)
+ *
+ * The list is exhaustive on purpose and it INCLUDES the gates that never fired.
+ * The DO only stores gates it has counted, so a fresh reading would otherwise
+ * omit `drawn` entirely — and "0 drawn" is the single most important number to
+ * see after a parked-phone test (it is the difference between "the phone was
+ * collapsed on purpose" and "nothing is being stored"). A missing row reads as
+ * "this gate does not exist", which is why `npm run smoke` fails if the DO
+ * counts a gate this list does not render.
  */
 const GATE_ORDER = [
   'received', 'accuracy', 'report-unbelievable', 'glitch', 'accepted',
@@ -422,16 +430,20 @@ admin.get('/diagnostics', async (c) => {
                       {ingest.checks.sumOutHolds ? '✅' : '⚠️'} accepted {ingest.checks.accepted} = drawn + collapsed + unwitnessed + paused ({ingest.checks.sumOut})
                     </p>
                     <p class="text-gray-400">
+                      <span class="font-mono">report-unbelievable</span> is a correction, not a drop:
+                      that ping keeps going with the speed its own positions imply, so it lands in
+                      <span class="font-mono">accepted</span> and belongs to neither sum.
+                    </p>
+                    <p class="text-gray-400">
                       Counters are durable (they survive an eviction) but scoped to the build that
                       wrote them — a deploy that changes the Durable Object's code clears them, and
                       “Reset counters” starts a clean reading on purpose.
-                    </p>
-                  </div>
+                    </p>                  </div>
 
                   <div>
-                    <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Last drops</p>
+                    <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Last drops &amp; corrections</p>
                     {ingest.drops.length === 0
-                      ? <p class="text-xs text-gray-400">Nothing has been dropped since this build started counting.</p>
+                      ? <p class="text-xs text-gray-400">Nothing has been dropped or corrected since this build started counting.</p>
                       : <div class="space-y-1">
                         {ingest.drops.slice(0, 12).map((d) => (
                           <div class="text-xs flex gap-2">
