@@ -364,6 +364,15 @@ log('\n9b. WAY HUD says only what it knows')
   check('the HUD health slot falls back to GPS accuracy',
     way.includes('id="hud-meta"') && way.includes('function accuracyLabel') && /accuracyLabel\(p\.accuracy\)/.test(way),
     'the accuracy fallback is gone, so the slot can only ever say n/a again')
+  // A driving ping with no speed is not a parked one. The badge printed
+  // `Math.round(last.speed || 0) + ' km/h'`, so a ping whose report the intake
+  // DISCARDED (μlogger reports m/s and x 3.6 can land above the jitter limit)
+  // read as "0 km/h" beside a HUD saying "-- / No signal" -- two answers to one
+  // question, and one of them a claim the ping never made.
+  check('a driving ping with no speed never reads 0 km/h',
+    /const kmh = \(last\.speed === null \|\| last\.speed === undefined\) \? '--'/.test(way) &&
+      !/Math\.round\(last\.speed \|\| 0\)/.test(way),
+    'the badge turns an absent speed into "0 km/h", which reads as parked')
   check('the client maps accuracy off the wire',
     /accuracy: \(raw\.accuracy !== undefined/.test(way),
     'toPing drops accuracy, so the HUD fallback can never fire no matter what the server sends')
@@ -1733,6 +1742,36 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
       !!trackPointFn && trackPointFn.includes('refreshTodayDist(') &&
       !/todayDist\[\w+\] \+=|todayDist\[\w+\] = \(todayDist/.test(wayCode),
     'the HUD adds a per-row distance again, so the badge and the Trips card can show two different numbers for one day')
+
+  // (11) The device emoji is a LABEL, not the position. The colour-coded dot is
+  // the position: it is the head of the trail and the only thing that says
+  // moving / stationary / slow (and the dot is simply absent inside a fence).
+  // Draw the glyph at its own anchor and the two fuse -- one blob with the dot
+  // buried under the emoji, which is how this read before. The icon box is
+  // therefore taller than the glyph and anchored by its bottom edge, so the
+  // float gap is (box - glyph) and has to stay a real gap.
+  const glyphPx = Number((wayCode.match(/MARKER_GLYPH_PX:\s*([0-9.]+)/) || [])[1])
+  const boxPx = Number((wayCode.match(/MARKER_BOX_PX:\s*([0-9.]+)/) || [])[1])
+  const markerFn = fnBody(wayCode, 'buildMarker')
+  const frameFn = fnBody(wayCode, 'renderDeviceFrame')
+  const anchoredBox = /iconSize: \[30, CONFIG\.MARKER_BOX_PX\], iconAnchor: \[15, CONFIG\.MARKER_BOX_PX\]/.test(markerFn || '')
+  check('the device icon floats above the position dot instead of covering it',
+    !!markerFn && anchoredBox && Number.isFinite(glyphPx) && Number.isFinite(boxPx) &&
+      boxPx - glyphPx >= 20,
+    !markerFn ? 'buildMarker is not in the page'
+      : !anchoredBox ? 'the icon box is no longer anchored by its bottom edge, so the glyph lands on the point the dot is drawn on'
+        : `the icon floats only ${boxPx - glyphPx}px above the point (glyph ${glyphPx}px in a ${boxPx}px box) -- the dot is buried under the emoji`)
+
+  // (12) Both layers read ONE position: the dot and the emoji are placed from
+  // the same `placed` -- the playback clock's -- never from the raw live ping.
+  // Give the dot its own source and the two separate on screen while both read
+  // as the device, which is the same two-sources-of-truth fault (10) is about.
+  check('the dot and the device icon are placed from one position, the playback clock',
+    !!frameFn && /marker\.setLatLng\(\[placed\.lat, placed\.lng\]\)/.test(frameFn) &&
+      /placeTip\(devId, placed\.lat, placed\.lng, tipClass\(ping\)\)/.test(frameFn) &&
+      !/placeTip\(devId, live\.latitude/.test(frameFn),
+    !frameFn ? 'renderDeviceFrame is not in the page'
+      : 'the dot is placed from a different position than the device icon, so the two can separate while both read as the device')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────

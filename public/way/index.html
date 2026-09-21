@@ -439,6 +439,16 @@ const CONFIG = {
     DEFAULT_DEVICE_COLOR: '#38bdf8',
     DEFAULT_DEVICE_EMOJI: '📍',
 
+    // The device icon is a label floating ABOVE the position dot, never the
+    // position itself: the dot (placeTip) is the trail head and the only thing
+    // that says moving / stationary / slow, so it has to stay visible at the
+    // point. The glyph is drawn at the top of a box this much taller than it,
+    // anchored by the box's bottom edge -- so the float gap is the difference
+    // between these two numbers, and setting them equal fuses the icon back
+    // onto the dot, hiding it. `npm run smoke` §15 fails if that happens.
+    MARKER_GLYPH_PX: 28,
+    MARKER_BOX_PX: 60,
+
     MAP_DEFAULT_CENTER: [-18.91, 47.53],
     MAP_DEFAULT_ZOOM: 12,
     // Household timezone (Africa/Nairobi = UTC+3, no DST). Used for all
@@ -1190,22 +1200,30 @@ function tipClass(ping) {
 
 /** Build (or rebuild) a device's marker -- its emoji comes from Settings, so
  * this is the one thing that legitimately has to be recreated. Its position is
- * the playback loop's, so recreating it does not interrupt the motion. */
+ * the playback loop's, so recreating it does not interrupt the motion.
+ *
+ * The emoji is a LABEL, not the position. The colour-coded dot from placeTip()
+ * is the position: it is the head of the trail, and it is what says moving
+ * (red) / stationary (green) / slow (yellow) / nothing while inside a fence.
+ * So the emoji rides ABOVE that dot -- same coordinates, shifted up by the
+ * icon's own box, which is deliberately taller than the glyph. Draw the glyph
+ * at the anchor instead and the two fuse into one blob, with the dot buried
+ * under the emoji and unreadable: which is what the marker below must not do.
+ * The tooltip is lifted by the same amount so a hover does not cover it. */
 function buildMarker(devId) {
     if (!map) return null;
     const emoji = EMOJI_MAP[devId] || CONFIG.DEFAULT_DEVICE_EMOJI;
+    // CONFIG.MARKER_GLYPH_PX of artwork in a box that is CONFIG.MARKER_BOX_PX
+    // tall, anchored by its BOTTOM edge: the glyph sits at the top of the box,
+    // so it floats (MARKER_BOX_PX - MARKER_GLYPH_PX) above the dot's point.
     const icon = L.divIcon({
-        // iconAnchor already puts the icon's BOTTOM at the point; the extra
-        // translate(-50%,-100%) used to shift it a second time, which drew the
-        // pin ~30px above where it actually was -- obvious now that the marker
-        // glides along its own trail instead of jumping to it.
-        html: '<div style="font-size:28px; text-shadow:0 0 12px rgba(0,0,0,0.9); line-height:1;">' + emoji + '</div>',
-        iconSize: [30, 30], iconAnchor: [15, 30], className: ''
+        html: '<div style="font-size:' + CONFIG.MARKER_GLYPH_PX + 'px; text-shadow:0 0 12px rgba(0,0,0,0.9); line-height:1;">' + emoji + '</div>',
+        iconSize: [30, CONFIG.MARKER_BOX_PX], iconAnchor: [15, CONFIG.MARKER_BOX_PX], className: ''
     });
     const at = markerPositions[devId] || { lat: CONFIG.MAP_DEFAULT_CENTER[0], lng: CONFIG.MAP_DEFAULT_CENTER[1] };
     if (markerLayers[devId]) map.removeLayer(markerLayers[devId]);
     const marker = L.marker([at.lat, at.lng], { icon: icon }).addTo(map);
-    marker.bindTooltip(devId, { permanent: false, direction: 'top' });
+    marker.bindTooltip(devId, { permanent: false, direction: 'top', offset: [0, -(CONFIG.MARKER_BOX_PX - CONFIG.MARKER_GLYPH_PX)] });
     marker.on('click', function() { followDevice(devId); });
     markerLayers[devId] = marker;
     return marker;
@@ -1947,7 +1965,14 @@ function renderBadges() {
         } else if (last.is_stationary) {
             activityText = 'Stationary'; activityClass = 'badge-activity-fallback';
         } else if (last.is_driving) {
-            activityText = Math.round(last.speed || 0) + ' km/h'; activityClass = 'badge-activity-fallback';
+            // A driving ping with NO speed is not a parked device. The report
+            // was discarded (μlogger's m/s x 3.6 lands above the jitter limit)
+            // or never carried, and `|| 0` turned that into "0 km/h" -- the one
+            // number in this row that says "parked", on a device it just told
+            // you is driving. The HUD prints "-- / No signal" for the same
+            // ping, so the badge says "-- km/h" instead of contradicting it.
+            const kmh = (last.speed === null || last.speed === undefined) ? '--' : Math.round(last.speed);
+            activityText = kmh + ' km/h'; activityClass = 'badge-activity-fallback';
         } else {
             activityText = 'Walking'; activityClass = 'badge-activity-fallback';
         }

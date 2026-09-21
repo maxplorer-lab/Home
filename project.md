@@ -831,6 +831,21 @@ points there, so the marker waits and eases the last stretch.
   **-142 px** (the far edge, a hair inside), the camera moving **0 px** for the
   whole drift, and one cycle per **26.5 s** of which 19.6 s is a motionless map
   — where the per-ping pan this all replaced moved the map 20 times in 20 s.
+* **The position is the DOT; the emoji is a label floating above it.** Two
+  markers ride every device, and they are not interchangeable: the
+  colour-coded 14 px `placeTip` dot carries the point (it is the head of the
+  trail, and it is what says moving / stationary / slow — and it is simply
+  absent while the device is inside a fence), while the Settings emoji
+  (🛵 🏍️ 🚗) is identity only and floats `MARKER_BOX_PX - MARKER_GLYPH_PX`
+  (32 px) above it. The icon's box is therefore taller than its glyph and
+  anchored by the box's BOTTOM edge, so the glyph sits in the top of the box and
+  the dot stays visible at the point. Drawing the emoji at the anchor instead —
+  `iconSize: [30, 30], iconAnchor: [15, 30]`, which is what this page did after
+  the marker was made to glide — fuses the two into one blob with the dot buried
+  under the glyph, and an 🚗 covering the only marker that answers "where, and
+  doing what". Both layers are placed from the SAME `placed` position (the
+  playback clock's), never one from the cursor and one from the raw live ping,
+  and smoke section 15 fails on either fault.
 * **The lag is also the pace, and the pace is the user's.** The lag above is
   what makes a commute watchable, and it is also 25 s of "wrong" whenever the
   question changes from *how did the trip look* to *where is he right now*. So

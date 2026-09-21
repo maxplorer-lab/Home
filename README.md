@@ -188,7 +188,11 @@ swept across to the **opposite edge** in one elastic pull. It keeps being drawn
 while it is swept, so its heading is never lost, and because it lands on the far
 side it has the whole diameter to cross before the camera moves again — the map
 is therefore still for most of every cycle, and the device is never left parked
-against the edge. What W.A.Y records is
+against the edge. **The dot is the position; the emoji is a label.** The
+colour-coded dot is the head of the trail and the only thing that says moving,
+stationary or slow (it is simply absent inside a fence), so the Settings emoji
+(🛵 🏍️ 🚗) floats *above* it instead of sitting on it — otherwise the icon you
+chose buries the marker that answers "where, and doing what". What W.A.Y records is
 unaffected — the same points, the same classifications, the same colours, dash
 and stationary dots, the same **Flush now**. The HUD is live while the map is
 behind, and the one line that names the lag sits under the pace pills in
