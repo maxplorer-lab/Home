@@ -417,10 +417,15 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 //  Before editing, know these:
 //    * Bump WAY_BUILD (a few lines down) on every deploy. It is shown at the
 //      bottom of Settings and is the only way to tell a stale browser tab
-//      from a broken deploy.
-//    * `npm run check:dashboard` syntax-checks this block -- npm run verify
-//      runs it together with the Worker typecheck. Nothing else sees this
-//      file, so run it before committing.
+//      from a broken deploy. Nothing checks this FOR you except smoke §15,
+//      which fails when the marker is older than the page it labels.
+//    * Nothing compiles this file -- it is served verbatim, so a syntax error
+//      here is a blank app with a 200. smoke §15 is the only compile it gets:
+//      it parses this block (and the share's) with node:vm, which is why
+//      `npm run verify` must pass before you commit.
+//      (This named a `check:dashboard` script that the merged app does not
+//      have -- the standalone W.A.Y repo's. The command was real there and
+//      meaningless here, which is worse than no instruction at all.)
 //    * Today's track comes from the WebSocket snapshot; past days come from
 //      /api/history. They are different code paths on purpose.
 //    * Geometry/state behaviour lives in the backend; this file only renders.
@@ -449,10 +454,21 @@ const CONFIG = {
 
     GEOFENCE_HOME_COLOR: '#10b981',
     GEOFENCE_OFFICE_COLOR: '#38bdf8',
-    // Drawn circle radius, hardcoded for all fences (entry=50m / exit=90m
-    // are logic-only and are not drawn). Matches the exit radius so the
-    // post-exit track starting "at the fence edge" aligns with the circle.
-    GEOFENCE_RADIUS: 90,
+    // The drawn circle is each fence's OWN exit radius, read per fence from
+    // /api/geofences -- never one number for all of them. It used to be a
+    // single hardcoded 90 m, and that stopped describing reality the moment a
+    // fence was resized: production carries three fences whose exit radius is
+    // 100 m, so the map drew them 10 m inside where the engine actually
+    // triggers. The circle is what the eye reads as "the fence" — and the
+    // post-exit track starts where it crosses this very edge — so it is the
+    // one drawn line that must not disagree with the backend.
+    //
+    // These two are only the FALLBACK for a fence row that names neither, and
+    // they mirror the backend's own constants (src/way/config.ts):
+    // DEFAULT_GEOFENCE_RADIUS_M 50 and EXIT_RADIUS_BUFFER_M 40. `npm run smoke`
+    // §15 fails if they drift apart.
+    GEOFENCE_ENTRY_RADIUS_M: 50,
+    GEOFENCE_EXIT_BUFFER_M: 40,
     GEOFENCE_FILL_OPACITY: 0.12,
     GEOFENCE_WEIGHT: 1.8,
     GEOFENCE_OPACITY: 0.6,
@@ -568,7 +584,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-19.6-superapp';
+const WAY_BUILD = '2026-09-21.1-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -583,10 +599,11 @@ function nairobiDayRange(dateStr) {
 }
 
 // The basemap choice is the user's: it stays on whichever layer they picked
-// (LITE / OSM) until they pick again. Loading the page always starts on lite
-// -- see setLayer('lite') below -- but nothing switches it back on a timer.
-// A 30-minute auto-revert to lite used to live here; it kept yanking the map
-// out from under anyone comparing it against OSM, so it was removed.
+// (LITE / STREETS, both from /shared/basemaps.js) until they pick again.
+// Loading the page always starts on lite -- see setLayer('lite') below -- but
+// nothing switches it back on a timer. A 30-minute auto-revert to lite used to
+// live here; it kept yanking the map out from under anyone comparing the two
+// layers, so it was removed.
 
 let GEOFENCES = [], GEOFENCE_DISPLAY_MAP = {}, GEOFENCE_CATEGORY = {};
 let DEVICES = [], EMOJI_MAP = {}, DEVICE_COLORS = {};
@@ -749,9 +766,14 @@ function speedColor(kmh) {
     return HomePlayback.speedColor(kmh);
 }
 
+/** What the map draws, which must be what the backend STORED: a point exists
+ * in the history precisely when it is neither stationary nor inside a fence
+ * (see shouldPersistTrackPoint in FleetDO.ts, and smoke §15 ties the two
+ * together). Spelled identically on purpose — the old form short-circuited on
+ * `is_driving` first, which reads as a different rule even where it happens to
+ * agree, and a rule that has to be reasoned about is one that drifts. */
 function shouldDrawPoint(p) {
-    if (p.is_driving) return true;
-    return !p.is_stationary && !p.is_inside_geofence;
+    return !p.is_inside_geofence && !p.is_stationary;
 }
 
 function toPing(deviceId, raw) {
@@ -894,6 +916,16 @@ buildLayerMenu();
 setLayer(CONFIG.BASEMAP_DEFAULT);
 function toggleLayerMenu() { document.getElementById('layer-menu').classList.toggle('open'); }
 
+/** The radius a fence's own logic triggers on, so the circle drawn here is
+ * the boundary the backend actually uses: the fence's explicit exit radius,
+ * else its entry radius plus the backend's own buffer. One radius for every
+ * fence is exactly how the drawing and the engine drifted apart — see CONFIG. */
+function fenceExitRadiusM(f) {
+    if (f.exitRadiusM) return f.exitRadiusM;
+    const entry = f.radiusM || CONFIG.GEOFENCE_ENTRY_RADIUS_M;
+    return entry + CONFIG.GEOFENCE_EXIT_BUFFER_M;
+}
+
 function drawGeofenceCircles() {
     if (!map) return;
     geofenceCircleLayers.forEach(function(l) { map.removeLayer(l); });
@@ -901,7 +933,7 @@ function drawGeofenceCircles() {
     GEOFENCES.forEach(function(f) {
         const color = f.category === 'Home' ? CONFIG.GEOFENCE_HOME_COLOR : CONFIG.GEOFENCE_OFFICE_COLOR;
         const circle = L.circle([f.lat, f.lng], {
-            radius: CONFIG.GEOFENCE_RADIUS, color: color, fillColor: color,
+            radius: fenceExitRadiusM(f), color: color, fillColor: color,
             fillOpacity: CONFIG.GEOFENCE_FILL_OPACITY, weight: CONFIG.GEOFENCE_WEIGHT, opacity: CONFIG.GEOFENCE_OPACITY
         }).bindTooltip(getDisplayName(f.name), { direction: 'top' }).addTo(map);
         geofenceCircleLayers.push(circle);
@@ -2641,10 +2673,10 @@ function handleSnapshot(data) {
         const points = rawPoints.map(function(row) { return toPing(devId, row); })
             .sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
         for (const p of points) {
-            if (p.is_driving && p.distance_km) todayDist[devId] += p.distance_km;
             if (shouldDrawPoint(p)) devicePings[devId].push(p);
             maybeAddStationaryDot(devId, p);
         }
+        refreshTodayDist(devId);
     }
 
     redrawAllTracks();
@@ -2667,12 +2699,6 @@ function handleNewPing(raw) {
     // says so, but the map must not keep pulsing until that frame arrives.
     if (ping.is_inside_geofence && approachPulses[devId]) delete approachPulses[devId];
 
-    // Only driven distance is tracked -- walking is a live-status thing on
-    // the dashboard, never part of history.
-    if (ping.is_driving && ping.distance_km) {
-        todayDist[devId] = (todayDist[devId] || 0) + ping.distance_km;
-    }
-
     if (!devicePings[devId]) devicePings[devId] = [];
     // `guarding` pings (the 30s exit guard) are held server-side and delivered
     // later as `track` messages -- adding them here too would double them up.
@@ -2681,6 +2707,11 @@ function handleNewPing(raw) {
     // distance for them, so drawing one would invent a leg nobody earned.
     if (!raw.guarding && !raw.unwitnessed && shouldDrawPoint(ping)) devicePings[devId].push(ping);
     maybeAddStationaryDot(devId, ping);
+    // Only driven distance is tracked -- walking is a live-status thing on the
+    // dashboard, never part of history -- and it is recomputed rather than
+    // accumulated, so the HUD and the Trips card cannot drift apart (see
+    // refreshTodayDist).
+    refreshTodayDist(devId);
 
     // Nothing is drawn here. The ping is now IN devicePings, and the playback
     // loop picks it up when its cursor reaches it -- that is the whole point of
@@ -2711,6 +2742,7 @@ function handleTrackPoint(raw) {
     if (!devicePings[devId]) devicePings[devId] = [];
     devicePings[devId].push(p);
     devicePings[devId].sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+    refreshTodayDist(devId);
     // This one can land BEFORE the cursor, which shifts every commit index, so
     // the trail is rebuilt (the loop re-commits it in one frame) instead of
     // being appended to. Late points are rare -- the exit guard -- so the
@@ -2785,6 +2817,23 @@ function computeLegsForDay(pings) {
     return legs;
 }
 
+/** The HUD's "km today", from the SAME rule the Trips card and the monthly
+ * totals use: computeLegsForDay -- the geometry between consecutive stored
+ * points, split by classification. It used to add each ping's stored
+ * `distance_km` as it arrived, which is a DIFFERENT quantity: the backend
+ * writes it per segment between two stored points as the ENGINE measured them,
+ * and until 2026-09-21 a walking stretch left the engine's anchor untouched, so
+ * the drive after a walk carried the walk's distance with it. Two numbers for
+ * one day, side by side on one screen: measured locally on 2026-09-21, the
+ * badge read "1.8 km today" while the card for that same day read "0.9 Driven
+ * km". Anything that reports a distance from these rows goes through here. */
+function refreshTodayDist(devId) {
+    const legs = computeLegsForDay(devicePings[devId] || []);
+    let km = 0;
+    legs.forEach(function(l) { km += l.drivenKm || 0; });
+    todayDist[devId] = km;
+}
+
 // ---- Whole-day review overlay -------------------------------------------
 // The map's own track is always TODAY (live). Reviewing a past date draws
 // that WHOLE day at once (every leg, broken at leg boundaries and gaps) --
@@ -2806,23 +2855,33 @@ function showDayOnMap(dateStr, perDevice) {
         const pts = (perDevice[devId] || []).filter(shouldDrawPoint);
         if (pts.length < 2) return;
         const color = DEVICE_COLORS[devId] || CONFIG.DEFAULT_DEVICE_COLOR;
-        let seg = [];
+        // A reviewed day is drawn the way the LIVE trail draws it: broken at
+        // leg boundaries and gaps, and broken at a CHANGE OF MODE too, so a
+        // walking stretch is the thin dashed line it was live. It used to
+        // paint every segment with the driving weight and opacity, so a
+        // reviewed walk looked like a drive -- the same day, told two ways by
+        // two views of one app. The device colour stays the day's own choice:
+        // a review is about who moved, not how fast.
+        let seg = [], segDriving = null;
         let lastTs = null, lastLeg = null;
         const flush = function() {
             if (seg.length >= 2) {
-                reviewDayLayers.push(L.polyline(seg, {
+                reviewDayLayers.push(L.polyline(seg, segDriving ? {
                     color: color, weight: CONFIG.TRACK_WEIGHT_DRIVING,
                     opacity: CONFIG.TRACK_OPACITY_DRIVING, smoothFactor: 1.5
-                }).addTo(map));
+                } : walkingLineStyle(color)).addTo(map));
             }
             seg = [];
         };
         for (const p of pts) {
             const ts = new Date(p.timestamp).getTime();
             const leg = (p.leg_id !== undefined && p.leg_id !== null) ? p.leg_id : null;
+            const driving = !!p.is_driving;
             const gapSec = (lastTs === null) ? Infinity : (ts - lastTs) / 1000;
-            if (seg.length && ((leg !== null && lastLeg !== null && leg !== lastLeg) || gapSec > CONFIG.TRACK_GAP_SECONDS)) flush();
+            if (seg.length && (driving !== segDriving ||
+                (leg !== null && lastLeg !== null && leg !== lastLeg) || gapSec > CONFIG.TRACK_GAP_SECONDS)) flush();
             seg.push([p.latitude, p.longitude]);
+            segDriving = driving;
             lastTs = ts; lastLeg = leg;
         }
         flush();
@@ -2855,13 +2914,20 @@ async function loadMonthlyTotals() {
         DEVICES.forEach(function(d) { totals[d] = 0; walked[d] = 0; });
         for (const devId of DEVICES) {
             const pings = await fetchHistoryFor(devId, firstOfMonth, nowIso);
-            // Split by classification, same rule as the per-day summary: walked
-            // distance is reported separately and never added to driven km.
-            pings.forEach(function(p) {
-                const km = p.distance_km || 0;
-                if (!km) return;
-                if (p.is_driving) totals[devId] += km;
-                else if (!p.is_stationary && !p.is_inside_geofence) walked[devId] += km;
+            // The SAME rule the per-day card uses, on purpose: walked km is the
+            // geometry between consecutive stored points, split by
+            // classification (computeLegsForDay). This used to sum the stored
+            // `distance_km` per row instead -- and the backend stores walking
+            // rows with distance 0, deliberately (computeDriving's walking
+            // branch: walked distance has never been the stored quantity). So
+            // the month could never show a walked figure at all, while the day
+            // card, which measures the path, always could: one number on one
+            // screen and its absence on another. Anything that computes a total
+            // from these rows must go through this one function.
+            const legs = computeLegsForDay(pings);
+            legs.forEach(function(l) {
+                totals[devId] += l.drivenKm || 0;
+                walked[devId] += l.walkedKm || 0;
             });
         }
 
@@ -2989,21 +3055,46 @@ function exportCurrentDay(format) {
         return;
     }
 
+    // GPX carries the WHOLE day -- every point the review overlay draws, in
+    // segments broken exactly where the map breaks its lines (leg change,
+    // change of mode, gap). It used to filter `is_driving`, so a day with no
+    // driving in it exported an EMPTY file while the CSV and the KML beside it
+    // carried every row: three buttons on one row disagreeing about what "this
+    // day" means. A GPX is a route record, and a walk is part of the route.
     const cache = window._currentDayPingsCache || {};
     let gpx = '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="WAY">\n';
     let any = false;
     DEVICES.forEach(function(devId) {
-        const devPings = (cache[devId] || []).filter(function(p) { return p.is_driving; }).sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
+        const devPings = (cache[devId] || []).filter(shouldDrawPoint).sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
         if (devPings.length < 2) return;
         any = true;
-        gpx += '  <trk><name>' + devId + ' - ' + selectedDateStr + '</name><trkseg>\n';
+        gpx += '  <trk><name>' + devId + ' - ' + selectedDateStr + '</name>\n';
+        let seg = [], lastTs = null, lastLeg = null, segDriving = null;
+        const flush = function() {
+            if (seg.length < 2) { seg = []; return; }
+            gpx += '    <trkseg>\n';
+            seg.forEach(function(p) {
+                gpx += '      <trkpt lat="' + p.latitude + '" lon="' + p.longitude + '"><time>' + p.timestamp + '</time></trkpt>\n';
+            });
+            gpx += '    </trkseg>\n';
+            seg = [];
+        };
         devPings.forEach(function(p) {
-            gpx += '    <trkpt lat="' + p.latitude + '" lon="' + p.longitude + '"><time>' + p.timestamp + '</time></trkpt>\n';
+            const ts = new Date(p.timestamp).getTime();
+            const leg = (p.leg_id !== undefined && p.leg_id !== null) ? p.leg_id : null;
+            const driving = !!p.is_driving;
+            const gapSec = (lastTs === null) ? Infinity : (ts - lastTs) / 1000;
+            if (seg.length && (driving !== segDriving ||
+                (leg !== null && lastLeg !== null && leg !== lastLeg) || gapSec > CONFIG.TRACK_GAP_SECONDS)) flush();
+            seg.push(p);
+            segDriving = driving;
+            lastTs = ts; lastLeg = leg;
         });
-        gpx += '  </trkseg></trk>\n';
+        flush();
+        gpx += '  </trk>\n';
     });
     gpx += '</gpx>';
-    if (!any) { alert('No driving data to export for this date.'); return; }
+    if (!any) { alert('No track data to export for this date.'); return; }
 
     const blob = new Blob([gpx], { type: 'application/gpx+xml' });
     const url = URL.createObjectURL(blob);

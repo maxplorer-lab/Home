@@ -183,6 +183,12 @@
   var PIN_KEY = 'live_pin';
   var POLL_MS = 5000;
   var STALE_MS = 120000;   // "live" stops claiming to be live after 2 min
+  // The zoom this page OPENS at and RETURNS to. 14 put the device in a
+  // neighbourhood blob; the question an outsider is holding this page to answer
+  // is "which street is she on", and that is a 17. It is deliberately NOT the
+  // household map's own follow zoom (16, a per-person preference there): this
+  // is one page with one job, and nothing here should have to be configured.
+  var FOLLOW_ZOOM = 17;
   var map = null, marker = null, line = null, timer = null, following = true, watchOn = false;
   // The fluid clock and the camera come from the shared module (the same code
   // the household map runs). This view is FLUID ONLY -- there is no pace switch
@@ -486,7 +492,7 @@
       }
       // The device starts in the MIDDLE of the screen, which is the position
       // the camera's cycle assumes at its start.
-      map.setView(at, 14);
+      map.setView(at, FOLLOW_ZOOM);
       cursor = { lat: state.lat, lng: state.lng };
       line = L.polyline([], { color: '#16a34a', weight: 4, opacity: .55, lineJoin: 'round' }).addTo(map);
       marker = L.circleMarker(at, {
@@ -501,7 +507,9 @@
         following = true; $('recentre').classList.remove('on');
         if (map && cursor) {
           followDriver.notifyPlaced(Date.now());
-          map.setView([cursor.lat, cursor.lng], Math.max(map.getZoom(), 14));
+          // Back to the follow view exactly: Recentre means "show me the device
+          // the way this page shows it", not "whatever zoom I last pinched to".
+          map.setView([cursor.lat, cursor.lng], FOLLOW_ZOOM);
         }
       });
       startFrames();

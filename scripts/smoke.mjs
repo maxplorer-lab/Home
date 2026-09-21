@@ -65,12 +65,42 @@ function check(name, condition, detail = '') {
 function fnBody(src, name) {
   const at = src.indexOf(`function ${name}(`)
   if (at === -1) return null
-  const open = src.indexOf('{', at)
+  // Walk past the PARAMETER LIST first: parameters carry their own parens, and a
+  // signature is not the body.
+  let i = src.indexOf('(', at)
+  if (i === -1) return null
+  let pdepth = 0
+  for (; i < src.length; i++) {
+    if (src[i] === '(') pdepth++
+    else if (src[i] === ')') { pdepth--; if (pdepth === 0) { i++; break } }
+  }
+  let open = src.indexOf('{', i)
   if (open === -1) return null
+  // …then past a brace-wrapped RETURN TYPE. `function computeDriving(...):
+  // { isDriving: boolean; distance: number } {` opens with a brace before its
+  // body, and taking the first one after the name returns the TYPE — which reads
+  // as "this function has no walking returns at all" and makes a guard silently
+  // vacuous (exactly what happened the first time the walking-anchor check ran).
+  // The signature's braces are the ones that sit right after `:` (or `|`/`&`, for
+  // a union), so those are the ones to hop over; a `Promise<X>`/`void` return type
+  // has no brace of its own and the first brace after it IS the body.
+  for (;;) {
+    if (!/[:|&]$/.test(src.slice(i, open).trimEnd())) break
+    let depth = 0, j = open
+    for (; j < src.length; j++) {
+      if (src[j] === '{') depth++
+      else if (src[j] === '}') { depth--; if (depth === 0) break }
+    }
+    let k = j + 1
+    while (k < src.length && /\s/.test(src[k])) k++
+    const next = src.indexOf('{', k)
+    if (next === -1) return null
+    open = next
+  }
   let depth = 0
-  for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++
-    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open, i + 1) }
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++
+    else if (src[j] === '}') { depth--; if (depth === 0) return src.slice(open, j + 1) }
   }
   return null
 }
@@ -1531,6 +1561,178 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     /const wasInside =\s*prior\.geoState === "CONFIRMED_INSIDE" \|\| prior\.geoState === "EXITING"/.test(doCode) &&
       /if \(!wasInside && next\.geoState === "CONFIRMED_INSIDE"\)/.test(doCode),
     'the arrival is keyed on the literal OUTSIDE name, so after a silent crossing the next real arrival — and its gate push — is never announced')
+
+  // ── The map must agree with the ENGINE, not with a drawing of it ────────
+  // Two surfaces can each be "right" and still contradict each other. Each
+  // guard below is a place where that had already happened, so they are fixed
+  // as laws rather than as the three bugs they were.
+  //
+  // Everything below reads the page with its COMMENTS STRIPPED, and that is not
+  // tidiness: the fix for the monthly totals explains itself by naming
+  // `distance_km`, so a guard matching the raw page would have red-flagged a
+  // correct fix for mentioning the very thing it stopped doing. (It did, on
+  // the first run.) The suite's usual rule — a source guard must not be able to
+  // pass on its own prose — cuts both ways.
+  const wayCode = strip(way)
+
+  // (1) The fence circle. It was ONE hardcoded radius for every fence (90 m)
+  // while the engine reads each fence's own row — and production carries three
+  // fences resized to a 100 m exit radius, so the drawn boundary sat 10 m
+  // inside where a departure actually confirms. The circle is what the eye
+  // reads as "the fence", and the post-exit track starts where it crosses
+  // that very edge, so it is the one drawn line that cannot be approximate.
+  const exitRadiusFn = fnBody(wayCode, 'fenceExitRadiusM')
+  const circlesFn = fnBody(wayCode, 'drawGeofenceCircles')
+  check('a fence is drawn at its OWN exit radius, not one radius for all of them',
+    !!exitRadiusFn && /\.exitRadiusM/.test(exitRadiusFn) &&
+    !!circlesFn && circlesFn.includes('radius: fenceExitRadiusM(f)'),
+    'the map draws a fixed circle instead of each fence\'s own exit radius — the drawing and the engine disagree about where the fence is')
+
+  // …and the fallbacks for a fence that names neither must BE the backend's
+  // numbers rather than lookalikes: a page-side 60/40 would draw every default
+  // fence wrong while the engine kept triggering at its own radius.
+  const feEntry = Number((wayCode.match(/GEOFENCE_ENTRY_RADIUS_M: ([0-9.]+)/) || [])[1])
+  const feBuffer = Number((wayCode.match(/GEOFENCE_EXIT_BUFFER_M: ([0-9.]+)/) || [])[1])
+  const beEntry = Number((cfgSrc.match(/DEFAULT_GEOFENCE_RADIUS_M: ([0-9.]+)/) || [])[1])
+  const beBuffer = Number((cfgSrc.match(/EXIT_RADIUS_BUFFER_M: ([0-9.]+)/) || [])[1])
+  check('the map\'s fence fallbacks are the backend\'s own two numbers',
+    Number.isFinite(feEntry) && feEntry === beEntry && feBuffer === beBuffer,
+    `the page uses ${feEntry}m + ${feBuffer}m where config.ts says ${beEntry}m + ${beBuffer}m`)
+
+  // (2) The month's km. There is ONE rule for turning stored rows into
+  // distance — computeLegsForDay, geometry between consecutive points, split
+  // by classification — and the month must use the same one the day card does.
+  // It used to sum each row's stored distance_km instead, and the backend
+  // stores walking rows with distance 0 by design (computeDriving's walking
+  // branch), so the month could never show a walked figure while the day
+  // always could. Read against production when this was fixed: 0 rows out of
+  // 14,000+ carried a walked distance, so it was 0.0 km, every month.
+  const monthFn = fnBody(wayCode, 'loadMonthlyTotals')
+  const legsFn = fnBody(wayCode, 'computeLegsForDay')
+  check('the month adds its km up with the same rule as the day',
+    !!monthFn && monthFn.includes('computeLegsForDay(') && !/distance_km/.test(monthFn) &&
+    !!legsFn && legsFn.includes('walkedKm'),
+    !monthFn ? 'loadMonthlyTotals is not in the page'
+      : 'the monthly totals read a per-row distance again, so walked km can only read 0 while the day card shows a real one')
+
+  // (3) The ETA the HUD promises and the approach push the phone gets are the
+  // same judgement made twice, in two languages. The two thresholds have to
+  // match, or the map shows an arrival countdown for a drive the notifier
+  // never fires on (and the badge never pulses).
+  const etaMin = Number((wayCode.match(/ETA_MIN_SPEED_KMH: ([0-9.]+)/) || [])[1])
+  const etaBearing = Number((wayCode.match(/ETA_MAX_BEARING_DIFF_DEG: ([0-9.]+)/) || [])[1])
+  const doMin = Number((doCode.match(/APPROACH_MIN_SPEED_KMH = ([0-9.]+)/) || [])[1])
+  const doBearing = Number((doCode.match(/APPROACH_MAX_BEARING_DIFF = ([0-9.]+)/) || [])[1])
+  check('the HUD\'s ETA uses the same thresholds as the approach notification',
+    Number.isFinite(etaMin) && etaMin === doMin && etaBearing === doBearing,
+    `the page uses ${etaMin} km/h / ${etaBearing}° where the DO uses ${doMin} km/h / ${doBearing}°`)
+
+  // (4) Neither page can be verified by reading its text: a syntax error in an
+  // inline script is a blank app, served happily, with a 200. By design there
+  // is no build step, which makes this the only compile either page gets — and
+  // until it existed, nothing caught one (the page's own header named a
+  // `check:dashboard` script this repo does not have).
+  const { Script } = await import('node:vm')
+  const inlineScripts = (html) =>
+    [...html.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1])
+  for (const [label, html] of [
+    ['/way/index.html', way],
+    ['/live/index.html', await body(await req('/live/index.html'))],
+  ]) {
+    const blocks = inlineScripts(html)
+    let broken = ''
+    for (const code of blocks) {
+      try { new Script(code) } catch (e) { broken = String((e && e.message) || e); break }
+    }
+    check(`${label}: its inline script compiles`,
+      blocks.length > 0 && !broken,
+      broken ? `a syntax error here renders a blank page, served with a 200: ${broken}`
+        : `no inline script found to compile (${blocks.length})`)
+  }
+
+  // (5) The build marker is the only way to tell a stale browser tab from a
+  // broken deploy, so it has to move with the page it labels. Compared against
+  // the last commit that TOUCHED the page rather than against "today" (which
+  // would go red by itself), and skipped when git cannot answer — a shallow
+  // export has no history to compare against.
+  const markerDate = (way.match(/const WAY_BUILD = '([0-9]{4}-[0-9]{2}-[0-9]{2})/) || [])[1]
+  let pageCommitDate = null
+  try {
+    const { execFileSync } = await import('node:child_process')
+    pageCommitDate = execFileSync(
+      'git', ['log', '-1', '--format=%cs', '--', 'public/way/index.html'],
+      { cwd: new URL('..', import.meta.url), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim() || null
+  } catch (e) { pageCommitDate = null }
+  check('the build marker is at least as new as the page it labels',
+    !!markerDate && (!pageCommitDate || markerDate >= pageCommitDate),
+    !markerDate ? 'WAY_BUILD is missing or unparseable'
+      : `WAY_BUILD says ${markerDate} but the page last changed on ${pageCommitDate} — a tab that is only stale would read as a broken deploy`)
+
+  // (6) A walking ping moves the DISTANCE anchor as well. The walking branch
+  // deliberately stores distance 0 — the page measures a walking leg's geometry
+  // (see (2)) — but it used to leave `lastRecordedPoint` where the last DRIVING
+  // point was, so the drive after a walk measured from there and was charged the
+  // whole walked stretch. Every walking return must re-anchor first; the two
+  // returns are counted so a third one added later cannot quietly skip it.
+  const driveFn = fnBody(smSrc, 'computeDriving')
+  const walkReturns = ((driveFn || '').match(/return \{ isDriving: false, distance: 0\.0 \};/g) || []).length
+  const anchoredWalks =
+    ((driveFn || '').match(/s\.lastRecordedPoint = \[lat, lon, dt\];\s*return \{ isDriving: false, distance: 0\.0 \};/g) || []).length
+  check('a walking ping moves the distance anchor, so the drive after a walk is not charged the walk',
+    !!driveFn && walkReturns === 2 && anchoredWalks === walkReturns,
+    !driveFn ? 'computeDriving is not in the state machine'
+      : `${anchoredWalks} of ${walkReturns} walking returns re-anchor the distance measurement — the rest leave the next driving segment measuring from the last driving point, so a walk is counted as driven km`)
+
+  // (7) An entry is confirmed by the dwell timer and NOTHING else. Two things
+  // are pinned here: the unreachable "keep-alive" confirmation this module was
+  // ported with (a boolean that was read but never set, so its branch and the
+  // `is_keep_alive` column it fed could only ever say "no"), and the guarantee
+  // that no path skips ENTRY_GUARD_SECONDS — which a second `confirmEntry(` call
+  // above the timer is exactly how you would break.
+  const outsideFn = fnBody(smSrc, 'processOutside')
+  check('an entry is confirmed by the dwell timer, and nothing else can claim one',
+    !!outsideFn && (outsideFn.match(/confirmEntry\(/g) || []).length === 1 &&
+      outsideFn.indexOf('ENTRY_GUARD_SECONDS') < outsideFn.indexOf('confirmEntry(') &&
+      !/keepAliveInside/.test(smSrc),
+    !outsideFn ? 'processOutside is not in the state machine'
+      : 'a keep-alive confirmation came back, or an entry can be confirmed without the guard window — a drive-past would be logged as an arrival')
+
+  // (8) A reviewed day is drawn the way the LIVE trail draws it. The overlay
+  // painted every segment with the driving weight and opacity, so a walk
+  // reviewed after the fact looked like a drive: the same day, told two ways by
+  // two views of one app.
+  const dayMapFn = fnBody(wayCode, 'showDayOnMap')
+  check('a reviewed day draws a walking leg as a walk, not as a drive',
+    !!dayMapFn && dayMapFn.includes('walkingLineStyle(color)') && /driving !== segDriving/.test(dayMapFn),
+    !dayMapFn ? 'showDayOnMap is not in the page'
+      : 'the whole-day review has one style for every segment, so a past walk is drawn at driving weight')
+
+  // (9) GPX carries the whole day — every point the review overlay draws —
+  // while it used to filter `is_driving`, so a walking day exported an empty
+  // file beside a CSV and a KML that both carried every row.
+  const gpxFn = fnBody(wayCode, 'exportCurrentDay')
+  check('the GPX holds the whole day, like the CSV and the KML beside it',
+    !!gpxFn && /\.filter\(shouldDrawPoint\)/.test(gpxFn) && gpxFn.includes('<trkseg>') &&
+      !/filter\(function\(p\) \{ return p\.is_driving/.test(gpxFn),
+    !gpxFn ? 'exportCurrentDay is not in the page'
+      : 'the GPX export filters the day down to driving again, so a walk-only day downloads an empty track')
+
+  // (10) ONE rule turns stored rows into a distance, and the HUD wears the same
+  // number as the Trips card. The badge beside the map added each ping's stored
+  // `distance_km` as it arrived while the card measured the path, so one screen
+  // carried two figures for one day.
+  const hudKmFn = fnBody(wayCode, 'refreshTodayDist')
+  const newPingFn = fnBody(wayCode, 'handleNewPing')
+  const snapshotFn = fnBody(wayCode, 'handleSnapshot')
+  const trackPointFn = fnBody(wayCode, 'handleTrackPoint')
+  check('the HUD\'s "km today" is the Trips card\'s number, recomputed not accumulated',
+    !!hudKmFn && hudKmFn.includes('computeLegsForDay(') && hudKmFn.includes('drivenKm') &&
+      !!newPingFn && newPingFn.includes('refreshTodayDist(') &&
+      !!snapshotFn && snapshotFn.includes('refreshTodayDist(') &&
+      !!trackPointFn && trackPointFn.includes('refreshTodayDist(') &&
+      !/todayDist\[\w+\] \+=|todayDist\[\w+\] = \(todayDist/.test(wayCode),
+    'the HUD adds a per-row distance again, so the badge and the Trips card can show two different numbers for one day')
 }
 
 // ─── 16. installable on Android + readable on both shapes ───────
@@ -1598,6 +1800,49 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
   check('apple-touch-icon is a square PNG (iOS would letterbox a rectangle)',
     appleRef.status === 200 && !!apple && apple.w === apple.h && apple.w >= 180,
     apple ? `${apple.w}x${apple.h}` : `status ${appleRef.status}`)
+
+  // ── WAY is a SECOND installable scope, and every rule above applies to it
+  // verbatim. Nothing checked that until now, which is exactly how both of its
+  // icons came to be 1254x1254 while declaring `512x512` — 1.0 MB and 939 KB,
+  // both listed in /way/sw.js's PRECACHE, so every install pulled ~2 MB of
+  // icon over a phone connection for a mark the launcher draws at 192 px. The
+  // root manifest had a guard for this class all along (the check above); the
+  // /way/ scope simply was not covered by it.
+  const wayManRes = await req('/way/manifest.json')
+  const wayManBody = await body(wayManRes)
+  let wayMan = null
+  try { wayMan = JSON.parse(wayManBody) } catch (e) {}
+  check('the WAY manifest is served and declares its own install',
+    wayManRes.status === 200 && !!wayMan && wayMan.start_url === '/way/' &&
+      wayMan.scope === '/way/' && wayMan.display === 'standalone',
+    `${wayManRes.status} start_url=${wayMan?.start_url} scope=${wayMan?.scope} display=${wayMan?.display}`)
+
+  const wayFetched = []
+  for (const icon of wayMan?.icons || []) {
+    const r = await req(icon.src)
+    const bytes = Buffer.from(await r.arrayBuffer())
+    const dim = pngSize(bytes)
+    const want = icon.sizes.split('x')
+    check(`WAY icon ${icon.src} is a ${icon.sizes} PNG`,
+      r.status === 200 && !!dim && dim.w === Number(want[0]) && dim.h === Number(want[1]),
+      `${r.status} ${dim ? `${dim.w}x${dim.h}` : 'not a PNG'} — ${(bytes.length / 1024).toFixed(0)} KB`)
+    if (dim) wayFetched.push({ src: icon.src, purpose: icon.purpose || 'any', hash: sha(bytes) })
+  }
+
+  const wayAny = new Set(wayFetched.filter((f) => f.purpose.split(' ').includes('any')).map((f) => f.hash))
+  const wayMask = wayFetched.filter((f) => f.purpose.split(' ').includes('maskable'))
+  check("WAY's maskable icon is its own artwork, not a copy of the plain one",
+    wayMask.length > 0 && wayMask.every((m) => !wayAny.has(m.hash)),
+    'the maskable icon is byte-identical to an any icon — Android would clip the mark')
+
+  // A manifest and a service worker that disagree about which icons exist is
+  // how an install ends up paying for a file no launcher will ever ask for.
+  const waySw = await body(await req('/way/sw.js'))
+  const wayPrecache = (waySw.match(/const PRECACHE = \[([\s\S]*?)\]/) || [])[1] || ''
+  check("WAY's precache and its manifest name the same icons",
+    (wayMan?.icons || []).length > 0 &&
+      (wayMan?.icons || []).every((i) => wayPrecache.includes(`'${i.src}'`)),
+    `manifest lists ${(wayMan?.icons || []).map((i) => i.src).join(' ')} but the worker precaches ${(wayPrecache.match(/'[^']*'/g) || []).join(' ')}`)
 
   // ── The service workers: installable AND honest about what they cache ──
   // There are TWO of them, and the scope rule means the narrower one wins for a
@@ -2742,6 +2987,26 @@ log('\n20. The live share: one device, one code, until midnight UTC')
     (liveSrc.match(/L\.tileLayer\(/g) || []).length === 1 &&
     /HomeBasemaps\.streets/.test(liveSrc) && !/L\.control\.layers|baseMaps/.test(liveSrc),
     'the share offers layers to switch, or names a tile host of its own: an outsider gets the map that always works, not a choice to make — and a host named in this file is the dependency that broke this page when OSM blocked the app (2026-09-20)')
+  // ── …and it OPENS and RECENTRES at street level ──
+  // The page used to open at 14 (a neighbourhood blob) and Recentre clamped to
+  // "at least 14", so the question an outsider is holding this page to answer —
+  // which street is she on — was the one zoom it could not show. The level is
+  // declared once, both call sites must read it, and it may not exceed what the
+  // one background this page draws can actually serve (a native-zoom ceiling
+  // asks the CDN for tiles that do not exist, and Leaflet upscales the last one
+  // into a blur — the map looks fine and is wrong).
+  const liveCode = liveSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const basemapsLive = await body(await req('/shared/basemaps.js'))
+  const streetsNative = Number((basemapsLive.match(/streets:\s*\{[\s\S]*?maxNativeZoom:\s*(\d+)/) || [])[1])
+  const followZoom = Number((liveCode.match(/var FOLLOW_ZOOM = (\d+)/) || [])[1])
+  check('the share opens and recentres at street level, inside what its background can serve',
+    Number.isFinite(followZoom) && followZoom >= 16 &&
+      Number.isFinite(streetsNative) && followZoom <= streetsNative &&
+      /map\.setView\(at, FOLLOW_ZOOM\)/.test(liveCode) &&
+      /map\.setView\(\[cursor\.lat, cursor\.lng\], FOLLOW_ZOOM\)/.test(liveCode) &&
+      !/map\.setView\([^)]*,\s*(1[0-5]|14)\)/.test(liveCode),
+    !Number.isFinite(followZoom) ? 'the share declares no FOLLOW_ZOOM'
+      : `the share follows at ${followZoom} where its one background serves ${streetsNative}, or a setView still names a zoom of its own — an outsider cannot read a street name from a neighbourhood overview`)
   // ── the badge is a speedometer, and the household map's is its twin ──────
   // WAY's readout is the model: a large tabular figure with the unit under it.
   // The share's is checked against the SAME shape, so "a real dashboard font"
@@ -2896,6 +3161,22 @@ log('\n21. Settings → Map: the share row')
   check('the missing-table answer names the migration to apply',
     /0006_share_links\.sql/.test(fnBody(shareSrc21, 'shareErrorText') || ''),
     'the message for the likeliest break does not say which file to run, so the fix is not in the error')
+
+  // …and the same rule at the BOUNDARY, which is where the one above cannot
+  // reach: a throw in `requireUser`, or in the identity lookup the minter does
+  // before lib/share.ts is ever called, escaped as a bodyless 500 — and a JSON
+  // client flattens that back into the same "Could not generate a code." the
+  // named errors exist to end. Seen live on POST /api/share (2026-09-21), so
+  // this is a real answer that was missing, not a defensive habit.
+  const wayWorkerSrc = readFileSync(new URL('../src/way/worker.ts', import.meta.url), 'utf8')
+  const handleWayBody = fnBody(wayWorkerSrc, 'handleWay') || ''
+  check('an unexpected throw on WAY\'s API answers a sentence, never a bodyless 500',
+    handleWayBody.indexOf('try {') > -1 &&
+    handleWayBody.indexOf('try {') < handleWayBody.indexOf('return isAuth') &&
+    /catch \(e\)/.test(handleWayBody) &&
+    /Content-Type": "application\/json"/.test(handleWayBody) &&
+    /console\.error/.test(handleWayBody),
+    'a throw above the named-error layer answers a bodyless 500 again — the page can only say "Could not generate a code.", and nothing is logged to say why')
 
   check('both doors report a failed mint with the same words',
     // The TEXT and the STATUS together, from the same module: a typo is the

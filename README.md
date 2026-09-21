@@ -38,7 +38,12 @@ shapes come from one list, so a tab cannot exist in one and not the other. On
 Android (Chrome/Brave) it installs as a real app: a proper manifest, a
 spec-correct maskable icon and a service worker that caches static assets
 only — never a page or an API response, because this is a household app on
-possibly shared devices.
+possibly shared devices. There are **two** installable scopes: the app itself
+at `/`, and WAY's map at `/way/` (its own manifest and worker, for the one
+screen that is worth full-screen). Each file must exist at exactly the size its
+manifest advertises — a wrong-size icon is rejected silently, and WAY's used to
+be 1254×1254 files declaring `512x512`, which put ~2 MB of icon in every
+install's precache.
 
 ## One app, one look
 
@@ -188,7 +193,15 @@ unaffected — the same points, the same classifications, the same colours, dash
 and stationary dots, the same **Flush now**. The HUD is live while the map is
 behind, and the one line that names the lag sits under the pace pills in
 **Settings → Map** (blue, shown on Smooth and removed on Live), and the Trips
-summary keeps reading the database, so "driven this month" is unchanged.
+summary keeps reading the database, so "driven this month" is unchanged. **All
+of it reads one number one way**: the HUD's "km today" is recomputed from the day's
+rows through the same function the Trips card and the monthly line use
+(`computeLegsForDay` — the geometry between consecutive stored points, split into
+driven and walked), where it used to add each ping's stored per-row distance as it
+arrived and could read a different figure for the same day than the card beside
+it. A reviewed past day is drawn by the live trail's own rules too, so a walking
+stretch stays the thin dashed line it was — and the GPX export for that day holds
+the whole day, not only the driving parts.
 
 The trade the lag buys: motion you can actually watch. The cost: a just-arrived
 position reaches the map half a minute later — so the pace is a **switch**, in
@@ -240,7 +253,11 @@ bound to a device that has an account, and the name is read from it, so there is
 no text box anywhere that could put one person's name over another's map. A
 person can have **one** live code at a time — making a new one replaces it.
 
-The viewer sees where the device is **now** and where it has been **since the code was created** — never the whole day, so an outsider handed a code at 14:00 cannot see the morning. Their lower badge is the household map's HUD, speedometer included: the **live** speed as a large figure coloured by the same ramp the household trail uses, then the street and number, suburb and first division (Nominatim, refreshed on a 10 s clock of its own). The map moves exactly like the household's — the same fluid cursor and follow camera from one shared engine, with no live/real-time switch — so the numbers are live while the dot glides about 25 s behind.
+It opens at **street level** (zoom 17) and Recentre returns there: the viewer's
+question is "which street is she on", which an overview cannot answer. Rural
+areas can look thin at that level in the provider's street raster — that is the
+provider's data density, not a fault, and the answer is not to point the page at
+another tile server. The viewer sees where the device is **now** and where it has been **since the code was created** — never the whole day, so an outsider handed a code at 14:00 cannot see the morning. Their lower badge is the household map's HUD, speedometer included: the **live** speed as a large figure coloured by the same ramp the household trail uses, then the street and number, suburb and first division (Nominatim, refreshed on a 10 s clock of its own). The map moves exactly like the household's — the same fluid cursor and follow camera from one shared engine, with no live/real-time switch — so the numbers are live while the dot glides about 25 s behind.
 
 Mint from **WAY → Settings → Map**, under the *Map pace* switch: pick the person
 there (until you do, it offers the device the map is following), the button names
@@ -325,8 +342,16 @@ carry the same six tabs, a jar holding only `home_session` self-repairs on all
 three modules, the live share hands out exactly one device (mint → wrong code
 refused and receipted → resolve → revoke), and the install assets are genuinely
 installable (manifest fields, icon sizes that match the files, a maskable icon
-that is not a copy of the plain one, a service worker that handles fetches). It
-exits non-zero on any regression.
+that is not a copy of the plain one, a service worker that handles fetches) — in
+both installable scopes, `/` and `/way/`. It also holds the map to the engine
+rather than to a drawing of it: a fence is drawn at **its own** exit radius,
+the month totals km through the same rule as the day — the HUD's "km today" and
+the reviewed day's walking dashes and GPX included — a walking fix moves the
+distance anchor so the drive after it is not charged the walk, the share follows
+at a zoom its one background can serve, the HUD's arrival ETA uses
+the same thresholds as the push that announces it, both inline page scripts
+compile, and the build marker is never older than the page it labels. It exits
+non-zero on any regression.
 
 Secrets live in `.dev.vars` (never committed): `AUTH_PEPPER` (required,
 ≥16 chars) and `SESSION_SECRET` (signs W.A.Y tokens). First run: open

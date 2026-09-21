@@ -320,8 +320,11 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
 ### The live share (`/live`) — the ONE public door
 
 An admin can show **one device to one person outside the household**: they open
-`/live`, type a 6-digit code, and watch that device drive on a full-bleed OSM
-map with nothing else in it — no account, no app, nothing to install. This is
+`/live`, type a 6-digit code, and watch that device drive on a full-bleed
+**street map** with nothing else in it — no account, no app, nothing to
+install. (The background is Esri's labelled raster, from `/shared/basemaps.js`;
+it used to be OSM's standard tiles until that server blocked this app — see the
+basemap section below. Nothing on either map names a tile URL of its own.) This is
 the case the app is for ("she is still driving; here is how you watch her"), and
 it is the single exception to "everything is behind one login", so it is built
 as though every request were hostile. `AGENTS.md` rule 31 carries the traps;
@@ -353,6 +356,20 @@ smoke section 20 proves it live rather than by grepping.
   *Regenerate* instead, and the one-tap link puts the code in the **fragment**
   (`/live#123456`) so it never reaches a request line, an access log or a
   referrer.
+* **The viewer's follow zoom is 17, declared once** (`FOLLOW_ZOOM` in
+  `public/live/index.html`): the page opens there and Recentre returns there.
+  It used to open at 14 and clamp to "at least 14", i.e. a neighbourhood blob,
+  while the question the viewer is holding the page to answer — *which street is
+  she on* — is a 17. It is deliberately NOT the household map's own follow zoom
+  (16, a per-person preference there, `FOLLOW_ZOOM_LEVEL`): one page, one job,
+  nothing to configure. The number is bounded by what the single background can
+  serve natively — asking past `maxNativeZoom` returns the last real tile
+  upscaled, so the map looks fine and is wrong — and smoke asserts
+  `16 ≤ FOLLOW_ZOOM ≤ streets.maxNativeZoom` plus that no `setView` names a zoom
+  of its own. **Expect thin detail in rural areas at 17**: Esri's street raster
+  carries little at that level over Madagascar (a z17 tile is ~2.4 KB against
+  ~6.5 KB at z14, both genuinely served), so the level is a choice about
+  legibility, not a fault to fix by moving to another tile host.
 * `GET /live/api/state?pin=…` answers one device's newest fix plus a bounded
   track **since the code was created** — the window IS the grant, so an outsider
   handed a code at 14:00 cannot see where the car went this morning. The window
@@ -864,6 +881,53 @@ driven/walked totals come from `GET /way/api/history` (D1) and are summed
   `devicePings` list, never from the playback buffer. `devicePings` stays the
   complete, timestamp-ordered record — the buffer and the commit state are
   additive display state, never a truncation of it.
+* **…but there is ONE rule for turning rows into kilometres, and both the month
+  and the day use it** (`computeLegsForDay`: the geometry between consecutive
+  stored points, split by each point's classification). The month used to sum
+  each row's stored `distance_km` instead — and the backend stores *walking*
+  rows with distance 0 by design (`computeDriving`'s walking branch: walked
+  distance has never been a stored quantity). So the month could not report
+  walked km at all, while the day card — which measures the path — always did:
+  production held **0** walking rows with a distance, out of 14,000+, when this
+  was fixed. Anything that totals these rows goes through the one function, and
+  smoke section 15 fails if a second arithmetic appears. **That includes the
+  HUD's "km today"**, which is recomputed from these rows (`refreshTodayDist`)
+  instead of accumulated from each ping as it arrives: the badge and the card
+  beside it showed two different numbers for one day (`1.8 km today` against a
+  day card reading `0.9 km` in local data), because the accumulator was the
+  other quantity, not a rounding of the same one.
+* **A walking ping moves the distance ANCHOR too.** `computeDriving`'s walking
+  return stores `distance: 0` on purpose — but it also advances
+  `lastRecordedPoint`, because that anchor is where the *next* driving segment
+  measures from. It used to be left where the last driving point was, so a walk
+  to the shop and back was charged to the drive home: the resumed segment's
+  stored `distance_km` came out 0.11572 km instead of 0.10520 km in the engine
+  probe (`scripts/one-off/2026-09-21-walking-anchor/probe.mjs`), which is the
+  difference between a fixed GPS and a kilometre of walked street.
+
+**A fence is drawn at the radius its own logic triggers on.** The circle on the
+map is read per fence from `GET /way/api/geofences`: the fence's explicit
+`exit_radius_m`, else `radius_m + 40` (the backend's `EXIT_RADIUS_BUFFER_M`, in
+`config.ts`). Two numbers are mirrored on the page for that fallback and smoke
+section 15 fails if they drift from `config.ts`. It was **one** hardcoded radius
+for every fence (90 m), which stopped describing reality the moment a fence was
+resized: production carries three fences at a 100 m exit (Home1, Home3,
+Office2), so the map drew their boundary 10 m inside where a departure actually
+confirms. The circle is not decoration — the post-exit track begins at the
+point the segment crosses *this* radius (`exitBoundaryPoint`), so it is the one
+drawn line that must agree with the engine.
+
+**A reviewed day obeys the same two drawing rules as the live trail.** Opening a
+past date draws the whole day at once (`showDayOnMap`), and it breaks its lines
+at leg boundaries, at gaps **and at a change of mode**, so a walking stretch is
+the thin dashed line it was when the day was live. It used to paint every
+segment with the driving weight and opacity, i.e. a walk reviewed after the fact
+looked like a drive — one day, told two ways by two views of one app. The device
+colour stays the day's own choice: a review is about who moved, not how fast.
+The **GPX export follows the same filter and the same breaks** (`shouldDrawPoint`
+and one `<trkseg>` per run): it used to filter `is_driving`, so a walking day
+downloaded an **empty** file beside a CSV and a KML that both carried every row —
+three buttons on one row disagreeing about what "this day" means.
 
 **Invariants this rewrite is not allowed to break:** the geometry, colours
 (`SPEED_COLOR_STOPS`), walking dash, gap rule, stationary dots (colour, radius,
@@ -897,7 +961,9 @@ arrived alone after a multi-hour silence, where the implied speed is ~0.5 km/h
 and no distance threshold can see anything wrong; it then sat in the exit
 guard's buffer for 65 s — longer than the guard's window — and the guard
 confirmed. The giveaway is the triangle's first row: it sits *exactly* on the
-exit radius (90.0 m for Home1) and carries the wild ping's timestamp but the
+exit radius (90 m for Home1 as it was configured then; it is 100 m today, which
+is precisely why the map reads that number from the fence instead of holding
+one) and carries the wild ping's timestamp but the
 confirming ping's accuracy, because it is `exitBoundaryPoint`'s interpolation —
 a fence crossing the app never observed.
 

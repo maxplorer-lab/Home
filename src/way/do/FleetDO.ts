@@ -462,6 +462,11 @@ export class FleetDO extends DurableObject<Env> {
    * `drawn + collapsed + unwitnessed + paused`. Those two sums are the point -- they are
    * what turns "0 drawn" from alarming into explained, and a sum that does not
    * hold means a gate exists that nobody recorded.
+   *
+   * The two windows differ ON PURPOSE: `countGate` keeps the newest 80 rows so a
+   * session's worth of drops survives between readings, while a reading reports
+   * the newest 25 of them, because this rides in one JSON debug response that a
+   * phone may fetch. Neither number is the durable record -- the counters are.
    */
   private readGateLedger(): {
     gates: Array<{ gate: string; n: number; firstAt: string; lastAt: string }>;

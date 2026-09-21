@@ -79,16 +79,32 @@ export { postSystemChat } from "./system-chat";
 
 export async function handleWay(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const isAuth = url.pathname.startsWith("/api/auth/");
+  const isApi = isAuth || url.pathname.startsWith("/api/");
+  if (!isApi) return new Response("Not found", { status: 404 });
 
-  if (url.pathname.startsWith("/api/auth/")) {
-    return handleAuth(request, env, url.pathname);
+  // Both groups are read by a PAGE, so an unexpected failure must still answer
+  // with a sentence. This is the completion of a rule this app already learned
+  // the hard way: the share's own failures are NAMED (see lib/share.ts), and
+  // yet a throw ABOVE that layer — `requireUser` reading D1, the identity lookup
+  // the minter does first — still escaped as a bodyless 500, which a JSON client
+  // can only flatten back into "Could not generate a code.": the same sentence
+  // that names nothing, from a different cause. Observed for real on
+  // POST /api/share (2026-09-21), so this is not a hypothesis about a rare
+  // branch. Logged with its route — never swallowed, because a fault that
+  // answers politely still has to be findable in the logs.
+  try {
+    return isAuth
+      ? await handleAuth(request, env, url.pathname)
+      : await handleDashboardApi(request, env, url.pathname);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error(`WAY ${url.pathname} threw: ${detail}`);
+    return new Response(
+      JSON.stringify({ error: true, message: "Something went wrong on the server — try again" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
   }
-
-  if (url.pathname.startsWith("/api/")) {
-    return handleDashboardApi(request, env, url.pathname);
-  }
-
-  return new Response("Not found", { status: 404 });
 }
 
 /** μlogger ingest. App-global at /ulogger (the phone app cannot be

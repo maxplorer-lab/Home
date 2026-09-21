@@ -61,7 +61,6 @@ export interface MotionState {
 
   entryStartTime: string | null;
   pendingFenceName: string | null;
-  keepAliveInside: boolean;
   lastGeofenceName: string | null;
 
   motionMode: MotionMode;
@@ -100,7 +99,6 @@ export function initialMotionState(): MotionState {
     lastTs: null,
     entryStartTime: null,
     pendingFenceName: null,
-    keepAliveInside: false,
     lastGeofenceName: null,
     motionMode: "STAYING",
     anchor: null,
@@ -482,21 +480,15 @@ function processOutside(
 ): { state: MotionState; result: PingResult } {
   if (inside) {
     s.settlePending = false;
+    // NOTE: an instant "keep-alive" entry confirmation used to sit here -- a
+    // boolean that was read but NEVER set (so the branch was unreachable and
+    // the column it fed was written 0 on every row forever). It was a vestige
+    // of the standalone Python tracker, and it is gone rather than kept: a
+    // field no code can set is a feature that only looks implemented. The
+    // dwell timer below is the one entry rule.
     if (s.entryStartTime === null || s.pendingFenceName !== fenceName) {
       s.entryStartTime = dt;
       s.pendingFenceName = fenceName;
-      s.keepAliveInside = false;
-    }
-
-    if (s.keepAliveInside) {
-      confirmEntry(s, fenceName);
-      return {
-        state: s,
-        result: {
-          isInside: true, geofenceName: fenceName, speedAvg: 0.0,
-          isDriving: false, distance: 0.0, isStationary: false,
-        },
-      };
     }
 
     // Speed gate: passing by at speed restarts the dwell timer.
@@ -521,7 +513,6 @@ function processOutside(
   } else {
     s.entryStartTime = null;
     s.pendingFenceName = null;
-    s.keepAliveInside = false;
   }
 
   const motionResult = processMotion(s, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode);
@@ -536,7 +527,6 @@ function confirmEntry(s: MotionState, fenceName: string | null) {
   s.lastGeofenceName = fenceName;
   s.entryStartTime = null;
   s.pendingFenceName = null;
-  s.keepAliveInside = false;
 }
 
 // ------------------------------------------------------------------
@@ -703,6 +693,14 @@ function computeDriving(
     // No walking-guard leniency when explicitly forced -- a brief speed
     // burst (jogging, a short lift) shouldn't flip classification when
     // the household has said "today is a walking day."
+    // The ANCHOR still moves with the walk, even though the row carries no
+    // distance: leaving it at the last driving point makes the next driving
+    // segment measure from there, so the whole walked stretch is counted as
+    // driven (a walk to the shop and back inflated the drive home by its own
+    // length). Walking rows store distance 0 by design -- the page measures a
+    // walking leg's geometry instead (computeLegsForDay) -- but that is about
+    // the ROW's number, never about where the next measurement starts.
+    s.lastRecordedPoint = [lat, lon, dt];
     return { isDriving: false, distance: 0.0 };
   }
 
@@ -732,6 +730,8 @@ function computeDriving(
     return { isDriving: true, distance };
   }
 
-  // True walking.
+  // True walking. Same anchor rule as the forced branch above, for the same
+  // reason: the walked stretch belongs to no driving segment.
+  s.lastRecordedPoint = [lat, lon, dt];
   return { isDriving: false, distance: 0.0 };
 }
