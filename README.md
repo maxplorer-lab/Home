@@ -129,17 +129,52 @@ The itemized list is the same shape the CSV imported into, so Sompitra
 renders it as items with a total rather than a paragraph of text. The CSV
 download is still there for anyone who wants the file.
 
+## The pantry: the second shopping list
+
+Laoka's catalogue is two domains, and the split is deliberate:
+
+* **Meals** — Protein, Sides and Raw Salad. The planner draws a week from them,
+the week's list prices them, and that list becomes one expense (above).
+* **Pantry** — spices, oils, condiments, dry staples, and whatever the household
+adds (toilet paper, soap, batteries). Never planned, never on a week's list.
+
+The **🧺 Pantry** tab is the whole pantry: count what is at home with − and +,
+and anything **below its own reorder level** (2 by default; milk reorders at 1,
+rice at 5) appears on the **to-buy** list by itself. Nothing here changes on its
+own — cooking does not eat a shelf and shopping does not fill one — so the count
+is always the household's own statement. An item you never count stays out of it
+entirely.
+
+Going shopping is a **trip**, not a week: each row takes a **quantity** and the
+**price of one**, the restock price (their product) appears as you type, and the
+trip total is the sum of those. Then **send it to Sompitra**, which opens the same
+add-expense form meals use with the trip's lines and total already in it — you
+pick the category, and nothing is written until you save. Sending twice corrects
+the same expense instead of creating a second one. Stopped halfway through?
+*Clear the prices* walks away from the trip without touching a single count.
+
+Every number box in the app — these two included — is **typed, never nudged**: no
+spinner arrows, and the mouse wheel scrolls the list instead of stepping the value
+under the pointer (Laoka's prices commit when the box loses focus, so a wheel step
+used to *write* a price nobody typed). See rule 37 in `AGENTS.md`.
+
+Categories are managed right here — **New category**, and ✏️ / 🗑 on each
+heading. Removing one takes its items with it (the confirm says how many), and
+an empty category still shows, so nothing you make is ever out of reach. The meal
+Catalog deliberately knows nothing about any of it.
+
 ## A planned week can be forgotten
 
 Until it is confirmed, a week is a **proposal** — so an unwanted one has to be
 walkable-away-from rather than merely replaceable. In Laoka's **Plan** tab, the
 "This is the template" card ends with **🗑 Discard the template**: it forgets the
 saved plan, every price typed into the list it produced, and the pending draft,
-leaving the week open and empty so a fresh plan can be drawn for it. **Pantry
-items stay on the list** (with their prices) because they are on every list by
-design, and anything already sent to Sompitra **stays in the budget** — money
-recorded is not un-recorded by re-planning. A **confirmed** week refuses: it is
-settled, and the way out of a settled week is single-day swaps or archiving.
+leaving the week open and empty so a fresh plan can be drawn for it. Anything
+already sent to Sompitra **stays in the budget** — money recorded is not
+un-recorded by re-planning. (The **pantry is not part of a week's list** at all —
+it has its own tab and its own to-buy list — so a discarded template can never
+touch it.) A **confirmed** week refuses: it is settled, and the way out of a
+settled week is single-day swaps or archiving.
 
 ## Settings & notifications
 

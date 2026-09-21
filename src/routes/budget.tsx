@@ -363,10 +363,37 @@ budget.get('/add-expense', async (c) => {
     c.env.DB.prepare('SELECT * FROM category_groups ORDER BY sort_order').all<CategoryGroup>(),
   ])
 
+  // Two hand-offs land on this same form, because the household's part in both
+  // is identical: the priced lines arrive as the rows below, the description
+  // with them, and the category is still empty -- that choice is the whole point
+  // of landing here instead of posting straight into the budget. What differs is
+  // only where the numbers came from, which is what the hidden field carries:
+  //
+  //   ?from_laoka=<week>   the week's MEAL shopping (protein, sides, salads)
+  //   ?from_pantry=<trip>  a pantry shopping trip (staples, household goods)
+  const fromLaoka = Number(c.req.query('from_laoka') || 0)
+  const fromPantry = Number(c.req.query('from_pantry') || 0)
+  const laoka = fromLaoka ? await laokaHandoff(c.env, fromLaoka) : null
+  const pantry = !laoka && fromPantry ? await pantryHandoff(c.env, fromPantry) : null
+  const handoff = laoka || pantry
+  const initialLines = handoff ? handoff.lines : [{ name: '', price: '' }]
+
   return c.html(
     <Layout title="Add Expense" user={user} activeTab="budget">
       <div class="max-w-lg mx-auto">
         <h2 class="text-xl font-bold mb-5">💳 Add Expense</h2>
+
+        {handoff && (
+          <div class="mb-5 rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-3 text-sm">
+            <p class="font-semibold text-green-800 dark:text-green-300">
+              {laoka ? '🛒 Laoka shopping list' : '🧺 Pantry shopping trip'}
+            </p>
+            <p class="mt-1 text-green-700 dark:text-green-400">
+              {handoff.lines.length} bought item{handoff.lines.length === 1 ? '' : 's'}, {noteAmount(handoff.amount)}.
+              Pick the category, check the lines, then save — nothing is written to the budget until you do.
+            </p>
+          </div>
+        )}
 
         {/* Mode toggle */}
         <div class="flex gap-2 mb-5 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
@@ -411,6 +438,7 @@ budget.get('/add-expense', async (c) => {
             <div>
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name / Description *</label>
               <input type="text" name="description" id="expense-description" required placeholder="e.g. Snack, Groceries…"
+                value={handoff ? handoff.description : ''}
                 class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
             </div>
 
@@ -425,11 +453,13 @@ budget.get('/add-expense', async (c) => {
             <div id="mode-itemized" class="hidden">
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Line Items</label>
               <div id="line-items" class="space-y-2 mb-3">
-                <div class="flex gap-2 line-item">
-                  <input type="text" placeholder="Item name" class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-name" />
-                  <input type="number" placeholder="Price" min="0" step="1" class="w-28 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-price" oninput="recalcTotal()" />
-                  <button type="button" onclick="this.closest('.line-item').remove();recalcTotal()" class="text-red-400 hover:text-red-600 px-2">✕</button>
-                </div>
+                {initialLines.map((line) => (
+                  <div class="flex gap-2 line-item">
+                    <input type="text" value={line.name} placeholder="Item name" class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-name" />
+                    <input type="number" value={line.price} placeholder="Price" min="0" step="1" class="w-28 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-price" oninput="recalcTotal()" />
+                    <button type="button" onclick="this.closest('.line-item').remove();recalcTotal()" class="text-red-400 hover:text-red-600 px-2">✕</button>
+                  </div>
+                ))}
               </div>
               <div class="flex items-center gap-4 mb-3">
                 <button type="button" onclick="addLine()"
@@ -447,6 +477,11 @@ budget.get('/add-expense', async (c) => {
               <input type="hidden" name="itemized_total" id="itemized-total-input" value="0" />
               <input type="hidden" name="itemized_notes" id="itemized-notes-input" value="" />
             </div>
+
+            {/* Which week (or trip) these numbers came from, so saving can adopt
+                the expense that source already owns instead of adding a second. */}
+            {laoka && <input type="hidden" name="laoka_week" value={String(laoka.weekId)} />}
+            {pantry && <input type="hidden" name="pantry_trip" value={String(pantry.tripId)} />}
 
             {/* Notes */}
             <div>
@@ -679,12 +714,23 @@ budget.get('/add-expense', async (c) => {
             recalcTotal();
           }
         });
+
+        // A Laoka hand-off opens on the mode its lines belong to, with the total
+        // and the notes already built by the same function that builds them when
+        // a person types a price — one code path, so what is shown and what is
+        // saved cannot disagree.
+        if (${handoff ? 'true' : 'false'}) { showMode('itemized'); recalcTotal(); }
       `}} />
     </Layout>
   )
 })
 
 // ─── POST /budget/add-expense ─────────────────────────────────
+/** How many items an itemized entry holds: one note line each, which is what
+ * the ledger's item_count has always counted. The one-press path passes Laoka's
+ * own line count; a save from the pre-filled form counts what was saved. */
+const itemizedCount = (text: string | null) => (text || '').split('\n').filter(Boolean).length
+
 budget.post('/add-expense', async (c) => {
   const user = c.get('user')
   const body = await c.req.parseBody()
@@ -693,14 +739,20 @@ budget.post('/add-expense', async (c) => {
   const date = String(body.date)
   const categoryId = String(body.category_id)
   const description = String(body.description || '').trim() || null
-  const quickNotes = String(body.notes || '').trim() || null
+  // A form the BROWSER submits has every newline normalised to CRLF by the
+  // urlencoded serializer, so the same list typed by hand would be stored with
+  // different bytes than the same list sent by Laoka or the pantry. One shape,
+  // whichever door it came through: parseItemLines tolerates a stray CR, but the
+  // ledger's item_count and the details panel should not have to.
+  const lf = (v: unknown) => String(v || '').replace(/\r\n?/g, '\n')
+  const quickNotes = lf(body.notes).trim() || null
 
   let amount: number
   let notes: string | null
 
   if (mode === 'itemized') {
     amount = parseFloat(String(body.itemized_total || '0'))
-    const itemizedNotes = String(body.itemized_notes || '').trim()
+    const itemizedNotes = lf(body.itemized_notes).trim()
     notes = itemizedNotes || quickNotes
   } else {
     amount = parseFloat(String(body.amount || '0'))
@@ -709,11 +761,58 @@ budget.post('/add-expense', async (c) => {
 
   if (!amount || amount <= 0) return c.redirect('/budget?err=invalid_amount')
 
+  // A save that carries a Laoka week is that week's expense, not a new one. If
+  // the week already has one (sent from Laoka, or saved twice from a stale tab),
+  // the SAME transaction is corrected -- amount and notes only, never the date,
+  // category or description the household chose. That is the rule the one-press
+  // path already follows, and it is what makes this form safe to resubmit.
+  const laokaWeek = Number(body.laoka_week || 0)
+  const pantryTrip = Number(body.pantry_trip || 0)
   const id = generateId()
+  let adopted: string | null = null
+  if (laokaWeek && mode === 'itemized') {
+    const existing = await c.env.HOME_DB.prepare('SELECT transaction_id FROM laoka_imports WHERE laoka_week_id = ?')
+      .bind(laokaWeek)
+      .first<{ transaction_id: string }>()
+    if (existing) {
+      // The ledger is not the proof -- the EXPENSE is. A row pointing at a
+      // transaction somebody deleted in Sompitra must not stop this save from
+      // creating the expense it is trying to be.
+      const live = await c.env.DB.prepare('SELECT id FROM transactions WHERE id = ?')
+        .bind(existing.transaction_id)
+        .first<{ id: string }>()
+      if (live) adopted = existing.transaction_id
+    }
+  }
+  if (pantryTrip && !adopted && mode === 'itemized') {
+    const existing = await c.env.LAOKA_DB.prepare('SELECT transaction_id FROM pantry_trips WHERE id = ?')
+      .bind(pantryTrip)
+      .first<{ transaction_id: string | null }>()
+    if (existing && existing.transaction_id) {
+      const live = await c.env.DB.prepare('SELECT id FROM transactions WHERE id = ?')
+        .bind(existing.transaction_id)
+        .first<{ id: string }>()
+      if (live) adopted = existing.transaction_id
+    }
+  }
+
+  if (adopted) {
+    if (pantryTrip) await refreshPantryExpense(c.env, pantryTrip, adopted, amount, notes)
+    else await refreshLaokaExpense(c.env, laokaWeek, adopted, amount, notes, itemizedCount(notes))
+    return c.redirect('/budget')
+  }
+
   await c.env.DB.prepare(
     `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id)
      VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)`
   ).bind(id, date, amount, categoryId || null, description, notes, user.id).run()
+
+  if (laokaWeek && mode === 'itemized') {
+    await recordLaokaImport(c.env, laokaWeek, id, amount, itemizedCount(notes), categoryId || null)
+  }
+  if (pantryTrip && mode === 'itemized') {
+    await markPantryTripPushed(c.env, pantryTrip, id, amount, itemizedCount(notes))
+  }
 
   await notifyTransaction(c.env, id)
   return c.redirect('/budget')
@@ -880,6 +979,174 @@ function laokaDescription(startDate: string, endDate: string): string {
   return `Laoka shopping ${startDate} \u2013 ${endDate}`
 }
 
+/**
+ * A Laoka week packaged for Sompitra's own add-expense form.
+ *
+ * This is the hand-off that leaves the category to the household: Laoka hands
+ * over the NUMBERS, Sompitra renders the same form a person would fill in by
+ * hand, and nothing exists in the budget until a category is chosen and Save is
+ * pressed. (The one-press `POST /import-laoka` still exists for a week whose
+ * expense is already there and only needs its numbers refreshed.)
+ *
+ * Null when there is nothing to hand over: no such week, or nothing priced in
+ * it yet -- an expense with no lines would be an empty form pretending to be
+ * shopping.
+ */
+async function laokaHandoff(env: Env, weekId: number) {
+  const week = await env.LAOKA_DB.prepare('SELECT id, start_date, end_date FROM weeks WHERE id = ?')
+    .bind(weekId)
+    .first<{ id: number; start_date: string; end_date: string }>()
+  if (!week) return null
+  const lines = await laokaPricedLines(env, weekId)
+  if (!lines.length) return null
+  const amount = lines.reduce((sum, l) => sum + l.price, 0)
+  return { weekId, description: laokaDescription(week.start_date, week.end_date), lines, amount }
+}
+
+/**
+ * A PANTRY TRIP packaged for the same add-expense form: the priced lines of a
+ * shopping trip, and nothing else.
+ *
+ * The pantry is the second domain, and a trip is its week: you go when the
+ * shelves say so, not on a schedule. Its prices live on `pantry_lines` (the trip
+ * they were typed for), so `trip.transaction_id` is the identity that keeps a
+ * pushed purchase from being sent twice -- the module-local twin of
+ * `laoka_imports`, in the module that owns the trip.
+ *
+ * Null when there is nothing to hand over: no such trip, or nothing priced in it.
+ */
+async function pantryHandoff(env: Env, tripId: number) {
+  const trip = await env.LAOKA_DB.prepare(
+    "SELECT id, started_at, pushed_at FROM pantry_trips WHERE id = ?"
+  )
+    .bind(tripId)
+    .first<{ id: number; started_at: string | null; pushed_at: string | null }>()
+  if (!trip) return null
+  const rows = await env.LAOKA_DB.prepare(
+    'SELECT i.id, i.name, p.price, p.qty FROM pantry_lines p ' +
+    'JOIN items i ON i.id = p.item_id AND i.deleted_at IS NULL ' +
+    'WHERE p.trip_id = ? AND p.price IS NOT NULL AND p.price > 0 ' +
+    'ORDER BY i.name COLLATE NOCASE'
+  )
+    .bind(tripId)
+    .all<{ id: number; name: string; price: number; qty: number | null }>()
+  // A line becomes what it COST: the unit price times how many were bought. The
+  // quantity is also written into the name, because an itemized expense is a
+  // receipt -- "toilet paper: Ar 6,000" is right for the money but silent about
+  // the fact that it was two of them, and the household edits this expense later.
+  const lines = (rows.results || []).map((r) => {
+    const qty = r.qty === null || r.qty === undefined ? 1 : Number(r.qty)
+    const unit = Math.trunc(Number(r.price))
+    return { name: qty === 1 ? r.name : `${r.name} ×${qty}`, price: Math.trunc(unit * qty) }
+  })
+  if (!lines.length) return null
+  const amount = lines.reduce((sum, l) => sum + l.price, 0)
+  const day = String(trip.started_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+  return { tripId, description: `Pantry shopping ${day}`, lines, amount }
+}
+
+/**
+ * A pantry trip's numbers landing on an expense that already exists. The rule is
+ * Laoka's, because the rule is about what a re-send may touch, not about which
+ * module sent it: correct the MONEY and the ITEMS, never the date, the category
+ * or the description the household chose. And the ledger records what the
+ * expense actually carries -- the category is read back off the transaction.
+ */
+async function refreshPantryExpense(
+  env: Env,
+  tripId: number,
+  transactionId: string,
+  amount: number,
+  notes: string | null,
+) {
+  await env.DB.prepare('UPDATE transactions SET amount = ?, notes = ? WHERE id = ?')
+    .bind(amount, notes, transactionId)
+    .run()
+  await env.LAOKA_DB.prepare(
+    "UPDATE pantry_trips SET transaction_id = ?, amount = ?, item_count = ? WHERE id = ?"
+  )
+    .bind(transactionId, amount, itemizedCount(notes), tripId)
+    .run()
+}
+
+/** Marks a trip as spent: which expense it became, how much, how many lines, and
+ * when. A pushed trip is history, so its prices go with it -- leaving them
+ * behind is how a half-typed list gets re-sent as if it were a new shop. The
+ * count is written BEFORE they go, because after this the only record of what
+ * was in the trip is the expense itself. */
+async function markPantryTripPushed(env: Env, tripId: number, transactionId: string, amount: number, itemCount: number) {
+  await env.LAOKA_DB.prepare(
+    "UPDATE pantry_trips SET transaction_id = ?, amount = ?, item_count = ?, pushed_at = datetime('now') WHERE id = ?"
+  )
+    .bind(transactionId, amount, itemCount, tripId)
+    .run()
+  await env.LAOKA_DB.prepare('DELETE FROM pantry_lines WHERE trip_id = ?').bind(tripId).run()
+}
+
+/**
+ * Records that a Laoka week's numbers became a Sompitra expense, in the one
+ * ledger that makes the hand-off idempotent (`home-db.laoka_imports`), and marks
+ * the week exported -- the same flag the CSV export sets, so Laoka's "already
+ * exported" warning keeps telling the truth about where the numbers went.
+ *
+ * Called from BOTH doors (the pre-filled form and the one-press refresh) so a
+ * week cannot be recorded two different ways depending on how it was sent.
+ *
+ * `imported_at` is the FIRST send and is never rewritten -- it is the answer to
+ * "when did these numbers leave Laoka", which a refresh does not change.
+ * `updated_at` moves only when the expense is corrected in place, so Laoka's
+ * "sent / updated" line keeps meaning what it says.
+ */
+async function recordLaokaImport(
+  env: Env,
+  weekId: number,
+  transactionId: string,
+  amount: number,
+  itemCount: number,
+  categoryId: string | null,
+  isUpdate = false,
+) {
+  const now = new Date().toISOString()
+  await env.HOME_DB.prepare(
+    `INSERT INTO laoka_imports (laoka_week_id, transaction_id, amount, item_count, category_id, imported_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(laoka_week_id) DO UPDATE SET
+       transaction_id = excluded.transaction_id, amount = excluded.amount,
+       item_count = excluded.item_count, category_id = excluded.category_id,
+       updated_at = excluded.updated_at`
+  )
+    .bind(weekId, transactionId, amount, itemCount, categoryId, now, isUpdate ? now : null)
+    .run()
+  await env.LAOKA_DB.prepare("UPDATE weeks SET exported_at = datetime('now') WHERE id = ?1").bind(weekId).run()
+}
+
+/**
+ * A Laoka week's numbers landing on an expense that already exists.
+ *
+ * Both doors come through here -- a save on the pre-filled form and the
+ * one-press "send again" -- because the rule is the same and it is the subtle
+ * one: correct the MONEY and the ITEMS, and never the date, the category or the
+ * description the household chose. The ledger then records what the expense
+ * ACTUALLY carries: the category is read back off the transaction rather than
+ * taken from whichever submit happened to arrive, so the two cannot disagree.
+ */
+async function refreshLaokaExpense(
+  env: Env,
+  weekId: number,
+  transactionId: string,
+  amount: number,
+  notes: string | null,
+  itemCount: number,
+) {
+  await env.DB.prepare('UPDATE transactions SET amount = ?, notes = ? WHERE id = ?')
+    .bind(amount, notes, transactionId)
+    .run()
+  const live = await env.DB.prepare('SELECT category_id FROM transactions WHERE id = ?')
+    .bind(transactionId)
+    .first<{ category_id: string | null }>()
+  await recordLaokaImport(env, weekId, transactionId, amount, itemCount, live ? live.category_id : null, true)
+}
+
 // Status for the button: has this week already been sent, and to which expense?
 budget.get('/laoka-import', async (c) => {
   const weekId = Number(c.req.query('week') || 0)
@@ -953,9 +1220,7 @@ budget.post('/import-laoka', async (c) => {
       // Refresh amount + items, but deliberately NOT the date, category or
       // description: those are the household's own choices once the expense
       // exists, and re-sending a shopping list must not undo them.
-      await c.env.DB.prepare('UPDATE transactions SET amount = ?, notes = ? WHERE id = ?')
-        .bind(amount, notes, existing.transaction_id)
-        .run()
+      await refreshLaokaExpense(c.env, weekId, existing.transaction_id, amount, notes, lines.length)
       transactionId = existing.transaction_id
       action = 'updated'
     }
@@ -972,28 +1237,10 @@ budget.post('/import-laoka', async (c) => {
       .run()
     transactionId = id
 
-    await c.env.HOME_DB.prepare(
-      `INSERT INTO laoka_imports (laoka_week_id, transaction_id, amount, item_count, category_id, imported_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL)
-       ON CONFLICT(laoka_week_id) DO UPDATE SET
-         transaction_id = excluded.transaction_id, amount = excluded.amount,
-         item_count = excluded.item_count, category_id = excluded.category_id,
-         imported_at = excluded.imported_at, updated_at = NULL`
-    )
-      .bind(weekId, transactionId, amount, lines.length, categoryId, new Date().toISOString())
-      .run()
-  } else {
-    await c.env.HOME_DB.prepare(
-      'UPDATE laoka_imports SET amount = ?, item_count = ?, updated_at = ? WHERE laoka_week_id = ?'
-    )
-      .bind(amount, lines.length, new Date().toISOString(), weekId)
-      .run()
+    // `refreshLaokaExpense` already marked the week exported; a fresh insert has
+    // not, so the recorder does it for both.
+    await recordLaokaImport(c.env, weekId, id, amount, lines.length, categoryId)
   }
-
-  // Mark the week as having left the app -- the same flag the CSV export sets,
-  // so Laoka's "already exported" warning stays truthful about which numbers
-  // went where.
-  await c.env.LAOKA_DB.prepare("UPDATE weeks SET exported_at = datetime('now') WHERE id = ?1").bind(weekId).run()
 
   // Announce it to the household chat only the FIRST time. A re-send is a
   // correction to numbers already announced; repeating the "💸 … Ar 46 700"

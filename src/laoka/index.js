@@ -9,16 +9,17 @@ import authRoutes from './routes/auth.js';
 import catalogRoutes from './routes/catalog.js';
 import weekRoutes from './routes/weeks.js';
 import shoppingRoutes from './routes/shopping.js';
+import pantryRoutes from './routes/pantry.js';
 import exportRoutes from './routes/exports.js';
 import adminRoutes from './routes/admin.js';
-import { getCatalogTree, getSettings, listWeeks, getSelectedPools, getGourmetList } from './data/queries.js';
+import { getCatalogTree, getSettings, listWeeks, getSelectedPools, getGourmetList, getPantryTree, listPantryToBuy, getCurrentPantryTrip, getLastPantryTrip } from './data/queries.js';
 import { weekStartFor, todayInNairobi, addDays } from './lib/dates.js';
 
 export { Lobby };
 
 // Auth routes come first and are marked public: they are how a session is
 // obtained. Everything else needs one.
-const ROUTES = [].concat(authRoutes, catalogRoutes, weekRoutes, shoppingRoutes, exportRoutes, adminRoutes);
+const ROUTES = [].concat(authRoutes, catalogRoutes, weekRoutes, shoppingRoutes, pantryRoutes, exportRoutes, adminRoutes);
 
 function matchRoute(pattern, parts) {
   const expected = pattern.split('/').filter(Boolean);
@@ -77,10 +78,18 @@ export default {
         currentWeekStart: currentStart,
         nextWeekStart: nextStart,
         settings: settings,
+        // The MEAL catalogue only (`is_pantry = 0` inside getCatalogTree): what a
+        // week can be planned from. The pantry ships beside it as its own tree.
         catalog: await getCatalogTree(env),
         gourmet: await getGourmetList(env),
         weeks: weeks,
-        pools: await getSelectedPools(env)
+        pools: await getSelectedPools(env),
+        // The second domain: shelves to count, and what below-reorder level says
+        // to buy. Not a week, not a plan -- see queries.js.
+        pantry: await getPantryTree(env),
+        pantryToBuy: await listPantryToBuy(env),
+        pantryTrip: await getCurrentPantryTrip(env, false),
+        pantryLastTrip: await getLastPantryTrip(env)
       });
     }
 

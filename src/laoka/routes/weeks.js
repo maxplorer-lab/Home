@@ -186,7 +186,8 @@ export default [
   // settled and throwing it away must leave no trace behind. The week row stays
   // (its start date is the slot the plan occupies, and re-opening it must return
   // the same week rather than a second one) but goes back to 'planning' with no
-  // plan at all, so the list it produced is rebuilt from nothing but Pantry.
+  // plan at all, so the list it produced is rebuilt from nothing — this week
+  // planned nothing, and the pantry is not part of a week's list at all.
   {
     method: 'DELETE',
     pattern: '/api/weeks/:id/plan',
@@ -207,8 +208,9 @@ export default [
       // only ever named wishlists drawn from it. Both are forgotten with it.
       await ctx.env.DB.prepare("UPDATE weeks SET status = 'planning', exported_at = NULL, generation = 0 WHERE id = ?1")
         .bind(weekId).run();
-      // With no selected plan this keeps exactly the Pantry lines — and the
-      // prices typed on them — while every line the plan owned disappears.
+      // With no selected plan this leaves an empty list: every line here came
+      // from the plan. (A week created before the pantry split may still carry
+      // lines marked 'pantry'; they are ordinary rows here and go with the rest.)
       await syncShoppingLines(ctx.env, weekId);
       await touchWeek(ctx.env, weekId);
       const fresh = await getWeekById(ctx.env, weekId);
@@ -433,6 +435,12 @@ export default [
         'WHERE d.plan_id = ?2 AND di.item_id IS NOT NULL ORDER BY d.day_date, di.slot'
       ).bind(weekId, plan.id).all();
 
+      // LEGACY SHAPE, kept on purpose: a week created before the pantry split
+      // could carry lines marked 'pantry' (that was the first iteration, where a
+      // counted shelf joined the week's list). No new week can produce one --
+      // `syncShoppingLines` builds a week's list from the plan only -- but
+      // archiving must not silently DROP a row the list actually had, so it is
+      // copied into history like any other line. See AGENTS.md rule 35.
       const pantryRows = await ctx.env.DB.prepare(
         "SELECT i.name AS item_name, l.price FROM shopping_lines l JOIN items i ON i.id = l.item_id " +
         "WHERE l.week_id = ?1 AND l.origin = 'pantry' ORDER BY i.name COLLATE NOCASE"

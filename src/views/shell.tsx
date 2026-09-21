@@ -56,6 +56,10 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
             serves loads this one family, so a tab cannot render in a different
             face than the page you arrived from. */}
         <BrandFontLinks />
+        {/* Same typed-entry rule as the Sompitra pages (views/layout.tsx): the
+            shell's own documents are chromeless, but the shared include lives in
+            both heads so a number box can never arrive unguarded. */}
+        <script src="/shared/number-entry.js" />
         <script src="https://cdn.tailwindcss.com" />
         <script dangerouslySetInnerHTML={{ __html: `
           ${TAILWIND_CONFIG}

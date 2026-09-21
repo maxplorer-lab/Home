@@ -9,6 +9,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:,">
+<!-- The app-wide typed-entry rule (/shared/number-entry.js). This page is the
+     outsider's view and has no number box; it loads the rule anyway so "no box
+     in Home is nudged" holds for every document the Worker serves. -->
+<script src="/shared/number-entry.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   :root { --accent: #16a34a; --ink: #0f172a; --muted: #64748b; --card: #ffffff; --line: #e2e8f0; }

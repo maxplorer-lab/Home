@@ -353,6 +353,48 @@ html.dark .pickrow.unmarked { background: rgba(124, 45, 18, .4); border-color: r
 .swatch { width: 15px; height: 15px; border-radius: 5px; border: 1px solid rgba(0,0,0,.12); flex: 0 0 auto; display: inline-block; background: var(--gink, var(--muted)); }
 html.dark .swatch { border-color: rgba(255,255,255,.18); }
 
+/* ------------------------------------------------------------- pantry */
+/* Counting a shelf. The row is name / stepper / settings, one line each, so a
+   long list stays scannable and a count is one tap away. */
+/* A category HEADING, and the two writes that belong to it: the Pantry tab is the
+   only screen that can rename or remove a pantry category (the meal Catalog is
+   scoped to is_pantry = 0, so it never shows one). */
+.pantrygroup { display: flex; align-items: center; gap: 4px; padding: 10px 12px 2px; font-size: 11px; font-weight: 800; letter-spacing: .4px; color: var(--muted); text-transform: uppercase; }
+.pantrygroup .catname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pantrygroup .icon { min-height: 24px; min-width: 26px; font-size: 13px; }
+.pantryrow { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--line); }
+.pantryrow:first-child { border-top: 0; }
+.pantryname { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-size: 14px; }
+.pantrylowe { font-size: 10px; font-weight: 800; color: var(--warn); background: rgba(245, 158, 11, .14); border: 1px solid rgba(245, 158, 11, .38); border-radius: 9999px; padding: 1px 7px; }
+.pantryok { font-size: 10px; color: var(--muted); }
+.stepper { display: flex; align-items: center; gap: 2px; background: var(--line-soft); border: 1px solid var(--line); border-radius: 9999px; padding: 2px; }
+.stepper .icon { border: 0; background: none; min-height: 26px; min-width: 28px; font-size: 15px; line-height: 1; }
+.pantrycount { min-width: 30px; text-align: center; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pantrycount.low { color: var(--warn); }
+html.dark .pantrycount.low { color: #fbbf24; }
+
+/* The to-buy list: what the counts decided, and what this trip will cost. */
+.totals-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 12px 12px 0; }
+.totals-head h2 { margin: 0; }
+.buyrow { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.buyrow:first-of-type { border-top: 0; }
+.buyname { flex: 1 1 120px; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.buyname > span:first-child { font-size: 14px; }
+.buystock { font-size: 11px; color: var(--muted); }
+/* Quantity × unit price, then what the line comes to. The three parts wrap as a
+   unit on a narrow phone, so the name never sits beside a shrunken price box. */
+.buyinputs { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.buyqty { width: 62px; flex: 0 0 auto; text-align: right; font-variant-numeric: tabular-nums; }
+.buyx { color: var(--muted); font-size: 12px; }
+.buyprice { width: 104px; flex: 0 0 auto; text-align: right; font-variant-numeric: tabular-nums; }
+.buyline { width: 96px; flex: 0 0 auto; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg, inherit); }
+.buyline:empty { display: none; }
+.pantryfoot { padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+.pantrytotals { display: flex; align-items: baseline; justify-content: space-between; padding: 4px 0 8px; font-size: 14px; }
+.pantrytotals strong { font-size: 18px; color: var(--danger, #dc2626); font-variant-numeric: tabular-nums; }
+.lasttrip { padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+.lasttrip .note { margin: 0 0 8px; }
+
 /* ------------------------------------------------------------ gourmet */
 .recipe { border-bottom: 1px solid var(--line); padding: 12px 13px; }
 .recipe:last-child { border-bottom: 0; }
@@ -514,8 +556,6 @@ button.link {
 }
 .chipdrop:hover { opacity: 1; }
 .addchip { cursor: pointer; font-family: inherit; }
-
-.pantryToggle { margin-top: 8px; font-weight: 600; }
 
 body.with-totals .view { padding-bottom: calc(128px + env(safe-area-inset-bottom, 0px)); }
 @media (min-width: 640px) { body.with-totals .view { padding-bottom: 78px; } }

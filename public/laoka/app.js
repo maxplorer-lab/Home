@@ -18,7 +18,7 @@ var state = {
   historyDetail: null,
   users: null,
   invites: null,
-  showPantry: false,
+
   auth: null,
   authMode: null,
   editingDay: null,
@@ -144,7 +144,7 @@ function closeModal() {
 
 // A small form builder, so catalog, gourmet, user and settings dialogs all
 // share one mobile friendly sheet.
-function formModal(title, fields, submitLabel) {
+function formModal(title, fields, submitLabel, dangerLabel) {
   return new Promise(function (resolve) {
     pendingImage = { image: undefined, imageType: undefined };
     var inputs = {};
@@ -206,6 +206,16 @@ function formModal(title, fields, submitLabel) {
       h('button', { class: 'primary', style: 'flex:1', text: submitLabel || 'Save', onclick: submit }),
       h('button', { text: 'Cancel', onclick: function () { finish(null); } })
     ));
+    // A destructive action belongs INSIDE the sheet that names the thing, not on
+    // the row: the row is a stepper, and a delete button beside a "+" is a
+    // mis-tap waiting to happen. Resolves as `{ __remove: true }` so the caller
+    // can tell it apart from a cancel (null) and from saved values.
+    if (dangerLabel) {
+      body.push(h('button', {
+        class: 'wide danger', style: 'margin-top:8px', text: dangerLabel,
+        onclick: function () { finish({ __remove: true }); }
+      }));
+    }
     modalSheet(h('div', null, h('h2', { text: title }), body));
     var first = inputs[fields[0].name];
     setTimeout(function () { if (first && first.focus) first.focus(); }, 40);
@@ -302,8 +312,9 @@ function roleClass(role) {
   return ROLE_CLASS[role] || 'g4';
 }
 
-// A type keeps a colour of its own for headings: Protein blue, Sides amber,
-// Pantry violet, and any type added later cycles the rest of the palette.
+// A type keeps a colour of its own for headings: Protein blue, Sides amber, and
+// any type added later cycles the rest of the palette. The pantry has no colour
+// here because it is not a meal type and never appears on this list.
 function typeClassById(groupId) {
   var groups = catalogGroups();
   var spare = ['g0', 'g1', 'g2', 'g4'];
@@ -481,6 +492,7 @@ async function boot() {
 var NAV = [
   ['plan', '🍽️', 'Plan'],
   ['shop', '🛒', 'Shop'],
+  ['pantry', '🧺', 'Pantry'],
   ['catalog', '📦', 'Catalog'],
   ['gourmet', '⭐', 'Gourmet'],
   ['history', '🕘', 'History'],
@@ -568,6 +580,7 @@ function render() {
   if (state.tab === 'plan') view.appendChild(renderPlan());
   else if (state.tab === 'shop') view.appendChild(renderShop());
   else if (state.tab === 'catalog') view.appendChild(renderCatalog());
+  else if (state.tab === 'pantry') view.appendChild(renderPantry());
   else if (state.tab === 'gourmet') view.appendChild(renderGourmet());
   // Only fetched when there is nothing cached. Calling it on every render made
   // loadHistory re-render, which called it again, forever.
@@ -1100,17 +1113,11 @@ function renderShop() {
     head.appendChild(h('div', { class: 'warn', style: 'margin-top:8px', text: 'Already exported on ' + wk.exportedAt + '. A file you already downloaded will not have later changes; re-sending to Sompitra updates that expense in place.' }));
   }
 
-  // Pantry items are on every list and rarely change, so they are folded away
-  // until asked for rather than padding out the list every week.
-  var pantryCount = 0;
-  for (var pc = 0; pc < lines.length; pc++) if (lines[pc].isPantry) pantryCount++;
-  if (pantryCount) {
-    head.appendChild(h('button', {
-      class: 'wide pantryToggle',
-      text: (state.showPantry ? 'Hide' : 'Show') + ' the ' + pantryCount + ' pantry items',
-      onclick: function () { state.showPantry = !state.showPantry; render(); }
-    }));
-  }
+  // No pantry toggle any more, and no pantry lines to fold away: the week's list
+  // is what this week's COOKING needs (protein, sides, salads). Staples are
+  // bought on the Pantry tab, from their own list and their own purchase — see
+  // the `lines` filter in the week's state payload, which keeps any historical
+  // pantry line a past week may still carry.
   wrap.appendChild(head);
 
   if (!lines.length) {
@@ -1118,7 +1125,11 @@ function renderShop() {
     return wrap;
   }
 
-  var shown = state.showPantry ? lines : lines.filter(function (l) { return !l.isPantry; });
+  var shown = lines.filter(function (l) { return !l.isPantry; });
+  if (!shown.length) {
+    wrap.appendChild(h('div', { class: 'card' }, h('p', { class: 'muted', text: 'This week needs nothing bought. The pantry has its own list.' })));
+    return wrap;
+  }
   var groups = [], index = {};
   for (var i = 0; i < shown.length; i++) {
     var line = shown[i];
@@ -1278,6 +1289,14 @@ function sompitraResultSheet(r) {
   modalSheet(nodes);
 }
 
+// The hand-off that leaves the category to the household: Sompitra's own expense
+// form, opened with this week's priced lines and total already in it. Nothing
+// reaches the budget until a category is picked and Save is pressed, which is
+// the point of going through the form instead of posting straight in.
+function openLaokaExpense(weekId) {
+  window.top.location.href = '/budget/add-expense?from_laoka=' + encodeURIComponent(weekId);
+}
+
 function sendToSompitra(weekId, btn) {
   var label = btn.textContent;
   btn.disabled = true;
@@ -1298,19 +1317,37 @@ function sendToSompitra(weekId, btn) {
 function paintSompitraActions(actions, wk, note) {
   clear(actions);
   var sent = note && note.sent;
-  var btn = h('button', { class: 'primary wide', text: sent ? '🔄 Send again (updates that expense)' : '📤 Send to Sompitra' });
-  btn.onclick = function () { sendToSompitra(wk.id, btn); };
-  actions.appendChild(btn);
+
+  // Already sent: the expense exists and the household chose its category, so
+  // the only thing left to do is correct its NUMBERS — a refresh that never
+  // adds a second expense, and never touches the choices already made in it.
   if (sent) {
+    var btn = h('button', { class: 'primary wide', text: '🔄 Send again (updates that expense)' });
+    btn.onclick = function () { sendToSompitra(wk.id, btn); };
+    actions.appendChild(btn);
     actions.appendChild(h('p', { class: 'note', text: 'In Sompitra already: ' + note.itemCount + ' items, ' + moneyAmount(note.amount) +
       ' · ' + (note.updatedAt ? 'updated ' : 'sent ') + stampShort(note.updatedAt || note.importedAt) +
       '. Sending again refreshes those numbers in place — it never adds a second expense.' }));
     var openBtn = h('button', { class: 'wide', text: '↗ Open in Sompitra' });
     openBtn.onclick = openSompitraTransactions;
     actions.appendChild(openBtn);
-  } else if (note && note.stale) {
-    actions.appendChild(h('p', { class: 'note', text: 'The expense this week was sent to no longer exists in Sompitra, so this creates a fresh one.' }));
+    return;
   }
+
+  // Not sent yet: the expense does not exist, so the household is handed the
+  // decision it is theirs to make — which category the shopping belongs to —
+  // on the form that saves it. The one-press send stays as the fast path for a
+  // week whose category is already obvious.
+  var review = h('button', { class: 'primary wide', text: '🛒 Review & save in Sompitra' });
+  review.onclick = function () { openLaokaExpense(wk.id); };
+  actions.appendChild(review);
+  actions.appendChild(h('p', { class: 'note', text: 'Opens the Sompitra expense form with these lines and their total already in it. Nothing is written to the budget until a category is picked and saved.' }));
+  if (note && note.stale) {
+    actions.appendChild(h('p', { class: 'note', text: 'The expense this week was sent to no longer exists in Sompitra, so saving here creates a fresh one.' }));
+  }
+  var blind = h('button', { class: 'wide', text: '📤 Send without reviewing' });
+  blind.onclick = function () { sendToSompitra(wk.id, blind); };
+  actions.appendChild(blind);
 }
 
 function loadSompitraActions(actions, wk) {
@@ -1413,20 +1450,24 @@ function groupManagers() {
   var m1 = h('div', { class: 'mgr' });
   m1.appendChild(h('h4', { text: 'Add a type' }));
   var name1 = h('input', { type: 'text', placeholder: 'e.g. Drinks', autocomplete: 'off' });
-  var pantry1 = h('select', {},
-    h('option', { value: '0', text: 'Normal group' }),
-    h('option', { value: '1', text: 'Pantry · always on the shopping list' })
-  );
+  // There is deliberately NO "make this the pantry" switch here any more. It
+  // used to create a pantry group the Catalog could never show again (its tree
+  // is `is_pantry = 0`), which then appeared as a second heading on the Pantry
+  // tab. A type made in this screen is a meal type.
   m1.appendChild(name1);
   m1.appendChild(h('div', { class: 'row', style: 'margin-top:8px' },
-    h('span', { style: 'flex:1' }, pantry1),
     h('button', {
       class: 'primary', text: 'Add',
       onclick: async function () {
         var name = name1.value.trim();
         if (!name) { toast('Give the type a name', true); name1.focus(); return; }
         try {
-          await api('POST', '/api/groups', { name: name, isPantry: pantry1.value === '1' });
+          // A type created HERE is a MEAL type: the meal Catalog's tree is scoped
+          // to `is_pantry = 0`, so a pantry group made from this form would be
+          // invisible in the screen that made it and would show up as a second,
+          // meaningless heading on the Pantry tab. Pantry categories are made
+          // where they are used (the Pantry tab).
+          await api('POST', '/api/groups', { name: name, isPantry: 0 });
           await refreshBootstrap();
           render();
           toast('Added ' + name);
@@ -1656,6 +1697,442 @@ function itemPill(item) {
     h('button', { class: 'icon', text: '✏️', title: 'Edit item', onclick: function () { editItem(item); } }),
     h('button', { class: 'icon', text: '🗑️', title: 'Delete item', onclick: function () { deleteItem(item); } })
   );
+}
+
+// ---------------------------------------------------------------- pantry
+//
+// The second domain, and the second shopping list.
+//
+// Meal cooking needs protein, sides and raw salads; they are planned, bought and
+// eaten, and nobody counts how many chicken thighs are "left" — so they are NOT
+// countable and this screen never shows one. The pantry is the opposite kind of
+// thing: staples and household goods you keep a stock of (salt, oil, rice,
+// toilet paper), which no week plans and which decide their own purchase when
+// the count says so.
+//
+// Two facts, two lifetimes:
+//   the COUNT belongs to the shelf and survives every trip
+//   the PRICE belongs to this shopping trip, and pushing the trip clears it
+//
+// Nothing here changes by itself: no plan eats a shelf and no purchase tops one
+// up. You count, and the pantry answers.
+
+function pantryItems() {
+  var out = [];
+  var groups = state.bootstrap.pantry || [];
+  for (var g = 0; g < groups.length; g++) {
+    var subs = groups[g].subgroups || [];
+    for (var s = 0; s < subs.length; s++) {
+      var items = subs[s].items || [];
+      for (var i = 0; i < items.length; i++) out.push(items[i]);
+    }
+  }
+  return out;
+}
+
+function pantryCategories() {
+  var out = [];
+  var groups = state.bootstrap.pantry || [];
+  for (var g = 0; g < groups.length; g++) {
+    var subs = groups[g].subgroups || [];
+    for (var s = 0; s < subs.length; s++) out.push(subs[s]);
+  }
+  return out;
+}
+
+function isCounted(item) { return item.stock !== null && item.stock !== undefined; }
+
+function isLow(item) { return isCounted(item) && Number(item.stock) < Number(item.stockMin); }
+
+function countLabel(n) {
+  var v = Number(n);
+  return (Math.round(v * 100) / 100).toString();
+}
+
+// Every pantry write answers with the whole screen (shelves, to-buy list and
+// trip), so the client redraws from the server's answer instead of guessing what
+// changed. That is what keeps "counted" and "in the list" from ever disagreeing.
+function applyPantry(res) {
+  if (!res || !res.pantry) return;
+  state.bootstrap.pantry = res.pantry;
+  state.bootstrap.pantryToBuy = res.toBuy || [];
+  state.bootstrap.pantryTrip = res.trip || null;
+  state.bootstrap.pantryLastTrip = res.lastTrip || null;
+}
+
+async function pantryWrite(method, path, payload) {
+  try {
+    var res = await api(method, path, payload);
+    applyPantry(res);
+    render();
+    return res;
+  } catch (e) { reportError(e); return null; }
+}
+
+// One tap, one count: the steppers are for the shelf you are standing in front
+// of, and they clamp at zero rather than wrapping into negatives.
+function bumpPantry(item, delta) {
+  var next = Number(item.stock || 0) + delta;
+  if (next < 0) next = 0;
+  pantryWrite('PATCH', '/api/pantry/items/' + item.id, { stock: next });
+}
+
+async function countPantry(item) {
+  var counted = isCounted(item);
+  var values = await formModal(item.name, [
+    { name: 'stock', label: 'At home now', type: 'number', inputmode: 'decimal', value: counted ? item.stock : '', placeholder: 'e.g. 2' },
+    {
+      name: 'stockMin', label: 'Reorder at', type: 'number', inputmode: 'decimal', value: item.stockMin,
+      hint: 'Below this it goes on the to-buy list by itself. 2 unless this staple needs more notice.'
+    }
+  ], 'Save', '🗑 Remove from the pantry');
+  if (!values) return;
+  // The pantry is the ONLY screen that manages its items, so removal has to be
+  // reachable from here -- the meal Catalog never lists a pantry item.
+  if (values.__remove) { await removePantryItem(item); return; }
+  var stockRaw = String(values.stock).trim();
+  var minRaw = String(values.stockMin).trim();
+  var body = {};
+  // Blank count = stop counting: the item leaves the count entirely and stops
+  // being offered, which is how an item nobody counts should behave.
+  body.stock = stockRaw === '' ? null : Number(stockRaw);
+  if (minRaw !== '') body.stockMin = Number(minRaw);
+  if (body.stock !== null && (!isFinite(body.stock) || body.stock < 0)) { toast('A count must be a number of zero or more.'); return; }
+  if (body.stockMin !== undefined && (!isFinite(body.stockMin) || body.stockMin < 0)) { toast('A reorder level must be a number of zero or more.'); return; }
+  var res = await pantryWrite('PATCH', '/api/pantry/items/' + item.id, body);
+  if (res) toast(body.stock === null ? 'No longer counted.' : 'Counted.');
+}
+
+function pantryGroupId() {
+  // One pantry group holds every category (spices, oils…, and whatever the
+  // household adds: household, cleaning). A second pantry group would show as a
+  // second heading with no meaning, which is what the catalog screen is for.
+  var groups = state.bootstrap.pantry || [];
+  return groups.length ? groups[0].id : null;
+}
+
+// A pantry CATEGORY (subgroup) is created, renamed and removed from THIS tab.
+// It has to be: the meal Catalog is scoped to `is_pantry = 0`, so the pantry's
+// groups never appear there — a typo in a category name would otherwise be
+// permanent, and adding a category meant adding an item to it first.
+// `createPantryCategory` is the one path both callers use.
+async function createPantryCategory(name, icon) {
+  var groupId = pantryGroupId();
+  if (!groupId) { toast('The pantry has no group to file a category under.'); return null; }
+  var created = await api('POST', '/api/subgroups', {
+    name: name, groupId: groupId, icon: icon || '🧺', slotRole: 'none'
+  });
+  await refreshBootstrap();
+  return created && created.id ? created.id : null;
+}
+
+async function addPantryCategory() {
+  var made = await formModal('New pantry category', [
+    { name: 'name', label: 'Category name', type: 'text', placeholder: 'e.g. cleaning' },
+    { name: 'icon', label: 'Icon (optional)', type: 'text', placeholder: '🧽', value: '🧺' }
+  ], 'Create');
+  if (!made) return;
+  var name = String(made.name || '').trim();
+  if (!name) { toast('A category name is needed.'); return; }
+  try {
+    if (!await createPantryCategory(name, String(made.icon || '').trim())) {
+      toast('The pantry has no group to file a category under.'); return;
+    }
+    render();
+    toast('Added ' + name + '.');
+  } catch (e) { reportError(e); }
+}
+
+async function editPantryCategory(sub) {
+  var made = await formModal('Rename “' + sub.name + '”', [
+    { name: 'name', label: 'Category name', type: 'text', value: sub.name },
+    { name: 'icon', label: 'Icon (optional)', type: 'text', value: sub.icon || '🧺' }
+  ], 'Save');
+  if (!made) return;
+  var name = String(made.name || '').trim();
+  if (!name) { toast('A category name is needed.'); return; }
+  await pantryWrite('PATCH', '/api/pantry/categories/' + sub.id, { name: name, icon: String(made.icon || '').trim() });
+}
+
+// The confirm has to say how much goes with it: the items inside are removed
+// too, because a category whose items stayed behind would hold counts nobody
+// could see or change.
+async function removePantryCategory(sub) {
+  var n = (sub.items || []).length;
+  var detail = n
+    ? 'Its ' + n + ' item' + (n === 1 ? '' : 's') + ' go with it. Nothing else changes.'
+    : 'It is empty. Nothing else changes.';
+  if (!(await confirmAction('Remove the “' + sub.name + '” category?', detail, 'Remove'))) return;
+  await pantryWrite('POST', '/api/pantry/categories/' + sub.id + '/delete', {});
+}
+
+async function addPantryItem() {
+  var cats = pantryCategories();
+  var options = cats.map(function (c) { return { value: String(c.id), label: c.name }; });
+  // A pantry is not only food. "Toilet paper" has no home among spices, so the
+  // form has to be able to make one — from the screen where the need appears,
+  // not from a catalog screen three taps away.
+  options.push({ value: 'new', label: '➕ New category…' });
+  var values = await formModal('Add a pantry item', [
+    { name: 'name', label: 'What is it', type: 'text', placeholder: 'e.g. toilet paper' },
+    { name: 'subgroup', label: 'Category', type: 'select', value: options[0].value, options: options },
+    { name: 'stock', label: 'At home now (optional)', type: 'number', inputmode: 'decimal', placeholder: 'blank = do not count it' },
+    { name: 'stockMin', label: 'Reorder at', type: 'number', inputmode: 'decimal', value: 2 }
+  ], 'Add');
+  if (!values) return;
+  var name = String(values.name || '').trim();
+  if (!name) { toast('A name is needed.'); return; }
+
+  var subgroupId = null;
+  if (String(values.subgroup) === 'new') {
+    var made = await formModal('New pantry category', [
+      { name: 'name', label: 'Category name', type: 'text', placeholder: 'e.g. household' },
+      { name: 'icon', label: 'Icon (optional)', type: 'text', placeholder: '🧻', value: '🧺' }
+    ], 'Create');
+    if (!made) return;
+    var catName = String(made.name || '').trim();
+    if (!catName) { toast('A category name is needed.'); return; }
+    try {
+      subgroupId = await createPantryCategory(catName, String(made.icon || '').trim());
+    } catch (e) { reportError(e); return; }
+  } else {
+    subgroupId = Number(values.subgroup);
+  }
+  if (!subgroupId) { toast('That category could not be used.'); return; }
+
+  var res = await pantryWrite('POST', '/api/pantry/items', {
+    name: name,
+    subgroupId: subgroupId,
+    stock: String(values.stock).trim() === '' ? null : Number(values.stock),
+    stockMin: String(values.stockMin).trim() === '' ? 2 : Number(values.stockMin)
+  });
+  if (res) toast('Added to the pantry.');
+}
+
+async function removePantryItem(item) {
+  if (!(await confirmAction('Remove “' + item.name + '”?', 'It leaves the pantry lists. Nothing else changes.', 'Remove'))) return;
+  await pantryWrite('POST', '/api/pantry/items/' + item.id + '/delete', {});
+}
+
+function renderPantry() {
+  var wrap = h('div');
+  var items = pantryItems();
+  var toBuy = state.bootstrap.pantryToBuy || [];
+  var trip = state.bootstrap.pantryTrip;
+  var counted = 0;
+  for (var i = 0; i < items.length; i++) if (isCounted(items[i])) counted++;
+
+  // The purchase first: this is the reason the screen exists, and it is the part
+  // that ends in money. Above it, the shelves; below it, the catalogue.
+  wrap.appendChild(pantryToBuyCard(toBuy, trip));
+
+  wrap.appendChild(h('div', { class: 'card' },
+    h('h2', { text: 'Pantry' }),
+    h('p', { class: 'note', text: 'Staples and household goods — not meals. Count what is at home with − and +; anything below its reorder level goes on the to-buy list above by itself. Nothing here changes on its own: cooking does not eat a shelf, and shopping does not fill one.' }),
+    h('p', { class: 'note', text: counted + ' of ' + items.length + ' item' + (items.length === 1 ? '' : 's') + ' counted · ' + toBuy.length + ' to buy · ' + pantryCategories().length + ' categor' + (pantryCategories().length === 1 ? 'y' : 'ies') }),
+    h('button', { class: 'wide', style: 'margin-top:8px', text: '➕ Add an item', onclick: addPantryItem }),
+    h('button', { class: 'wide', style: 'margin-top:6px', text: '🗂 New category', onclick: addPantryCategory })
+  ));
+
+  var groups = state.bootstrap.pantry || [];
+  for (var g = 0; g < groups.length; g++) {
+    var group = groups[g];
+    var subs = group.subgroups || [];
+    var card = h('div', { class: 'card flush' }, h('h2', { style: 'padding:12px 12px 0', text: group.name }));
+    // A category with nothing in it still DRAWS. It used to be skipped, which
+    // made "New category" look like a button that did nothing until an item was
+    // added to it — and hid the only place its rename/remove buttons live.
+    var anyCat = false;
+    for (var s = 0; s < subs.length; s++) {
+      var sub = subs[s];
+      var list = sub.items || [];
+      anyCat = true;
+      // The IIFE is load-bearing: `sub` is a `var` in this loop, so the two
+      // handlers below would otherwise all act on the LAST category in the
+      // pantry — the ✏️ of every heading opened “dry staples”. (The row renderers
+      // take their node as an argument and are immune; these two close over it.)
+      (function (cat) {
+        card.appendChild(h('div', { class: 'pantrygroup' },
+          h('span', { class: 'catname', text: (cat.icon ? cat.icon + ' ' : '') + cat.name }),
+          h('button', { class: 'icon', title: 'Rename this category', text: '✏️', onclick: function () { editPantryCategory(cat); } }),
+          h('button', { class: 'icon', title: 'Remove this category', text: '🗑️', onclick: function () { removePantryCategory(cat); } })
+        ));
+      })(sub);
+      if (!list.length) {
+        card.appendChild(h('p', { class: 'muted small', style: 'padding:2px 12px 8px', text: 'Nothing in it yet — “Add an item” and pick this category.' }));
+        continue;
+      }
+      for (var k = 0; k < list.length; k++) card.appendChild(pantryRow(list[k]));
+    }
+    if (anyCat) wrap.appendChild(card);
+  }
+  return wrap;
+}
+
+function pantryRow(item) {
+  var row = h('div', { class: 'pantryrow' });
+  var counted = isCounted(item);
+  var low = isLow(item);
+  row.appendChild(h('div', { class: 'pantryname' },
+    h('span', { text: item.name }),
+    low ? h('span', { class: 'pantrylowe', text: 'to buy' }) : null,
+    counted && !low ? h('span', { class: 'pantryok', text: 'reorder at ' + countLabel(item.stockMin) }) : null
+  ));
+  if (!counted) {
+    row.appendChild(h('button', { class: 'tiny', text: 'Count it', onclick: function () { countPantry(item); } }));
+    return row;
+  }
+  row.appendChild(h('div', { class: 'stepper' },
+    h('button', { class: 'icon', title: 'One less', text: '−', onclick: function () { bumpPantry(item, -1); } }),
+    h('span', { class: 'pantrycount' + (low ? ' low' : ''), text: countLabel(item.stock) }),
+    h('button', { class: 'icon', title: 'One more', text: '+', onclick: function () { bumpPantry(item, 1); } })
+  ));
+  row.appendChild(h('button', { class: 'icon', title: 'Count / reorder level', text: '⚙️', onclick: function () { countPantry(item); } }));
+  return row;
+}
+
+// The to-buy list: everything below its reorder level, each with the price you
+// paid for it. A price is typed here and nowhere else, because it is a fact about
+// THIS shopping trip.
+function pantryToBuyCard(toBuy, trip) {
+  var card = h('div', { class: 'card flush' });
+  card.appendChild(h('div', { class: 'totals-head' },
+    h('h2', { text: '🧺 To buy' }),
+    toBuy.length ? h('span', { class: 'muted', text: toBuy.length + ' item' + (toBuy.length === 1 ? '' : 's') }) : null
+  ));
+
+  if (!toBuy.length) {
+    card.appendChild(h('p', { class: 'note', style: 'padding:0 12px 12px', text: 'Nothing is below its reorder level, so there is nothing to buy. Count a shelf down and it appears here.' }));
+    card.appendChild(lastTripNote());
+    return card;
+  }
+
+  for (var i = 0; i < toBuy.length; i++) card.appendChild(pantryBuyRow(toBuy[i]));
+
+  // The trip's total is the sum of its LINE totals (unit × quantity). Computing
+  // it here from the two numbers the row shows is what keeps the total on screen
+  // and the total that reaches the budget the same number.
+  var priced = 0, total = 0, units = 0;
+  for (var j = 0; j < toBuy.length; j++) {
+    var line = toBuy[j];
+    if (line.tripPrice !== null && line.tripPrice !== undefined) {
+      priced++;
+      units += buyQty(line);
+      total += Number(line.tripPrice) * buyQty(line);
+    }
+  }
+
+  var foot = h('div', { class: 'pantryfoot' });
+  foot.appendChild(h('div', { class: 'pantrytotals' },
+    h('span', { text: 'Restock total' }),
+    h('strong', { text: moneyAmount(total) })
+  ));
+
+  if (priced) {
+    var review = h('button', { class: 'primary wide', text: '🛒 Review & save in Sompitra' });
+    review.onclick = function () { openPantryExpense(trip && trip.id); };
+    foot.appendChild(review);
+    foot.appendChild(h('p', { class: 'note', text: 'Opens the Sompitra expense form with these ' + priced + ' priced line' + (priced === 1 ? '' : 's') + ' (' + units + ' item' + (units === 1 ? '' : 's') + ', ' + moneyAmount(total) + ') already in it. Nothing reaches the budget until you pick a category and save.' }));
+    var clear = h('button', { class: 'wide', text: '✖ Clear these prices' });
+    clear.onclick = async function () {
+      if (!(await confirmAction('Clear every price on this list?', 'The list itself stays — only the money typed so far goes.', 'Clear'))) return;
+      await pantryWrite('POST', '/api/pantry/trip/clear', {});
+    };
+    foot.appendChild(clear);
+  } else {
+    foot.appendChild(h('p', { class: 'note', text: 'Type a price beside anything you bought. The total, and the Sompitra hand-off, appear as soon as there is one.' }));
+  }
+  card.appendChild(foot);
+  card.appendChild(lastTripNote());
+  return card;
+}
+
+// Where the LAST purchase went. A trip that has been pushed keeps its prices no
+// longer, so without this the money would simply vanish from this screen — and
+// "which expense was that" is the question the household actually asks.
+function lastTripNote() {
+  var last = state.bootstrap.pantryLastTrip;
+  if (!last || !last.transactionId) return h('div');
+  var box = h('div', { class: 'lasttrip' },
+    h('p', { class: 'note', text: 'Last purchased trip: ' + moneyAmount(last.amount || 0) + ' · ' + stampShort(last.pushedAt) + '. It went to one Sompitra expense, where it stays until you change it there.' })
+  );
+  var open = h('button', { class: 'wide', text: '↗ Open in Sompitra' });
+  open.onclick = function () { openSompitraTransactions(); };
+  box.appendChild(open);
+  return box;
+}
+
+// How many of this item the trip is buying. 1 unless somebody said otherwise:
+// an unstated quantity is one, which is what every line meant before quantities
+// existed.
+function buyQty(item) {
+  var q = Number(item.tripQty);
+  return isFinite(q) && q > 0 ? q : 1;
+}
+
+function pantryBuyRow(item) {
+  var row = h('div', { class: 'buyrow' });
+  row.appendChild(h('div', { class: 'buyname' },
+    h('span', { text: item.name }),
+    h('span', { class: 'buystock', text: countLabel(item.stock) + ' left · reorder at ' + countLabel(item.stockMin) })
+  ));
+
+  // Two numbers, two meanings: how many, and what ONE costs. The restock price
+  // (their product) is shown as you type, so the household never has to work out
+  // what the trip is up to in their head -- and correcting either number is one
+  // tap on the box that is wrong.
+  var price = h('input', {
+    type: 'number', inputmode: 'decimal', min: '0', step: '1', class: 'buyprice',
+    placeholder: 'unit price',
+    value: (item.tripPrice === null || item.tripPrice === undefined) ? '' : String(item.tripPrice)
+  });
+  var qty = h('input', {
+    type: 'number', inputmode: 'numeric', min: '1', step: '1', class: 'buyqty',
+    placeholder: 'qty', value: String(buyQty(item))
+  });
+  var line = h('span', { class: 'buyline' });
+
+  var lineMoney = function () {
+    var raw = String(price.value).trim();
+    var unit = raw === '' ? null : Number(raw);
+    if (unit === null || !isFinite(unit) || unit <= 0) { line.textContent = ''; return null; }
+    var q = Number(String(qty.value).trim());
+    if (!isFinite(q) || q <= 0) { line.textContent = ''; return null; }
+    line.textContent = moneyAmount(unit * q);
+    return unit;
+  };
+  lineMoney();
+
+  // Commit on blur and on Enter, not on every keystroke: a half-typed "12" must
+  // not become a 12 Ariary line, and the trip must not be created by a stray tap.
+  var commit = function () {
+    var raw = String(price.value).trim();
+    var unit = raw === '' ? null : Number(raw);
+    if (unit !== null && (!isFinite(unit) || unit < 0)) { toast('A unit price must be a number of zero or more.'); return; }
+    var q = Number(String(qty.value).trim());
+    if (!isFinite(q) || q <= 0) { toast('A quantity must be one or more.'); return; }
+    // Both travel together: the server leaves a field alone only when it is
+    // absent, and this row always knows both of its own numbers.
+    pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit, qty: q });
+  };
+  price.onblur = commit;
+  qty.onblur = commit;
+  price.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); price.blur(); } };
+  qty.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); qty.blur(); } };
+  price.oninput = lineMoney;
+  qty.oninput = lineMoney;
+
+  row.appendChild(h('div', { class: 'buyinputs' }, qty, h('span', { class: 'buyx', text: '×' }), price));
+  row.appendChild(line);
+  return row;
+}
+
+// The pantry's door into Sompitra: the SAME reviewed expense form Laoka uses,
+// with the trip already in it. `window.top` because Laoka runs in an iframe —
+// navigating the frame would draw Sompitra's form inside Laoka, headless.
+function openPantryExpense(tripId) {
+  if (!tripId) { toast('Type a price first — there is nothing to send yet.'); return; }
+  window.top.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(tripId);
 }
 
 // -------------------------------------------------------------- gourmet

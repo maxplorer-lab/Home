@@ -13,6 +13,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Laoka">
 <link rel="stylesheet" href="/laoka/styles.css">
+<!-- Typed, not nudged: no spinner buttons on a number box, and a wheel over a
+     focused one (the qty and unit-price boxes in the to-buy list, the count
+     modals) scrolls this list instead of stepping the value. -->
+<script src="/shared/number-entry.js"></script>
 <script>
   // Applied before first paint so a dark-mode reload never flashes white.
   try {

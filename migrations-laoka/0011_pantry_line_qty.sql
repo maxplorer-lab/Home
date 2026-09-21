@@ -1,0 +1,25 @@
+-- ═══════════════════════════════════════════════════════════════
+-- A pantry line is a QUANTITY at a UNIT PRICE
+--
+-- Until now a trip line carried one number: what was paid. That is all a
+-- planned week's list needs (an ingredient is bought once), but a pantry
+-- shopping is not like that — you buy TWO packs of toilet paper, four kilos of
+-- rice — and the price you know when standing in the aisle is the price of
+-- ONE. Typing the total by hand is the household doing arithmetic the app
+-- should do, and it is the kind of arithmetic that gets a total wrong.
+--
+-- So the line keeps both facts:
+--
+--   price   what ONE costs (the unit price)
+--   qty     how many were bought (default 1)
+--
+-- and the money that reaches the budget is the product of the two, summed over
+-- the trip. `qty` is deliberately on `pantry_lines` and not on `items`: how many
+-- you bought is a statement about the SHOPPING, exactly like the price, and has
+-- nothing to do with how many are on the shelf (`items.stock`, which only the
+-- household changes by counting).
+--
+-- Additive and defaulted, so every existing line (and the standalone app) still
+-- reads: a line with no quantity is one item, at the price it was given.
+
+ALTER TABLE pantry_lines ADD COLUMN qty REAL NOT NULL DEFAULT 1;

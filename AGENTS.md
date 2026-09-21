@@ -323,8 +323,9 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     **🗑 Discard the template** button calls `DELETE /laoka/api/weeks/:id/plan`
     (`src/laoka/routes/weeks.js`). It deletes EVERY plan the week owns — a
     leftover draft included — resets it to `planning`, clears `exported_at` and
-    `generation`, and re-syncs the shopping list, which keeps exactly the Pantry
-    lines (prices included) and drops every plan line. It refuses (409) a week
+    `generation`, and re-syncs the shopping list, which ends up EMPTY: every line
+    in a week's list came from the plan, because the pantry is not part of a
+    week's list at all (rule 35). It refuses (409) a week
     that is **confirmed** or **archived**: `weeks.confirmed_at` is the boundary
     between a proposal and history, so the client never guesses which side it is
     on. Don't "helpfully" allow it on a settled week — the way out of one is a
@@ -816,6 +817,131 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `shouldDrawPoint` keeps. When adding a surface that reports distance, speed,
     legs or the day's track, call the existing function and let smoke §15 hold the
     two together; do not re-derive it from rows.
+35. **The catalogue is TWO domains, `groups.is_pantry` is the line between them,
+    and there are therefore TWO shopping lists.**
+
+    | | MEAL | PANTRY |
+    | --- | --- | --- |
+    | who | Protein · Sides · Raw Salad | spices · oils · condiments · dry staples, plus whatever the household adds (toilet paper, soap) |
+    | when | planned weekly by the planner | when the shelves say so — no schedule |
+    | goes on | the week's shopping list | its own **to-buy** list |
+    | counted | never (a count on a chicken thigh is a contradiction) | by hand, per item |
+    | ends in | `?from_laoka=<week>` → one itemized expense | `?from_pantry=<trip>` → one itemized expense |
+
+    The temptation is always to make them one list again. They are not one list,
+    and each clause below is what keeps them apart:
+    * **Meal side** — `getCatalogTree`, `getSelectedPools` and `syncShoppingLines`
+      all filter `g.is_pantry = 0`. `getCatalogTree` must NOT select `i.stock`
+      (one number on the meal side is how "count the chicken too" comes back),
+      and `syncShoppingLines` must not fold a low-stock rule in: a week's list is
+      the plan and nothing else.
+    * **Pantry side** — the rule is `g.is_pantry = 1 AND i.stock IS NOT NULL AND
+      i.stock < i.stock_min` (`getLowStockItemIds`, surfaced as `listPantryToBuy`,
+      which is DERIVED — nothing is stored for it). Never put a number in that
+      SQL: the level is per item (milk reorders at 1, rice at 5), and `stock IS
+      NOT NULL` is what separates "there is one left" from "nobody counts this".
+    * **The server enforces the boundary** — every pantry write calls
+      `isPantryItem()` first and answers 404 otherwise, so no screen can put a
+      count on a meal ingredient. Migration `0010_pantry.sql` clears any count the
+      earlier iteration left on `is_pantry = 0` items.
+    * **A price belongs to the TRIP, not the item** (`pantry_lines`), because it
+      says what THIS shopping cost. Pushing the trip clears its prices on purpose
+      so a pushed purchase cannot be sent twice, and what the trip became
+      (`transaction_id`, `amount`, `item_count`, `pushed_at`) is written back onto
+      `pantry_trips` — the Pantry screen's "last trip" reads it, and Sompitra's
+      save ADOPTS that expense instead of inserting a second.
+    * **Clearing the prices drops an emptied trip** (`dropEmptyPantryTrip`). Left
+      behind, it would draw an "Ar 0" trip on the screen and make the next count
+      look like it continued a shopping somebody walked away from. A PUSHED trip
+      is never dropped — that row is the identity of a real expense.
+    * **The pantry owns its CATEGORIES too** — `PATCH /api/pantry/categories/:id`
+      (name + icon) and `POST /api/pantry/categories/:id/delete`, both behind
+      `isPantryCategory()`. They are deliberately NOT routed through
+      `/api/subgroups`: that handler knows nothing about the domain, so a pantry
+      write could rename a meal group by guessing its id. Deleting a category
+      takes its items AND their `pantry_lines` with it, in that order —
+      `getPantryTree` and `getLowStockItemIds` both filter `s.deleted_at IS NULL`,
+      so leaving the items would hide counts nobody can see or change, and
+      `dropEmptyPantryTrip` counts ROWS, so a stranded price would keep a trip
+      alive that draws nothing and can never be dropped. The screen is honest
+      about the size of that action (the confirm names the item count), and it is
+      the only place a category can be managed at all: the meal Catalog is scoped
+      to `is_pantry = 0`, so a pantry category never appears there. For the same
+      reason its "Add a type" form no longer offers a pantry group — a group made
+      there was invisible in the screen that made it and reappeared as a second,
+      meaningless heading on the Pantry tab.
+
+    Both hand-offs land on the SAME Sompitra form and follow rule 36. Smoke §22
+    pins every clause above; `scripts/one-off/2026-09-21-pantry-stock/mutate.mjs`
+    runs 30 mutations (§22 and §23, one per guard, ~5 s each) and reports which
+    check each one turns red — run it after touching this feature, because a
+    guard that cannot go red is decoration. The driver takes ids, so it fits in
+    one sitting: `... mutate.mjs M1 M2 …` (30 at once runs past ten minutes).
+36. **Laoka hands Sompitra NUMBERS; the household chooses the category.** Two
+    doors lead into the budget from one week, and they must stay one behaviour:
+    * **The reviewed save** — the export sheet's primary action opens
+      `GET /budget/add-expense?from_laoka=<week>`: Sompitra's own form, with the
+      week's lines, total and description already in it and the category
+      **empty**. That is the point of the form; nothing is written until it is
+      saved, and the submit carries a hidden `laoka_week` so the save knows which
+      expense this is. Laoka runs in an IFRAME, so the hand-off must set
+      `window.top.location.href` — navigating the frame draws Sompitra's form
+      inside Laoka, headless, with no way back.
+    * **The one-press refresh** — `POST /budget/import-laoka` stays as the fast
+      path for a week whose category is already obvious.
+    A save that carries a week **adopts** the expense that week already owns (the
+    `laoka_imports` lookup) instead of inserting a second one, and both doors
+    correct `amount` + `notes` ONLY — never the date, category or description the
+    household chose, which is why a stale tab re-submitting this form is safe.
+    Both doors write the ledger through `recordLaokaImport`/
+    `refreshLaokaExpense`: `imported_at` is the FIRST send and is never rewritten
+    (a refresh does not change when the numbers left Laoka), `updated_at` moves
+    when the expense is corrected in place, and `category_id` is read BACK OFF
+    the transaction rather than taken from whichever submit arrived — a ledger
+    that disagrees with the expense it points at is worse than no ledger. Notify
+    on `created` only (a correction is not a second purchase). Smoke §22 (e)
+    proves the pre-fill, the empty week, the adoption, the no-second-expense and
+    the surviving date/category/description; §13 still proves the one-press half.
+
+37. **A number is TYPED, never nudged — one file, every document.**
+    `public/shared/number-entry.js` is the only place that decides how a number
+    box behaves, and every document Home serves loads it: `views/layout.tsx` and
+    `views/shell.tsx` (which between them cover every Sompitra page, the auth
+    pages and both module shells) plus a plain `<script>` tag in
+    `public/way/index.html`, `public/laoka/index.html`, `public/chat/index.html`
+    and `public/live/index.html`.
+
+    It removes the browser's OWN up/down spinner buttons — both engines:
+    `-moz-appearance: textfield` for Firefox, and the two WebKit pseudo-elements
+    (`::-webkit-outer-spin-button`, `::-webkit-inner-spin-button`) for Chrome,
+    Brave, Safari, Edge — and neutralises the two nudges that remain: the wheel
+    and the ArrowUp/ArrowDown keys.
+
+    * **The wheel is the destructive one, not the irritating one.** Laoka's
+      to-buy boxes commit on **blur**, so scrolling a long list with the pointer
+      over a row writes a price for that row: whatever sat under the cursor, at
+      whichever quantity the box held — money nobody typed.
+    * **`preventDefault()` alone is not the fix.** It protects the box by
+      freezing the page, which is the same bug from the other side — Laoka has
+      already shipped a list that could not be wheel-scrolled (root
+      `overflow-x: hidden`). So the handler cancels the STEP and then performs
+      the scroll itself on the nearest scrollable ancestor, falling back to
+      `window.scrollBy`. `deltaMode` is normalised first, or a Firefox wheel
+      moves the list by 3 px.
+    * **An unfocused box is left completely alone.** No engine steps a box that
+      does not have focus, so flinging a list past rows you never tapped still
+      scrolls — and that exemption is also the guard's own check.
+    * **Nothing here rewrites a value**, clamps or validates. Typing, Tab,
+      Backspace and Enter are untouched — Enter is how Laoka commits a price
+      from the box.
+    * **The pantry's − / + count steppers are NOT this.** They are the counting
+      affordance for the shelf you are standing in front of, they are deliberate
+      taps, and they stay.
+    * **A NEW document needs the include**, or its boxes silently go back to
+      nudging. Smoke §23 fetches every document and requires the TAG (the string
+      alone is not enough: each file also NAMES the module in a comment
+      explaining why it loads it — that is exactly how the first version of the
+      guard stayed green with a `<script>` deleted).
 
 ## Smoke test (local, after any identity change)
 
@@ -868,6 +994,8 @@ have their own separate repositories and their own history.
 | Login works but a module shows its own login screen | that module's`app.js`/head script bounces to `/login` when a fetch 401s; `src/identity.ts` repair helpers |
 | A module 404s on an `/api/…` path | `run_worker_first` in `wrangler.jsonc` — asset paths are served by the edge before the Worker |
 | Tab bar looks different on some tabs | both hosts must render `HomeTabBar` from `views/app-chrome.tsx` — a second, local tab bar is the bug |
+| Clicking ✏️ / 🗑️ beside one row acts on a DIFFERENT row (Laoka's pantry categories) | a handler built inside a `var` loop closes over the LOOP VARIABLE, so every iteration's callback sees the last one — this shipped once in `renderPantry`, where the ✏️ of every category heading opened “dry staples”. Build the node inside an IIFE bound per iteration (`(function (cat) { … })(sub)`) or hand it to a render function that takes it as an argument (`pantryRow(item)` is immune for exactly that reason). Smoke §22 fails on it |
+| A price or a quantity changes by itself while you scroll, or a number box shows up/down arrows again | the ONE place that decides this is `public/shared/number-entry.js`, and every document must load it (rule 37). The wheel must cancel the STEP and then perform the scroll itself — a fix that only calls `preventDefault()` protects the box by breaking the page scroll, which is the same bug in the other direction. Smoke §23 fails if the spinner CSS, either half of the wheel handler, the arrow guard, the "never rewrites a value" invariant, or any document's include goes missing |
 | The mouse wheel does not scroll a module (Laoka) | its embed block must not set `overflow` on `html`/`body` — a root `overflow-x: hidden` stops the document being the viewport scroller. `npm run smoke` section 17 fails on it |
 | A Laoka tab (History, Settings) cannot be reached in the shell | `#topnav .inner` must `flex-wrap: wrap`; the standalone bar only fits one line at md+, and the shell embeds it at any width |
 | A saved recipe reads as one run-on paragraph in **View** (and in a day's gourmet slot), while the editor shows the line breaks fine | the text is stored intact — a browser collapses every `\n` in a div unless it is `white-space: pre-wrap`, and the rule that said so was scoped to `.recipe .ing`, a card that renders no ingredients. The fix is that `.ing` is a TOP-LEVEL rule carrying both the box and `pre-wrap`; re-scoping it silently returns every recipe to a blob. The editor was never evidence: a `<textarea>` keeps line breaks with no CSS at all. Smoke section 17 fails on either half (a parent selector, or a missing `pre-wrap`) |
@@ -879,6 +1007,14 @@ have their own separate repositories and their own history.
 | A person who IS an admin cannot see the admin links on `/settings` (or an admin POST bounces back to `/settings`) | they are a Home admin whose Sompitra row predates the merge, so `users.is_admin` is 0 there. The card and the handlers must judge with `isSettingsAdmin()` — central role first, module flag as a fallback (rule 13, `CUTOVER.md` §1c) |
 | The bottom bar shows on a desktop window | the `md:hidden` (bar) / `hidden md:flex` (header nav) split in `app-chrome.tsx` |
 | Chrome/Brave on Android never offers "Install app" | `public/manifest.webmanifest` + the icons it points at: each file must exist **at** the advertised size, and the maskable must not be a byte-copy of `icon-512.png` (Android then clips the mark). `npm run smoke` section 16 checks the served bytes. There are **two** installable scopes — `/` and `/way/` (`public/way/manifest.json`, with `public/way/sw.js` precaching its icons) — and section 16 checks both, because the rule was applied to the root manifest only, which is how both WAY icons came to be 1254×1254 files declaring `512x512`: ~2 MB of precached icon per install for a mark a launcher draws at 192 px |
+| A low pantry item shows up on the WEEK's shopping list | the two domains are one list again: `syncShoppingLines` must not fold a low-stock rule in (a week's list is the plan and nothing else), and a `.recipe`-style "pantry toggle" coming back into the Shop tab is the same bug from the UI side. Smoke §22 (a) and (f) fail on them |
+| A chicken thigh (or any meal ingredient) can be counted | the pantry is no longer scoped to its own domain — `getLowStockItemIds` must filter `g.is_pantry = 1`, `getCatalogTree` must filter `is_pantry = 0` **and** stop selecting `i.stock`, and every pantry write must ask `isPantryItem()` first. A count left on a meal item by the earlier iteration is cleared by migration `0010_pantry.sql`. Smoke §22 (a)+(b) fail on each half |
+| The to-buy list misses a staple that IS below its level | `getLowStockItemIds` must compare `i.stock < i.stock_min` (per item) **and** skip `stock IS NULL` — an untracked item is not a zero, and a hardcoded threshold ignores the level the household set. Smoke §22 (a) fails on either |
+| An emptied trip lingers as an "Ar 0" shopping on the Pantry screen | the clear handler must call `dropEmptyPantryTrip` after removing the prices. A PUSHED trip must never be dropped — that row is the identity of a real expense. Smoke §22 (d) fails on it |
+| Clicking the pantry hand-off opens Sompitra's form INSIDE Laoka, with no header and no way back | the hand-off must set `window.top.location.href` — Laoka runs in an iframe (same trap as the Laoka export sheet). Smoke §22 (f) fails on it |
+| The pantry trip's Sompitra expense is created twice | the save must ADOPT the expense the trip already owns (`pantry_trips.transaction_id` lookup) instead of inserting, and must carry the hidden `pantry_trip`. Both doors then correct `amount` + `notes` only. Smoke §22 pins the lookup in the adoption branch — scoped, because the read-only hand-off builds its own query with the same shape |
+| Laoka says a week was "sent" right after refreshing it | `recordLaokaImport` must keep `imported_at` (the FIRST send) and move only `updated_at` on an in-place correction — one door rewriting the first-send time makes the two indistinguishable. Smoke §22 (e) fails on it |
+| An expense's date, category or description changed by itself | both doors correct `amount` + `notes` ONLY. The reviewed save deliberately submits a stale date/description and **no** category, and its category is read back off the transaction for the ledger; smoke §22 (e) compares the fields before and after |
 | The fence circle on the map does not match where the fence actually triggers | the circle must be **that fence's** `exit_radius_m` (else `radius_m + 40`), read per fence from `/way/api/geofences` — `fenceExitRadiusM()` in the page, with the two fallback numbers mirroring `config.ts`. It was one hardcoded 90 m for every fence, so resizing a fence (production: Home1/Home3/Office2 at 100 m) moved the engine and left the drawing behind. Smoke section 15 fails on a fixed radius, and on fallbacks that have drifted from `config.ts` |
 | The Trips month shows no "km walked" while the day card shows one | the month must total through `computeLegsForDay` (geometry, split by classification), the same rule the day uses. Summing each row's stored `distance_km` **cannot** work: walking rows are stored with distance 0 on purpose, so that figure is 0.0 km for every month, for everyone. Smoke section 15 fails if `loadMonthlyTotals` reads a per-row distance again |
 | The HUD badge and the Trips card show two different distances for one day | the HUD must **recompute** its "km today" from those same rows (`refreshTodayDist` → `computeLegsForDay`), never accumulate each ping's stored `distance_km` as it arrives. The two are different quantities, not the same one rounded: local data read `1.8 km today` on the badge against `0.9 km` on the card for one day. Smoke section 15 fails if a `todayDist[...] +=` accumulator comes back |

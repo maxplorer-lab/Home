@@ -24,7 +24,7 @@ ever missing or stale, the worker transparently re-mints it on the next 401
 | --- | --- | --- | --- | --- |
 | **Sompitra** | Finance suite: budget, Kiné, debts & credits, sales & stock (Hono JSX SSR) | `/` | `DB` → `sompitra-db` | `session` (D1-backed) |
 | **W.A.Y** | GPS tracking, geofences, μlogger ingest (Durable Object + cron) | `/way/` | `WAY_DB` → `way-db` | `way_user_session` (stateless HMAC) |
-| **Laoka** | Weekly meal planner with shared shopping list (vanilla SPA) | `/laoka/` | `LAOKA_DB` → `laoka` | `laoka_session` (D1-backed) |
+| **Laoka** | Weekly meal planner (Protein · Sides · Raw Salad) with a shared shopping list, plus the **Pantry** tab — a second, uncoupled list for staples and household goods (vanilla SPA) | `/laoka/` | `LAOKA_DB` → `laoka` | `laoka_session` (D1-backed) |
 | **Home** | Central identity + admin console | `/login`, `/admin` | `HOME_DB` → `home-db` | `home_session` (D1-backed) |
 
 App-global endpoints: `/ws` (W.A.Y FleetDO socket — also powers Chat),
@@ -149,6 +149,22 @@ you are in.
   **every** width — it was `hidden sm:block`, which left Kiné, Debts and Sales
   with no route from the Sompitra tab on a phone, where most of this app is
   used. `/settings` is the You tab; `/admin` stays a Sompitra-style page.
+* **Every number box in the app is typed, never nudged.** One file,
+  `public/shared/number-entry.js`, decides that for every document Home serves —
+  `views/layout.tsx` and `views/shell.tsx` carry it for the SSR pages and both
+  module shells, and way / laoka / chat / live load it with a plain `<script>`
+  tag. It removes the browser's own up/down spinner buttons in both engines
+  (Firefox's `-moz-appearance` and the two WebKit pseudo-elements) and
+  neutralises the two nudges left: the wheel and the ArrowUp/ArrowDown keys.
+  The wheel is the *destructive* one rather than the irritating one — Laoka's
+  to-buy boxes commit on blur, so scrolling a long list with the pointer over a
+  row wrote a price for it, at whatever quantity the box held. Cancelling the
+  event alone would protect the box by freezing the page (the opposite bug, and
+  one Laoka has already shipped), so the handler cancels the STEP and then
+  performs the scroll itself on the nearest scrollable ancestor. A box that is
+  not focused is left completely alone, and the pantry's own − / + count
+  steppers are deliberate taps, so they stay. Rule 37 in `AGENTS.md`; smoke §23
+  pins the rule, its limits, and every document's include.
 
 ## The brand system (one typeface, one accent per screen, brand glyphs)
 
@@ -481,7 +497,11 @@ schemas, untouched data):
   that never arrived is nobody's module data (see "The diagnostics ledger").
 * `sompitra-db` — migrations in `migrations-sompitra/`.
 * `way-db` — migrations in `migrations-way/`.
-* `laoka` — migrations in `migrations-laoka/`.
+* `laoka` — migrations in `migrations-laoka/` (the module's own history, mirrored
+  from the standalone repo, **plus two exceptions**: `0009_pantry_stock.sql` adds
+  `items.stock` / `items.stock_min`, and `0010_pantry.sql` adds the pantry's own
+  `pantry_trips` / `pantry_lines` and clears any count left on a meal item. Both
+  are additive and nullable, so the standalone app ignores them and still works).
 
 The three module migration folders mirror the standalone repos and are treated
 as read-only: they are the modules' own history, and an index or a column added
@@ -711,6 +731,130 @@ itemized list. The suite deliberately does not create a week that was never
 sent — that would put money in the household's budget behind their back; it
 reports the write half as **skipped** until a week has been sent once.
 
+### Two doors, one behaviour (the reviewed save)
+
+A one-press send has to choose a category *for* the household (Sompitra's
+Laoka category). The second door leaves that choice where it belongs — with
+the person: **🛒 Review & save in Sompitra** opens
+`GET /budget/add-expense?from_laoka=<week>`, which is Sompitra's own expense
+form with the week's lines, prices, total and description already in it and the
+category **empty**. Nothing exists in the budget until a category is picked and
+Save is pressed; the submit carries a hidden `laoka_week`, and a week that
+already owns an expense **adopts** it, so the two doors are one identity:
+
+| Door | Where | The category |
+| --- | --- | --- |
+| 📤 Send without reviewing | Laoka's export sheet → `POST /budget/import-laoka` | Sompitra's default Laoka category |
+| 🛒 Review & save | Laoka's export sheet → `GET /budget/add-expense?from_laoka=N` | **the household's, on the form, before anything is written** |
+| 🔄 Send again | Laoka's export sheet, once the week is sent | irrelevant — an existing expense is only ever corrected |
+
+Both doors correct an existing expense through the same helper
+(`refreshLaokaExpense` → `recordLaokaImport`), which is what keeps the ledger
+honest in both directions: `imported_at` is the **first** send and never moves
+(a refresh does not change when the numbers left Laoka), `updated_at` moves when
+the expense is corrected in place, and `category_id` is read **back off the
+transaction** rather than taken from whichever submit arrived. The reviewed save
+deliberately submits a stale date, a wrong description and no category at all —
+all three must survive it, or a stale tab can silently undo a person's choice.
+Smoke §22(e) does exactly that and counts transactions across the save.
+
+The destination matters here: Laoka is embedded in an **iframe**, so the sheet's
+hand-off sets `window.top.location.href`. Navigating the frame itself would draw
+Sompitra's form inside Laoka, headless, with no way back.
+
+## Two shopping lists: the week's meals, and the pantry
+
+Laoka's catalogue is **two domains in one set of tables**, split by
+`groups.is_pantry`, and the split is the feature — not a filter on a screen.
+
+| | **Meal** | **Pantry** |
+| --- | --- | --- |
+| Groups | Protein · Sides (incl. Raw Salad) | spices · oils · condiments · dry staples, plus whatever the household adds (toilet paper, soap, batteries) |
+| Planned weekly | yes — that is what the planner does | no |
+| On a week's list | yes | **never** |
+| Counted | never — a count on a chicken thigh is a contradiction | yes, by hand, per item |
+| Own list | the week's shopping list | the **to-buy** list |
+| Ends in | `?from_laoka=<week>` → one itemized expense | `?from_pantry=<trip>` → one itemized expense |
+
+**Why the split is enforced in the queries, not the screens.** One item has one
+row, one identity and one history, so a pantry item cannot exist twice with two
+spellings; what makes the domains separate is that the meal side cannot see the
+pantry and the pantry side cannot see meals:
+
+* `getCatalogTree` and `getSelectedPools` filter `g.is_pantry = 0`, and the meal
+  catalogue deliberately does **not** select `i.stock` — a number on the meal
+  side is how "count the chicken too" comes back;
+* `syncShoppingLines` builds a week's list from the plan and **nothing else**. A
+  low staple never joins it;
+* every pantry write asks `isPantryItem()` first and answers 404 otherwise, so no
+  screen can put a count on a meal ingredient;
+* migration `0010_pantry.sql` clears any count the earlier iteration recorded on
+  `is_pantry = 0` items, rather than leaving it for a screen to find later.
+
+**The pantry's own rule.** `items.stock` is how many are at home, `items.stock_min`
+is when to reorder (default 2, per item on purpose — milk reorders at 1, rice at
+5). `stock IS NULL` means *nobody counts this*: that is the default, it is what
+separates "there is one left" from "nobody is counting", and it is why the
+number can be trusted at all. A count is a statement by the household and
+**nothing in the app changes one** — no plan eats a shelf, no purchase fills one,
+no ping does either.
+
+> **A pantry item whose `stock` is below its `stock_min` is on the to-buy list.**
+
+That list is **derived** (`getLowStockItemIds` → `listPantryToBuy`), never
+stored: counting down puts an item on it, counting up takes it off, and there is
+nothing to keep in sync.
+
+**A price belongs to the trip, and a line is a QUANTITY at a UNIT PRICE.** The
+pantry has no schedule, so a shopping is a **trip**: it starts when the first
+price is typed and ends when it is pushed. A line lives on `pantry_lines`
+(`item_id`, `trip_id`, `price`, `qty`) because both numbers are what *this*
+shopping was: `price` is what ONE costs — the only price you know in the aisle —
+and `qty` is how many were bought (default 1, which is what every line written
+before the column existed means). The money that reaches the budget is their
+**product**, summed over the trip, and it is computed the same way in the API's
+total, in the Sompitra hand-off and in the row's own live figure — never typed in
+as a line total, because that is arithmetic the app should do and the kind that
+gets a total wrong. `qty` is deliberately NOT on `items`: how many you bought
+says nothing about how many are on the shelf (`items.stock`, which only the
+household changes, by counting). Pushing the trip clears its lines, so a pushed
+purchase cannot be sent twice by leaving prices behind. What the trip became —
+`transaction_id`, `amount`, `item_count`, `pushed_at` — is written back onto
+`pantry_trips`, which is why the Pantry screen can still say "last trip: Ar 6,000,
+3 items" after the lines are gone. `item_count` has to live there, not be counted
+from `pantry_lines`, for exactly that reason.
+
+**Clearing the prices drops an emptied trip** (`dropEmptyPantryTrip`). An
+unpushed trip with no lines is not a trip: left in place it draws an "Ar 0"
+shopping on the screen and makes the next count look like it continued somebody's
+abandoned trip. A **pushed** trip is never dropped — that row is the identity of
+an expense that exists in the budget, and losing it is how the same shopping gets
+charged twice.
+
+**Adding a household item works from the screen where the need appears.** The
+Pantry tab's *Add an item* form can create a new category on the spot (🧻
+household was made that way), so a pantry is not forced to be only food — and a
+new item lands in the pantry domain, which means it can never be drawn into a
+plan.
+
+**The pantry's categories are managed from the pantry, and nowhere else.** Each
+category heading carries ✏️ (rename, icon) and 🗑, and the card has *New
+category*; all three go through `PATCH` / `POST
+/api/pantry/categories/:id[/delete]`, behind the same `isPantryCategory()`
+boundary as every other pantry write. They are not routed through
+`/api/subgroups`, which is the meal catalog's door and knows nothing about the
+domain. Removing a category takes **its items and their trip lines with it**, in
+that order, and the confirm names how many items go — because the two other
+behaviours are worse: leaving the items hides counts nobody can see or change
+(`getPantryTree` and `getLowStockItemIds` both filter `s.deleted_at IS NULL`),
+and leaving their priced lines strands a trip that draws nothing and can never
+be dropped (`dropEmptyPantryTrip` counts rows). An **empty** category still
+draws, with a muted line saying so, which is also the only place its rename and
+remove buttons can be reached from. The meal Catalog's own *Add a type* form no
+longer offers a pantry group: its tree is `is_pantry = 0`, so a group created
+there was invisible in the screen that made it and reappeared as a second
+heading on the Pantry tab.
+
 ## Forgetting a template
 
 A Laoka week runs through three stages, and only the last one is history:
@@ -731,9 +875,10 @@ Laoka's Plan tab) therefore:
   reappear as a wishlist the moment the week was looked at again;
 * puts the week back to `planning` and clears `exported_at` and `generation`,
   both of which described the plan that no longer exists;
-* re-runs `syncShoppingLines()`, which with no selected plan keeps exactly the
-  Pantry lines (and the prices typed on them) and drops every plan line — the
-  same function that keeps the list honest when a single day is swapped;
+* re-runs `syncShoppingLines()`, which with no selected plan leaves an **empty**
+  list: every line in a week's list came from the plan, because the pantry is not
+  part of a week's list (see above). A week created before the split may still
+  carry leftover lines; they are ordinary rows here and go with the rest;
 * refuses a **confirmed** or **archived** week with 409. That guard is the whole
   safety story: `confirmed_at` is the boundary between a proposal and history,
   so the client never has to guess which side of it it is on.

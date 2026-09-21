@@ -44,6 +44,10 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
         <meta name="apple-mobile-web-app-title" content="Home" />
         {/* The one brand typeface — same family the module tabs load. */}
         <BrandFontLinks />
+        {/* Every number box in the app is typed, never nudged — no spinner
+            buttons, and a wheel over a focused box scrolls the page instead of
+            stepping the value. One file, loaded by every document Home serves. */}
+        <script src="/shared/number-entry.js" />
         {/* Tailwind CDN – replaced by build step in production */}
         <script src="https://cdn.tailwindcss.com" />
         <script dangerouslySetInnerHTML={{ __html: `
