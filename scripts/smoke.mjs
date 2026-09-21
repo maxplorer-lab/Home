@@ -2046,6 +2046,25 @@ log('\n17. Laoka as a tab: scrolling, the sticky nav, and the export ribbon')
     /\.totals \{ bottom: 0 !important; \}/.test(embed),
     'the totals bar still floats above a bottom nav this app no longer draws')
 
+  // A recipe's ingredients ARE typed text, and a browser eats every line break
+  // and blank line in it unless the box that prints them says
+  // `white-space: pre-wrap`. That rule used to be scoped to `.recipe .ing` -- a
+  // card that renders no ingredients -- so the two surfaces that DO print recipe
+  // text (the View sheet and the day panel's gourmet slot) fell through to an
+  // unstyled div and the saved paragraphs arrived as one run-on blob; the same
+  // text only read correctly in the editor, where a textarea keeps line breaks
+  // with no help from CSS. So this asserts two things: `.ing` is a TOP-LEVEL
+  // rule (never re-scoped to a parent), and it is pre-wrapped.
+  const laokaCss = (await body(await req('/laoka/styles.css'))).replace(/\/\*[\s\S]*?\*\//g, '')
+  const ingSelectors = [...laokaCss.matchAll(/([^{}]*)\{/g)].map((m) => m[1].trim()).filter((s) => /\.ing\b/.test(s))
+  const scopedIng = ingSelectors.filter((s) => s !== '.ing')
+  const ingBody = (laokaCss.match(/(?:^|[}\n])\s*\.ing\s*\{([^}]*)\}/) || [])[1] || ''
+  check("a recipe's text keeps the line breaks it was typed with",
+    ingSelectors.length > 0 && scopedIng.length === 0 && /white-space:\s*pre-wrap/.test(ingBody),
+    scopedIng.length ? `the .ing rule is scoped again (${scopedIng.join(' | ')}) — the View sheet and the day panel render it unstyled, so every line break collapses`
+      : !ingSelectors.length ? 'there is no .ing rule at all, so recipe text is printed as plain collapsed text'
+        : 'the recipe text box no longer sets white-space: pre-wrap, so a saved recipe reads as one paragraph')
+
   // The Sompitra tab icon: a receipt (a slip with a torn edge and three rule
   // lines), not the wallet-ish card it used to be — at 24px a card says nothing
   // about expenses. Four subpaths (body + 3 rules) is the fingerprint, and it

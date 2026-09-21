@@ -360,7 +360,17 @@ html.dark .swatch { border-color: rgba(255,255,255,.18); }
 .recipe .head strong { flex: 1; font-size: 15px; }
 .recipe .photo { width: 54px; height: 54px; border-radius: 14px; object-fit: cover; flex: 0 0 auto; }
 .recipe .link { display: block; font-size: 13px; color: var(--brand); overflow-wrap: anywhere; margin-top: 4px; }
-.recipe .ing {
+/* A recipe's ingredients ARE typed text: they arrive with their own line
+   breaks and blank lines, and a browser collapses every one of them into a
+   single space unless the box says otherwise. This rule was scoped to
+   `.recipe .ing` -- a card that no longer renders ingredients -- so the two
+   places that DO show them (the View sheet and the day panel's gourmet slot)
+   fell through to an unstyled div: the saved paragraphs arrived as one run-on
+   blob, and the same text only looked right in the editor, where a textarea
+   preserves line breaks with no help from CSS. Never re-scope this to a
+   parent: `.ing` is shared by every surface that prints recipe text, and
+   smoke section 17 fails if a parent selector comes back. */
+.ing {
   white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; margin-top: 9px;
   background: var(--line-soft); border: 1px solid var(--line); border-radius: var(--r-btn); padding: 11px;
 }
@@ -600,7 +610,7 @@ textarea { min-height: 100px; }
 .modal .sheet h2 { font-size: 16px; }
 .invitecode { font-size: 30px; letter-spacing: 6px; margin: 10px 0 2px; }
 .photo-lg { max-height: 180px; }
-.recipe .ing { font-size: 13px; padding: 9px; }
+.ing { font-size: 13px; padding: 9px; }
 details summary { padding: 10px 11px; font-size: 14px; }
 .toast { font-size: 13px; padding: 9px 14px; }
 .warn { font-size: 12px; padding: 8px 10px; }
