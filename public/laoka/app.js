@@ -485,6 +485,14 @@ async function boot() {
   }
   if (!pick && weeks.length) pick = weeks[0];
   if (pick) await loadWeek(pick.id);
+  // A tab can be opened BY URL (`/laoka/?tab=pantry`), which is how Home's
+  // dashboard card reaches the pantry instead of dropping the household on the
+  // week plan. An unknown name is ignored rather than fatal.
+  var wanted = null;
+  try { wanted = new URLSearchParams(window.location.search).get('tab'); } catch (e) {}
+  if (wanted) {
+    for (var n = 0; n < NAV.length; n++) if (NAV[n][0] === wanted) { state.tab = wanted; break; }
+  }
   render();
   connectSocket();
 }
@@ -1815,22 +1823,47 @@ function bumpPantry(item, delta) {
   pantryWrite('PATCH', '/api/pantry/items/' + item.id, { stock: next });
 }
 
-async function countPantry(item) {
+// ONE item, edited on its own: what it is called, which category holds it, what
+// is at home, and when it should be reordered. It used to be counts only, which
+// made a typo in a name (or an item filed under the wrong category) permanent
+// unless the whole category went -- and the category is not what is wrong.
+//
+// Removal lives here as well as on the row: the pantry is the ONLY screen that
+// manages its items, so the meal Catalog never lists a pantry item and cannot
+// offer this.
+async function editPantryItem(item) {
   var counted = isCounted(item);
-  var values = await formModal(item.name, [
-    { name: 'stock', label: 'At home now', type: 'number', inputmode: 'decimal', value: counted ? item.stock : '', placeholder: 'e.g. 2' },
-    {
-      name: 'stockMin', label: 'Reorder at', type: 'number', inputmode: 'decimal', value: item.stockMin,
-      hint: 'Below this it goes on the to-buy list by itself. 2 unless this staple needs more notice.'
-    }
-  ], 'Save', '🗑 Remove from the pantry');
+  var cats = pantryCategories();
+  var options = [];
+  for (var i = 0; i < cats.length; i++) {
+    options.push({ value: cats[i].id, label: (cats[i].icon ? cats[i].icon + ' ' : '') + cats[i].name });
+  }
+  var current = item.subgroupId;
+  if (current === null || current === undefined) current = options.length ? options[0].value : '';
+  var fields = [
+    { name: 'name', label: 'Name', value: item.name, required: true }
+  ];
+  // A category list is only worth showing when there is a choice to make: an
+  // item in the pantry's only category has nowhere else to go.
+  if (options.length > 1) {
+    fields.push({ name: 'subgroupId', label: 'Category', type: 'select', value: String(current), options: options });
+  }
+  fields.push({ name: 'stock', label: 'At home now', type: 'number', inputmode: 'decimal', value: counted ? item.stock : '', placeholder: 'e.g. 2' });
+  fields.push({
+    name: 'stockMin', label: 'Reorder at', type: 'number', inputmode: 'decimal', value: item.stockMin,
+    hint: 'Below this it goes on the to-buy list by itself. 2 unless this staple needs more notice.'
+  });
+
+  var values = await formModal(item.name, fields, 'Save', '🗑 Remove from the pantry');
   if (!values) return;
-  // The pantry is the ONLY screen that manages its items, so removal has to be
-  // reachable from here -- the meal Catalog never lists a pantry item.
   if (values.__remove) { await removePantryItem(item); return; }
+
+  var name = String(values.name).trim();
+  if (!name) { toast('Give the item a name.', true); return; }
   var stockRaw = String(values.stock).trim();
   var minRaw = String(values.stockMin).trim();
-  var body = {};
+  var body = { name: name };
+  if (values.subgroupId) body.subgroupId = Number(values.subgroupId);
   // Blank count = stop counting: the item leaves the count entirely and stops
   // being offered, which is how an item nobody counts should behave.
   body.stock = stockRaw === '' ? null : Number(stockRaw);
@@ -1838,7 +1871,7 @@ async function countPantry(item) {
   if (body.stock !== null && (!isFinite(body.stock) || body.stock < 0)) { toast('A count must be a number of zero or more.'); return; }
   if (body.stockMin !== undefined && (!isFinite(body.stockMin) || body.stockMin < 0)) { toast('A reorder level must be a number of zero or more.'); return; }
   var res = await pantryWrite('PATCH', '/api/pantry/items/' + item.id, body);
-  if (res) toast(body.stock === null ? 'No longer counted.' : 'Counted.');
+  if (res) toast(body.stock === null ? 'No longer counted.' : 'Saved.');
 }
 
 function pantryGroupId() {
@@ -2016,7 +2049,8 @@ function pantryRow(item) {
     counted && !low ? h('span', { class: 'pantryok', text: 'reorder at ' + countLabel(item.stockMin) }) : null
   ));
   if (!counted) {
-    row.appendChild(h('button', { class: 'tiny', text: 'Count it', onclick: function () { countPantry(item); } }));
+    row.appendChild(h('button', { class: 'tiny', text: 'Count it', onclick: function () { editPantryItem(item); } }));
+    row.appendChild(h('button', { class: 'icon', title: 'Remove this item', text: '🗑️', onclick: function () { removePantryItem(item); } }));
     return row;
   }
   row.appendChild(h('div', { class: 'stepper' },
@@ -2024,7 +2058,11 @@ function pantryRow(item) {
     h('span', { class: 'pantrycount' + (low ? ' low' : ''), text: countLabel(item.stock) }),
     h('button', { class: 'icon', title: 'One more', text: '+', onclick: function () { bumpPantry(item, 1); } })
   ));
-  row.appendChild(h('button', { class: 'icon', title: 'Count / reorder level', text: '⚙️', onclick: function () { countPantry(item); } }));
+  // The item's OWN buttons. The ✏️ opens the same sheet the count uses -- name,
+  // category, count and reorder level in one place -- and the bin removes this
+  // item alone, which is what "not the whole category" means.
+  row.appendChild(h('button', { class: 'icon', title: 'Edit this item', text: '✏️', onclick: function () { editPantryItem(item); } }));
+  row.appendChild(h('button', { class: 'icon', title: 'Remove this item', text: '🗑️', onclick: function () { removePantryItem(item); } }));
   return row;
 }
 

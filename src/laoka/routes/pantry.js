@@ -22,7 +22,7 @@
 import { ok, fail, readJson } from '../lib/http.js';
 import {
   getPantryTree, listPantryToBuy, getCurrentPantryTrip, getPantryTripLines, getLastPantryTrip,
-  setItemStock, isPantryItem, addPantryItem, deletePantryItem, setPantryPrice, dropEmptyPantryTrip,
+  updatePantryItem, isPantryItem, addPantryItem, deletePantryItem, setPantryPrice, dropEmptyPantryTrip,
   isPantryCategory, renamePantryCategory, deletePantryCategory
 } from '../data/queries.js';
 
@@ -112,6 +112,14 @@ export default [
     }
   },
   {
+    // Editing ONE item: its name, the category it is filed under, its count, its
+    // reorder level. Every field is optional and the ones left out keep their
+    // value, so renaming an item cannot wipe the count somebody just took.
+    //
+    // Categories are checked with `isPantryCategory` for the same reason the
+    // rename route below refuses /api/subgroups: a pantry item filed under a
+    // MEAL category would silently become invisible to every pantry surface, and
+    // visible to the meal planner as if it were an ingredient.
     method: 'PATCH',
     pattern: '/api/pantry/items/:id',
     handler: async function (ctx) {
@@ -121,6 +129,17 @@ export default [
       const body = (await readJson(ctx.request)) || {};
 
       const fields = {};
+      if (body.name !== undefined) {
+        const name = String(body.name).trim().slice(0, 80);
+        if (!name) return fail(400, 'a name is required');
+        fields.name = name;
+      }
+      if (body.subgroupId !== undefined) {
+        const subgroupId = Number(body.subgroupId);
+        if (!subgroupId) return fail(400, 'a numeric category id is required');
+        if (!await isPantryCategory(ctx.env, subgroupId)) return fail(400, 'no such pantry category');
+        fields.subgroupId = subgroupId;
+      }
       if (body.stock !== undefined) {
         const amount = readAmount(body.stock, MAX_STOCK, true);
         if (!amount.ok) return fail(400, 'stock must be a number between 0 and ' + MAX_STOCK);
@@ -133,7 +152,7 @@ export default [
       }
       if (!Object.keys(fields).length) return fail(400, 'nothing to update');
 
-      const item = await setItemStock(ctx.env, itemId, fields);
+      const item = await updatePantryItem(ctx.env, itemId, fields);
       if (!item) return fail(404, 'no such pantry item');
       const payload = await pantryPayload(ctx.env);
       payload.item = item;

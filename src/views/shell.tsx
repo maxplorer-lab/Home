@@ -24,6 +24,10 @@ type ModuleKind = 'way' | 'laoka' | 'chat'
 interface ShellProps {
   kind: ModuleKind
   displayName: string
+  /** An INNER tab of the module to open on — `/laoka/?tab=pantry` is how Home's
+   * dashboard card reaches the pantry. The shell only carries the request
+   * through: the tab itself belongs to the module, which parses it at boot. */
+  tab?: string | null
 }
 
 const MODULES: Record<ModuleKind, { label: string; badge: Badge; src: string }> = {
@@ -34,8 +38,13 @@ const MODULES: Record<ModuleKind, { label: string; badge: Badge; src: string }> 
   chat:  { label: 'Chat',  badge: { svg: 'chat',                label: 'Chat'  }, src: '/chat/index.html' },
 }
 
-export function ModuleShell({ kind, displayName }: ShellProps) {
+export function ModuleShell({ kind, displayName, tab }: ShellProps) {
   const mod = MODULES[kind]
+  // A plain lowercase word, or nothing. The value ends up in a URL the module
+  // parses, and it comes from the address bar, so anything else is dropped
+  // instead of being reflected into the frame's src.
+  const innerTab = typeof tab === 'string' && /^[a-z]{1,20}$/.test(tab) ? tab : null
+  const src = innerTab ? `${mod.src}?tab=${innerTab}` : mod.src
   return (
     <html lang="en" class="home-module">
       <head>
@@ -112,7 +121,7 @@ export function ModuleShell({ kind, displayName }: ShellProps) {
         {/* ── the module, chromeless, inside its stage (CSS above) ── */}
         <div id="home-module-stage" class="flex-1 min-h-0">
           <div id="home-module-frame">
-            <iframe id="module-frame" title={`${mod.label} module`} src={mod.src} />
+            <iframe id="module-frame" title={`${mod.label} module`} src={src} />
             {/* `class`, not `className`: hono/jsx is not React and writes the
                 attribute verbatim, so `className` produced a literal
                 className="animate-pulse" — an attribute no browser styles, i.e.

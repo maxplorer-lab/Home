@@ -163,11 +163,26 @@ export async function isPantryItem(env, itemId) {
   return !!row && Number(row.is_pantry) === 1;
 }
 
-/** Sets an item's count, its reorder level, or takes it out of the count
- * entirely (`stock: null`). Returns the row as the client needs it. */
-export async function setItemStock(env, itemId, fields) {
+/** Edits ONE pantry item: its name, the category it is filed under, its count,
+ * or its reorder level. Every field is optional and the ones not sent are left
+ * exactly as they were, so a rename cannot wipe a count. `stock: null` takes the
+ * item out of the count entirely. Returns the row the pantry screen needs, or
+ * null when nothing was sent.
+ *
+ * The pantry is the only screen that manages these, and a pantry item is the
+ * only thing this may touch -- the ROUTE asks `isPantryItem` first, and the
+ * category it moves between is checked with `isPantryCategory` there too. */
+export async function updatePantryItem(env, itemId, fields) {
   const sets = [];
   const binds = [];
+  if (fields.name !== undefined) {
+    sets.push('name = ?' + (binds.length + 1));
+    binds.push(fields.name);
+  }
+  if (fields.subgroupId !== undefined) {
+    sets.push('subgroup_id = ?' + (binds.length + 1));
+    binds.push(fields.subgroupId);
+  }
   if (fields.stock !== undefined) {
     sets.push('stock = ?' + (binds.length + 1));
     binds.push(fields.stock === null ? null : fields.stock);
@@ -180,13 +195,17 @@ export async function setItemStock(env, itemId, fields) {
   binds.push(itemId);
   await env.DB.prepare('UPDATE items SET ' + sets.join(', ') + ' WHERE id = ?' + binds.length + ' AND deleted_at IS NULL')
     .bind(...binds).run();
-  const row = await env.DB.prepare('SELECT id, name, stock, stock_min FROM items WHERE id = ?1')
-    .bind(itemId).first();
+  const row = await env.DB.prepare(
+    'SELECT i.id, i.name, i.stock, i.stock_min, i.subgroup_id, s.name AS subgroup_name ' +
+    'FROM items i LEFT JOIN subgroups s ON s.id = i.subgroup_id WHERE i.id = ?1'
+  ).bind(itemId).first();
   if (!row) return null;
   return {
     id: row.id, name: row.name,
     stock: (row.stock === null || row.stock === undefined) ? null : Number(row.stock),
     stockMin: Number(row.stock_min),
+    subgroupId: row.subgroup_id,
+    subgroupName: row.subgroup_name,
     low: row.stock !== null && row.stock !== undefined && Number(row.stock) < Number(row.stock_min)
   };
 }
@@ -218,6 +237,9 @@ export async function getPantryTree(env) {
     if (r.item_id === null || r.item_id === undefined) continue;
     s.items.push({
       id: r.item_id, name: r.item_name, notes: r.notes,
+      // The item's OWN category id, so the editor can show where it is filed
+      // (and move it) without the client hunting through the tree it just drew.
+      subgroupId: r.subgroup_id,
       // null = nobody counts this item (see migration 0009).
       stock: (r.stock === null || r.stock === undefined) ? null : Number(r.stock),
       stockMin: Number(r.stock_min),
@@ -513,6 +535,28 @@ export async function listPantryToBuy(env) {
       tripTotal: (r.trip_price === null || r.trip_price === undefined) ? null : Number(r.trip_price) * qty
     };
   });
+}
+
+/** The pantry in three numbers: how many items are on the shelves, how many
+ * categories hold them, and how many are below their reorder level.
+ *
+ * For anyone who needs the SHAPE of the shelves rather than the shelves — Home's
+ * dashboard card. It counts the same two things the Pantry screen draws from:
+ * `getPantryTree` for the shelves and `listPantryToBuy` for the to-buy rule. The
+ * to-buy number is that function's own length rather than a second comparison
+ * here, so a summary cannot disagree with the list it is summarising. */
+export async function pantrySummary(env) {
+  const tree = await getPantryTree(env);
+  const toBuy = await listPantryToBuy(env);
+  let items = 0;
+  let categories = 0;
+  for (const g of tree) {
+    for (const s of (g.subgroups || [])) {
+      categories++;
+      items += (s.items || []).length;
+    }
+  }
+  return { items: items, categories: categories, toBuy: toBuy.length };
 }
 
 // ------------------------------------------------------------ wishlists
