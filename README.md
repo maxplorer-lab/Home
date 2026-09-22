@@ -145,6 +145,16 @@ own — cooking does not eat a shelf and shopping does not fill one — so the c
 is always the household's own statement. An item you never count stays out of it
 entirely.
 
+Each row carries its own ✏️ and 🗑: the sheet holds the item's **name**, the
+**category** it is filed under, how many are at home and when to reorder, and the
+bin removes that one item — a *category* is removed from its heading, never from
+a row. Renaming or re-filing an item used to mean removing it, count and price
+included, because the sheet was counts-only.
+
+Home ends on the same shape in one line: the dashboard's **Pantry** card shows
+how many items, how many categories and how many are to buy — straight from the
+pantry's own queries — and tapping it opens the Pantry tab directly.
+
 Going shopping is a **trip**, not a week: each row takes a **quantity** and the
 **price of one**, the restock price (their product) appears as you type, and the
 trip total is the sum of those. Then **send it to Sompitra**, which opens the same

@@ -895,6 +895,29 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       reason its "Add a type" form no longer offers a pantry group — a group made
       there was invisible in the screen that made it and reappeared as a second,
       meaningless heading on the Pantry tab.
+    * **An item is edited ON THE ITEM, never through its category** — each row
+      carries its own ✏️ and 🗑, and `PATCH /api/pantry/items/:id` takes any
+      subset of **name, category, count and reorder level**. It writes only the
+      fields it was SENT (`updatePantryItem`), so renaming an item cannot erase a
+      count nobody touched — that partial-write rule is what lets one sheet hold
+      four fields. Both boundaries hold on the new fields exactly as they do on a
+      count: `isPantryItem` (404), and for a move `isPantryCategory` (400),
+      because a pantry item filed under a MEAL category vanishes from every
+      pantry list and turns up to the planner as an ingredient. The row's buttons
+      must act on the ITEM — a row that edits its category is how removing one
+      item takes a whole shelf with it.
+    * **The SHAPE of the shelves is on Home** — the dashboard's last card is the
+      pantry in one line (items · categories · to buy), and every number comes
+      from the pantry's OWN queries (`pantrySummary` → `getPantryTree` +
+      `listPantryToBuy`), so a summary cannot disagree with the list it
+      summarises. It reads Laoka's database through a DB-scoped env
+      (`{ DB: c.env.LAOKA_DB }`) and, when that read throws, says the shelves
+      could not be read rather than showing zeros, which would claim an empty
+      pantry. The card carries `?tab=pantry`: the shell forwards a plain
+      lowercase tab name into the frame's src (`/laoka/index.html?tab=pantry`)
+      and the module reads it at boot — the value comes from the address bar, so
+      the shell DROPS anything that is not `[a-z]{1,20}` instead of reflecting it
+      into that URL.
 
     Both hand-offs land on the SAME Sompitra form and follow rule 36. Smoke §22
     pins every clause above; `scripts/one-off/2026-09-21-pantry-stock/mutate.mjs`
@@ -907,6 +930,17 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     alone leaves behaviour right) the pair gets its own id through `also` — that
     is the only fault the OUTCOME check can see, and M40/M42/M51 are exactly
     that trio for a removed item's stranded price.
+
+    This batch's own guards (the item editor, the dashboard card, the shell's
+    `?tab`) are falsified by `scripts/one-off/2026-09-22-pantry-items/mutate.mjs`
+    (11 mutations over §17 + §22). It is the driver that paid for two rules the
+    others should copy: it restores every mutation in flight on SIGINT / SIGHUP /
+    `uncaughtException` — a run piped through `head` died mid-M9 and left
+    `public/laoka/app.js` mutated, which the NEXT run's preflight reported as a
+    red guard on a clean tree — and it waits for the dev server to settle after
+    writing a file before the section runs, because a fetch landing mid-reload
+    returned `/laoka/index.html` without its embed block and turned four §17
+    checks red for a reason that had nothing to do with the mutation.
     Its anchors are matched against a **line-ending normalised** copy of each
     file and written back with the ending the file already had: this tree is a
     Windows checkout (CRLF on disk), so a raw `\n` anchor matches nothing. A

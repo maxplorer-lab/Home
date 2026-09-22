@@ -889,6 +889,33 @@ longer offers a pantry group: its tree is `is_pantry = 0`, so a group created
 there was invisible in the screen that made it and reappeared as a second
 heading on the Pantry tab.
 
+**An item is edited on the ITEM, not through its category.** Each row carries
+its own ✏️ and 🗑, and the sheet holds the four things that describe an item: its
+**name**, the **category** it is filed under, how many are at home, and when to
+reorder. Before that the sheet was counts-only, so a typo in a name — or a staple
+filed on the wrong shelf — could only be undone by *removing the item*, which
+takes its count, its restored price and the trip line that price opened with it.
+`PATCH /api/pantry/items/:id` therefore accepts any subset of those four fields
+and writes only the ones it was sent (`updatePantryItem`): an edit is partial by
+construction, so renaming an item cannot erase a count nobody touched. Two
+boundaries hold on the new fields exactly as they do on a count — the item must
+be a pantry item (`isPantryItem` → 404), and a destination must be a pantry
+category (`isPantryCategory` → 400) — because an item filed under a meal
+category would vanish from every pantry list and appear to the planner as an
+ingredient.
+
+**The shape of the shelves is on Home.** The dashboard's last card is the pantry
+in one line — how many items, how many categories, and how many are to buy — and
+every number comes from the pantry's own queries (`pantrySummary` →
+`getPantryTree` + `listPantryToBuy`), so a summary cannot disagree with the list
+it summarises. It reads Laoka's database through a DB-scoped env (`{ DB:
+c.env.LAOKA_DB }`) and, when that read throws, says the shelves could not be read
+rather than showing zeros — zeros would claim an empty pantry. The card carries
+`?tab=pantry`, which the shell forwards into the frame's src
+(`/laoka/index.html?tab=pantry`) and the module reads at boot; the value comes
+from the address bar, so the shell drops anything that is not a plain lowercase
+tab name instead of reflecting it into that URL.
+
 ## Forgetting a template
 
 A Laoka week runs through three stages, and only the last one is history:
