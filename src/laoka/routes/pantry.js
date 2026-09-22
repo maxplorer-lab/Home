@@ -45,6 +45,20 @@ function readAmount(value, max, allowNull) {
   return { ok: true, value: n };
 }
 
+/** Money and counts are WHOLE: a price is Ariary and a quantity is items, and
+ * neither has a fraction to store. The screen's boxes take digits only, and this
+ * is the same rule at the door -- the API is a door too, and an older tab or a
+ * curl can still post a fraction. Leaving one stored is how the same shopping
+ * comes to two totals: the trip here multiplies price x qty exactly, while the
+ * Sompitra hand-off truncates each line to whole Ariary before it sends it, so a
+ * converted 1,000.5 at three would arrive as 3,000 against a screen that says
+ * 3,001.5. Truncated here, both figures are the same number. */
+function readWhole(value, max, allowNull) {
+  const r = readAmount(value, max, allowNull);
+  if (!r.ok || r.value === null) return r;
+  return { ok: true, value: Math.trunc(r.value) };
+}
+
 /** The whole screen, in one payload: the shelves, what is below its reorder
  * level, and where the current trip stands. Every write answers with this, so a
  * client never has to guess what changed -- it redraws from the answer. */
@@ -134,6 +148,12 @@ export default [
       if (!itemId) return fail(400, 'a numeric item id is required');
       if (!await isPantryItem(ctx.env, itemId)) return fail(404, 'no such pantry item');
       await deletePantryItem(ctx.env, itemId);
+      // Removing the item takes its price with it (see deletePantryItem), so a
+      // trip that was only holding that one line has to be re-checked: otherwise
+      // it stays as an "Ar 0" shopping nobody is on, and can never be dropped.
+      // The same step the category removal does, for the same reason.
+      const trip = await getCurrentPantryTrip(ctx.env, false);
+      if (trip) await dropEmptyPantryTrip(ctx.env, trip.id);
       return ok(await pantryPayload(ctx.env));
     }
   },
@@ -154,12 +174,12 @@ export default [
       if (!hasPrice && !hasQty) return fail(400, 'nothing to update');
       const fields = {};
       if (hasPrice) {
-        const price = readAmount(body.price, MAX_PRICE, true);
+        const price = readWhole(body.price, MAX_PRICE, true);
         if (!price.ok) return fail(400, 'a price must be a number between 0 and ' + MAX_PRICE);
         fields.price = price.value;
       }
       if (hasQty) {
-        const qty = readAmount(body.qty, MAX_QTY, false);
+        const qty = readWhole(body.qty, MAX_QTY, false);
         if (!qty.ok) return fail(400, 'a quantity must be a number between 0 and ' + MAX_QTY);
         fields.qty = qty.value;
       }

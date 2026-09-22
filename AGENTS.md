@@ -850,10 +850,32 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       (`transaction_id`, `amount`, `item_count`, `pushed_at`) is written back onto
       `pantry_trips` — the Pantry screen's "last trip" reads it, and Sompitra's
       save ADOPTS that expense instead of inserting a second.
+    * **A line is a quantity at a UNIT price** (`qty`, migration
+      `0011_pantry_line_qty.sql`), and the money that reaches the budget is the
+      product summed over the trip. Correcting one half must leave the other
+      alone: a write only touches the fields it actually carries.
+    * **A price of ZERO is an emptied box, not a free item.** Every reader of a
+      line asks `price > 0` (`getPantryTripLines`, the Sompitra hand-off), so a
+      stored 0 is a line that draws nowhere while still counting as a row on the
+      trip: an "Ar 0" shopping whose hand-off button opens an empty form, which
+      nothing can ever empty. Money here is whole Ariary; both doors say the same
+      thing (`setPantryPrice` on the server, the row's `commit` on the screen).
+      **A typed decimal is CUT, not merged**: `wholeDigits()` in `public/laoka/
+      app.js` removes thousands separators and cuts at the point, so "1250.75" is
+      1,250 Ariary — the cells are typed, not computed. One helper serves every
+      money box (the week's line prices, its debounced flush, the weekly budget,
+      the Settings default, the Pantry's unit price and quantity); a fifth copy
+      of the old inline strip is how "1250.75" once became 125,075, and smoke §23
+      fails if any box keeps its own.
     * **Clearing the prices drops an emptied trip** (`dropEmptyPantryTrip`). Left
       behind, it would draw an "Ar 0" trip on the screen and make the next count
       look like it continued a shopping somebody walked away from. A PUSHED trip
-      is never dropped — that row is the identity of a real expense.
+      is never dropped — that row is the identity of a real expense. What counts
+      as empty is **the lines that can be DRAWN** (the same rows
+      `getPantryTripLines` returns), not raw rows: a line whose item is gone can
+      never be shown, priced or cleared, so counting it would keep a trip alive
+      that nothing on the screen can empty. That clause also heals rows written
+      before the guards below existed.
     * **The pantry owns its CATEGORIES too** — `PATCH /api/pantry/categories/:id`
       (name + icon) and `POST /api/pantry/categories/:id/delete`, both behind
       `isPantryCategory()`. They are deliberately NOT routed through
@@ -861,9 +883,12 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       write could rename a meal group by guessing its id. Deleting a category
       takes its items AND their `pantry_lines` with it, in that order —
       `getPantryTree` and `getLowStockItemIds` both filter `s.deleted_at IS NULL`,
-      so leaving the items would hide counts nobody can see or change, and
-      `dropEmptyPantryTrip` counts ROWS, so a stranded price would keep a trip
-      alive that draws nothing and can never be dropped. The screen is honest
+      so leaving the items would hide counts nobody can see or change, and a
+      stranded price would keep a trip alive that draws nothing. **Removing a
+      single ITEM does the same thing, one level down** (`deletePantryItem`
+      clears its line, and the route then drops the trip it emptied): the two
+      paths are one rule, and the item path is the easier one to forget. The
+      screen is honest
       about the size of that action (the confirm names the item count), and it is
       the only place a category can be managed at all: the meal Catalog is scoped
       to `is_pantry = 0`, so a pantry category never appears there. For the same
@@ -873,10 +898,37 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
 
     Both hand-offs land on the SAME Sompitra form and follow rule 36. Smoke §22
     pins every clause above; `scripts/one-off/2026-09-21-pantry-stock/mutate.mjs`
-    runs 30 mutations (§22 and §23, one per guard, ~5 s each) and reports which
+    runs 52 mutations (§22 and §23, one per guard, ~40 s each) and reports which
     check each one turns red — run it after touching this feature, because a
     guard that cannot go red is decoration. The driver takes ids, so it fits in
-    one sitting: `... mutate.mjs M1 M2 …` (30 at once runs past ten minutes).
+    one sitting: `... mutate.mjs M1 M2 …` (52 at once runs well past half an
+    hour; targeted ids are the practical way to use it). Most
+    mutations edit one clause; where two clauses are redundant on purpose (each
+    alone leaves behaviour right) the pair gets its own id through `also` — that
+    is the only fault the OUTCOME check can see, and M40/M42/M51 are exactly
+    that trio for a removed item's stranded price.
+    Its anchors are matched against a **line-ending normalised** copy of each
+    file and written back with the ending the file already had: this tree is a
+    Windows checkout (CRLF on disk), so a raw `\n` anchor matches nothing. A
+    missed anchor changes no code, so it proves nothing: the report names it
+    `SKIPPED — anchor missing` per id **and fails the run** (an anchor can go
+    stale when its code moves — M10's did, quoting a variable `openPantryExpense`
+    no longer ends with).
+
+    Two harness rules the same reasoning produced (2026-09-22): an expected check
+    is only evidence if it **ran**, so the driver records every executed check
+    name, reports `NOT RUN — <check>` when one never executes (a skipped walk
+    reports nothing at all, which used to read exactly like a guard that held),
+    and exits non-zero for it; and before touching any file it **preflights** the
+    section unmutated, refusing to report at all if an expected check is already
+    red or absent. `expects` means *all* of these must go red — M49 named a code
+    guard next to the walk check that actually catches its fault and could
+    therefore never be caught; the preflight is what made that visible.
+
+    A walk's probe has to make its assertion **mean something**: the quick-save
+    walk prices TWO items (3 units, Ar 250) so the count it reads back can only
+    be the number of items bought — one item made "items" and "units" the same
+    number, and the guard proved nothing while passing.
 36. **Laoka hands Sompitra NUMBERS; the household chooses the category.** Two
     doors lead into the budget from one week, and they must stay one behaviour:
     * **The reviewed save** — the export sheet's primary action opens
@@ -1010,7 +1062,8 @@ have their own separate repositories and their own history.
 | A low pantry item shows up on the WEEK's shopping list | the two domains are one list again: `syncShoppingLines` must not fold a low-stock rule in (a week's list is the plan and nothing else), and a `.recipe`-style "pantry toggle" coming back into the Shop tab is the same bug from the UI side. Smoke §22 (a) and (f) fail on them |
 | A chicken thigh (or any meal ingredient) can be counted | the pantry is no longer scoped to its own domain — `getLowStockItemIds` must filter `g.is_pantry = 1`, `getCatalogTree` must filter `is_pantry = 0` **and** stop selecting `i.stock`, and every pantry write must ask `isPantryItem()` first. A count left on a meal item by the earlier iteration is cleared by migration `0010_pantry.sql`. Smoke §22 (a)+(b) fail on each half |
 | The to-buy list misses a staple that IS below its level | `getLowStockItemIds` must compare `i.stock < i.stock_min` (per item) **and** skip `stock IS NULL` — an untracked item is not a zero, and a hardcoded threshold ignores the level the household set. Smoke §22 (a) fails on either |
-| An emptied trip lingers as an "Ar 0" shopping on the Pantry screen | the clear handler must call `dropEmptyPantryTrip` after removing the prices. A PUSHED trip must never be dropped — that row is the identity of a real expense. Smoke §22 (d) fails on it |
+| An emptied trip lingers as an "Ar 0" shopping on the Pantry screen | four ways in, all pinned: the clear handler must call `dropEmptyPantryTrip` after removing the prices; a price of **zero** must clear the line like an emptied box, not be stored (`setPantryPrice`, and the row's `commit`); removing an **item** must clear its line and the trip it empties (`deletePantryItem` + the route), exactly as removing a category does; and "empty" must count **the lines that can be drawn**, not raw rows — a line whose item is gone can never be shown or cleared, so counting it keeps a trip alive forever. A PUSHED trip must never be dropped — that row is the identity of a real expense. Smoke §22 (d), (d2) and (h) fail on each |
+| A price box loses focus, or a half-typed price vanishes, while pricing a trip | a price commits on **blur**, so its reply always lands while the household is already in the NEXT box: rebuilding the list there destroys that box and drops focus to `<body>` (watched happen on the dev server with 1.2 s of latency, which is what a phone has). `pantryWrite(…, { money: true })` therefore repaints only `.pantryfoot` in place and touches no input, and every other pantry write defers while `isTyping()` — the rule `applyState`/`applyRemote`/`softRefresh` already followed. Never "fix" this by re-rendering and restoring focus: the characters typed after the commit are already gone. Smoke §22 (h) fails on it |
 | Clicking the pantry hand-off opens Sompitra's form INSIDE Laoka, with no header and no way back | the hand-off must set `window.top.location.href` — Laoka runs in an iframe (same trap as the Laoka export sheet). Smoke §22 (f) fails on it |
 | The pantry trip's Sompitra expense is created twice | the save must ADOPT the expense the trip already owns (`pantry_trips.transaction_id` lookup) instead of inserting, and must carry the hidden `pantry_trip`. Both doors then correct `amount` + `notes` only. Smoke §22 pins the lookup in the adoption branch — scoped, because the read-only hand-off builds its own query with the same shape |
 | Laoka says a week was "sent" right after refreshing it | `recordLaokaImport` must keep `imported_at` (the FIRST send) and move only `updated_at` on an in-place correction — one door rewriting the first-send time makes the two indistinguishable. Smoke §22 (e) fails on it |

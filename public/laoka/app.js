@@ -1069,7 +1069,7 @@ function openBudgetPicker() {
       h('button', {
         class: 'primary', style: 'flex:1', text: 'Save',
         onclick: function () {
-          var raw = input.value.replace(/[^0-9]/g, '');
+          var raw = wholeDigits(input.value);
           closeModal();
           saveBudget(raw === '' ? null : parseInt(raw, 10));
         }
@@ -1087,7 +1087,7 @@ function renderShop() {
   if (!state.week || !state.week.planId) {
     wrap.appendChild(h('div', { class: 'card' },
       h('h2', { text: 'No shopping list yet' }),
-      h('p', { class: 'muted', text: 'Generate and save a week first. The list is the saved plan plus every Pantry item.' })
+      h('p', { class: 'muted', text: 'Generate and save a week first. The list is what this week\'s cooking needs — staples and household goods are bought on the Pantry tab.' })
     ));
     return wrap;
   }
@@ -1185,7 +1185,7 @@ function shopLine(line, cls) {
   var timer = null;
   var lastSent = line.price === null || line.price === undefined ? null : line.price;
   function flush() {
-    var raw = input.value.replace(/[^0-9]/g, '');
+    var raw = wholeDigits(input.value);
     input.value = raw;
     var price = raw === '' ? null : parseInt(raw, 10);
     if (price === 0) price = null;
@@ -1196,7 +1196,7 @@ function shopLine(line, cls) {
     api('PATCH', '/api/lines/' + line.id, { price: price }).then(applyState).catch(reportError);
   }
   input.addEventListener('input', function () {
-    input.value = input.value.replace(/[^0-9]/g, '');
+    input.value = wholeDigits(input.value);
     var value = parseInt(input.value, 10);
     row.className = 'shopline ' + roleClass(line.slotRole) + (value > 0 ? ' bought' : '');
     if (timer) clearTimeout(timer);
@@ -1269,6 +1269,20 @@ function sompitraFetch(method, path, body) {
 }
 
 function moneyAmount(n) { return 'Ar ' + Number(n || 0).toLocaleString('en-US'); }
+
+// Money here is WHOLE Ariary and a count is whole items, so a typed price is
+// DIGITS -- but a decimal point means the household is typing cents, and the
+// number in front of it is the one they mean. "1250.75" is 1,250 Ariary, and a
+// rule that merely dropped the non-digits turned it into 125075: a silent
+// hundred-fold price. Thousands separators are the other way round ("1,250" IS
+// 1,250), so those are removed, and only the fraction is cut.
+//
+// One helper for every money box in the app -- the week's line prices, the weekly
+// budget, and the Pantry's unit price and quantity -- because four copies of a
+// strip once meant four chances to disagree about the same typo.
+function wholeDigits(raw) {
+  return String(raw == null ? '' : raw).replace(/[\s,]/g, '').split('.')[0].replace(/[^0-9]/g, '');
+}
 
 // Ledger timestamps arrive as ISO ("2026-09-18T09:12:00.846Z") and Laoka's own
 // as SQLite ("2026-09-18 09:12:00"). Show both as one readable form.
@@ -1760,10 +1774,34 @@ function applyPantry(res) {
   state.bootstrap.pantryLastTrip = res.lastTrip || null;
 }
 
-async function pantryWrite(method, path, payload) {
+// `opts.money`: this write only moved MONEY (a unit price or a quantity on the
+// current trip). See pantryWrite for why that one is painted in place.
+// The last price write that has not answered yet, and why it exists: a price
+// commits on BLUR, so any tap that follows (✖ Clear, or 🛒 Review & save) can
+// outrun the write it triggered. Both of those WAIT for it instead of racing it.
+var pantryPriceWrite = null;
+
+async function pantryPriceWriteWaiting() {
+  var pending = pantryPriceWrite;
+  pantryPriceWrite = null;
+  if (pending) { try { await pending; } catch (e) { /* pantryWrite reports its own errors */ } }
+}
+
+async function pantryWrite(method, path, payload, opts) {
   try {
     var res = await api(method, path, payload);
     applyPantry(res);
+    // A price is typed box by box and commits on BLUR, so its reply always lands
+    // while the household is already in the NEXT box -- and rebuilding the list
+    // there destroyed the box being typed in (the half-typed number vanished,
+    // focus fell to <body>; seen live on the dev server). A price changes money
+    // and nothing structural, so the money is swapped in place and the inputs are
+    // left exactly as they are.
+    if (opts && opts.money && swapPantryFoot()) return res;
+    // Everything else (a count, a category, an item) does redraw the screen --
+    // but never under somebody's fingers, which is the rule every other write in
+    // this app already follows (applyState, applyRemote, softRefresh).
+    if (isTyping()) { state.deferred = true; return res; }
     render();
     return res;
   } catch (e) { reportError(e); return null; }
@@ -1918,13 +1956,12 @@ function renderPantry() {
   var wrap = h('div');
   var items = pantryItems();
   var toBuy = state.bootstrap.pantryToBuy || [];
-  var trip = state.bootstrap.pantryTrip;
   var counted = 0;
   for (var i = 0; i < items.length; i++) if (isCounted(items[i])) counted++;
 
   // The purchase first: this is the reason the screen exists, and it is the part
   // that ends in money. Above it, the shelves; below it, the catalogue.
-  wrap.appendChild(pantryToBuyCard(toBuy, trip));
+  wrap.appendChild(pantryToBuyCard(toBuy));
 
   wrap.appendChild(h('div', { class: 'card' },
     h('h2', { text: 'Pantry' }),
@@ -1994,7 +2031,7 @@ function pantryRow(item) {
 // The to-buy list: everything below its reorder level, each with the price you
 // paid for it. A price is typed here and nowhere else, because it is a fact about
 // THIS shopping trip.
-function pantryToBuyCard(toBuy, trip) {
+function pantryToBuyCard(toBuy) {
   var card = h('div', { class: 'card flush' });
   card.appendChild(h('div', { class: 'totals-head' },
     h('h2', { text: '🧺 To buy' }),
@@ -2009,6 +2046,19 @@ function pantryToBuyCard(toBuy, trip) {
 
   for (var i = 0; i < toBuy.length; i++) card.appendChild(pantryBuyRow(toBuy[i]));
 
+  card.appendChild(pantryFoot(toBuy));
+  card.appendChild(lastTripNote());
+  return card;
+}
+
+// The bottom of the to-buy card: what the trip adds up to, and the two things you
+// can do with it (send it to Sompitra, or throw the money away).
+//
+// Its own function because a PRICE write repaints exactly this and nothing else
+// (see swapPantryFoot): the money stays as live as a full render would make it,
+// while the boxes the household is typing in are never touched.
+function pantryFoot(toBuy) {
+  var trip = state.bootstrap.pantryTrip;
   // The trip's total is the sum of its LINE totals (unit × quantity). Computing
   // it here from the two numbers the row shows is what keeps the total on screen
   // and the total that reaches the budget the same number.
@@ -2036,15 +2086,29 @@ function pantryToBuyCard(toBuy, trip) {
     var clear = h('button', { class: 'wide', text: '✖ Clear these prices' });
     clear.onclick = async function () {
       if (!(await confirmAction('Clear every price on this list?', 'The list itself stays — only the money typed so far goes.', 'Clear'))) return;
+      // A price typed a moment ago may still be in flight (a price commits on
+      // BLUR, so the tap that follows outruns it). Without this the clear can land
+      // FIRST and the price then writes itself back as if it were a new trip -- a
+      // "clear" that leaves the money on the screen.
+      await pantryPriceWriteWaiting();
       await pantryWrite('POST', '/api/pantry/trip/clear', {});
     };
     foot.appendChild(clear);
   } else {
     foot.appendChild(h('p', { class: 'note', text: 'Type a price beside anything you bought. The total, and the Sompitra hand-off, appear as soon as there is one.' }));
   }
-  card.appendChild(foot);
-  card.appendChild(lastTripNote());
-  return card;
+  return foot;
+}
+
+// Repaints the money on the Pantry screen in place, from the state the server just
+// answered with. Returns false when there is no to-buy card on screen (the tab
+// moved on, or the list is empty and the card drew a note instead), so the caller
+// can fall back to a full render.
+function swapPantryFoot() {
+  var card = document.querySelector('.pantryfoot');
+  if (!card || !card.parentNode) return false;
+  card.parentNode.replaceChild(pantryFoot(state.bootstrap.pantryToBuy || []), card);
+  return true;
 }
 
 // Where the LAST purchase went. A trip that has been pushed keeps its prices no
@@ -2082,7 +2146,7 @@ function pantryBuyRow(item) {
   // what the trip is up to in their head -- and correcting either number is one
   // tap on the box that is wrong.
   var price = h('input', {
-    type: 'number', inputmode: 'decimal', min: '0', step: '1', class: 'buyprice',
+    type: 'number', inputmode: 'numeric', min: '0', step: '1', class: 'buyprice',
     placeholder: 'unit price',
     value: (item.tripPrice === null || item.tripPrice === undefined) ? '' : String(item.tripPrice)
   });
@@ -2092,12 +2156,24 @@ function pantryBuyRow(item) {
   });
   var line = h('span', { class: 'buyline' });
 
-  var lineMoney = function () {
+  // Whole Ariary, whole units. The boxes take DIGITS, exactly like the week's
+  // price box: money here has no cents, so "1000.5" is not a value the budget
+  // could ever hold -- and letting it through is how the total on this screen and
+  // the total that reaches Sompitra end up a fraction apart.
+  var digitsOnly = function (box) {
+    var clean = wholeDigits(box.value);
+    if (clean !== box.value) box.value = clean;
+  };
+  var readPrice = function () {
     var raw = String(price.value).trim();
-    var unit = raw === '' ? null : Number(raw);
-    if (unit === null || !isFinite(unit) || unit <= 0) { line.textContent = ''; return null; }
-    var q = Number(String(qty.value).trim());
-    if (!isFinite(q) || q <= 0) { line.textContent = ''; return null; }
+    return raw === '' ? null : parseInt(raw, 10);
+  };
+  var readQty = function () { return parseInt(String(qty.value).trim(), 10); };
+
+  var lineMoney = function () {
+    var unit = readPrice();
+    var q = readQty();
+    if (unit === null || !isFinite(unit) || unit <= 0 || !isFinite(q) || q <= 0) { line.textContent = ''; return null; }
     line.textContent = moneyAmount(unit * q);
     return unit;
   };
@@ -2106,21 +2182,33 @@ function pantryBuyRow(item) {
   // Commit on blur and on Enter, not on every keystroke: a half-typed "12" must
   // not become a 12 Ariary line, and the trip must not be created by a stray tap.
   var commit = function () {
-    var raw = String(price.value).trim();
-    var unit = raw === '' ? null : Number(raw);
-    if (unit !== null && (!isFinite(unit) || unit < 0)) { toast('A unit price must be a number of zero or more.'); return; }
-    var q = Number(String(qty.value).trim());
-    if (!isFinite(q) || q <= 0) { toast('A quantity must be one or more.'); return; }
+    var unit = readPrice();
+    // Money is whole Ariary and a line is money: a box showing 0 is an EMPTIED
+    // box, not a free item. The row's own preview (`lineMoney`) and every reader
+    // of a line (`price > 0`) already mean that, so the write says it too -- a
+    // stored 0 is a line nothing shows and no trip can be emptied past.
+    if (unit === 0) unit = null;
+    var q = readQty();
+    if (!isFinite(q) || q <= 0) {
+      // Put the box back on what is actually stored, rather than leaving a
+      // quantity on screen that no line has: the reply will not repaint an input.
+      toast('A quantity must be one or more.');
+      qty.value = String(buyQty(item));
+      lineMoney();
+      return;
+    }
     // Both travel together: the server leaves a field alone only when it is
-    // absent, and this row always knows both of its own numbers.
-    pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit, qty: q });
+    // absent, and this row always knows both of its own numbers. `money` because
+    // this reply paints the total and the hand-off button -- it must not rebuild
+    // the list, which is where the caret currently is.
+    pantryPriceWrite = pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit, qty: q }, { money: true });
   };
   price.onblur = commit;
   qty.onblur = commit;
   price.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); price.blur(); } };
   qty.onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); qty.blur(); } };
-  price.oninput = lineMoney;
-  qty.oninput = lineMoney;
+  price.oninput = function () { digitsOnly(price); lineMoney(); };
+  qty.oninput = function () { digitsOnly(qty); lineMoney(); };
 
   row.appendChild(h('div', { class: 'buyinputs' }, qty, h('span', { class: 'buyx', text: '×' }), price));
   row.appendChild(line);
@@ -2130,9 +2218,14 @@ function pantryBuyRow(item) {
 // The pantry's door into Sompitra: the SAME reviewed expense form Laoka uses,
 // with the trip already in it. `window.top` because Laoka runs in an iframe —
 // navigating the frame would draw Sompitra's form inside Laoka, headless.
-function openPantryExpense(tripId) {
-  if (!tripId) { toast('Type a price first — there is nothing to send yet.'); return; }
-  window.top.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(tripId);
+async function openPantryExpense(tripId) {
+  // A price typed a moment ago may still be in flight: send the shopping that was
+  // actually priced, not the one a reply behind it.
+  await pantryPriceWriteWaiting();
+  var trip = state.bootstrap.pantryTrip;
+  var id = (trip && trip.id) || tripId;
+  if (!id) { toast('Type a price first — there is nothing to send yet.'); return; }
+  window.top.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(id);
 }
 
 // -------------------------------------------------------------- gourmet
@@ -2335,7 +2428,7 @@ function renderSettings() {
     budget,
     h('button', {
       class: 'primary wide', style: 'margin-top:12px', text: 'Save',
-      onclick: function () { saveSettings({ default_budget: budget.value.replace(/[^0-9]/g, '') }); }
+      onclick: function () { saveSettings({ default_budget: wholeDigits(budget.value) }); }
     })
   ]));
 

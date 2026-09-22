@@ -153,10 +153,23 @@ pick the category, and nothing is written until you save. Sending twice corrects
 the same expense instead of creating a second one. Stopped halfway through?
 *Clear the prices* walks away from the trip without touching a single count.
 
+Three small rules hold that together, and each one is a bug somebody hit: a price
+of **zero** is an emptied box rather than a free item (every reader of a line
+asks `price > 0`, so a stored 0 is money that draws nowhere); removing an item
+clears its price and the trip that price opened, exactly as removing a whole
+category does; and a price reply **repaints only the total**, never the list — a
+price commits when you leave the box, so the answer arrives while you are already
+typing in the next one, and rebuilding the list there used to take the half-typed
+number with it.
+
 Every number box in the app — these two included — is **typed, never nudged**: no
 spinner arrows, and the mouse wheel scrolls the list instead of stepping the value
 under the pointer (Laoka's prices commit when the box loses focus, so a wheel step
 used to *write* a price nobody typed). See rule 37 in `AGENTS.md`.
+
+And what you type means what you meant: money and counts are whole, so a typed
+**"1250.75" is 1,250 Ariary** — the cells are cut at the decimal and thousands
+separators are ignored, for every money box in the app (one helper, not five).
 
 Categories are managed right here — **New category**, and ✏️ / 🗑 on each
 heading. Removing one takes its items with it (the confirm says how many), and
