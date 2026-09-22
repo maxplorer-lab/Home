@@ -2082,6 +2082,33 @@ log('\n17. Laoka as a tab: scrolling, the sticky nav, and the export ribbon')
   check('the Sompitra tab icon is no longer the old wallet/card',
     !moneyPath.includes('M17 10.5a1.5'),
     'the wallet path is back on the Sompitra tab')
+
+  // A link into the app can name an INNER tab of a module, not just the module.
+  // Home's dashboard ends on a pantry card, and without this that card would
+  // drop the household on the week plan instead of the shelves they tapped. The
+  // shell only CARRIES the request into the frame's src — which tabs exist is the
+  // module's own business, and the module reads the name at boot.
+  const frameSrcOf = (html) => {
+    const tag = (html.match(/<iframe[^>]*>/g) || []).find((t) => /module-frame/.test(t)) || ''
+    return (tag.match(/src="([^"]*)"/) || [])[1] || '(no src)'
+  }
+  const shellPantry = await body(await req('/laoka/?tab=pantry'))
+  check('a link can open an inner tab of a module, not just the module',
+    frameSrcOf(shellPantry) === '/laoka/index.html?tab=pantry',
+    `the frame src is ${frameSrcOf(shellPantry)} — the shell ignores ?tab, so a card that links to a module's tab lands on whatever screen that module opens on`)
+  // The value comes from the address bar and ends up inside a URL in the page, so
+  // anything that is not a plain lowercase tab name is dropped, never reflected.
+  for (const junk of ['not%20a%20tab', '%2F..%2Fbudget', '%3Cb%3E', 'PANTRY']) {
+    const shellJunk = await body(await req(`/laoka/?tab=${junk}`))
+    check(`the shell drops "${junk}" instead of carrying it into the frame`,
+      frameSrcOf(shellJunk) === '/laoka/index.html',
+      `the frame src is ${frameSrcOf(shellJunk)} — a value typed into the address bar reaches the URL the module parses`)
+  }
+  const laokaScript = await body(await req('/laoka/app.js'))
+  check('and the module reads the tab it was opened with',
+    /new URLSearchParams\(window\.location\.search\)\.get\('tab'\)/.test(laokaScript) &&
+      /NAV\[n\]\[0\] === wanted/.test(laokaScript),
+    'the frame is handed ?tab and the module ignores it, so the deep link does nothing')
 }
 
 // ─── 18. One brand: one typeface, brand glyphs, one colour per screen ──
@@ -4025,6 +4052,161 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
     /async function sourceItemCount\(/.test(budgetCode) &&
       /item_count FROM pantry_trips WHERE id = \?/.test(fnBody(budgetCode, 'sourceItemCount') || ''),
     'a Quick save counts the lines of a free-text note (usually none) instead of the shopping bought, and a re-save then erases the count the trip already had')
+
+  // (i) ONE item, edited on its own. The Pantry is the only screen that manages
+  //     its items — the meal Catalog is scoped to `is_pantry = 0` and never lists
+  //     them — and its sheet was counts-only. So an item's NAME and the category
+  //     holding it were permanent: a typo could only be undone by removing the
+  //     item, and a staple filed on the wrong shelf could only be moved by
+  //     removing it, taking its count, its price and the trip line that price
+  //     opened with it. Both are editable ON THE ITEM now, which is what the four
+  //     checks below pin: the row's buttons act on the item (never on the category
+  //     heading above it), and an edit writes only what it was given.
+  const itemEditRoute = (() => {
+    const at = pantryRoute.indexOf("pattern: '/api/pantry/items/:id'")
+    const until = pantryRoute.indexOf("pattern: '/api/pantry/items/:id/delete'")
+    return at === -1 || until <= at ? '' : pantryRoute.slice(at, until)
+  })()
+  check('a pantry item can be renamed, and filed under another pantry category',
+    /if \(body\.name !== undefined\)/.test(itemEditRoute) && /fields\.name = name/.test(itemEditRoute) &&
+      /isPantryCategory\(ctx\.env, subgroupId\)/.test(itemEditRoute),
+    'the item route cannot rename an item or re-file it, so a typo or a staple on the wrong shelf can only be undone by removing the item — its count, its price and its trip line with it')
+  const updItemFn = fnBody(queries, 'updatePantryItem') || ''
+  check('an edit writes only the fields it was given, so a rename cannot wipe a count',
+    /if \(fields\.name !== undefined\)/.test(updItemFn) && /if \(fields\.subgroupId !== undefined\)/.test(updItemFn) &&
+      /if \(fields\.stock !== undefined\)/.test(updItemFn) && /if \(fields\.stockMin !== undefined\)/.test(updItemFn) &&
+      /UPDATE items SET ' \+ sets\.join\(', '\)/.test(updItemFn),
+    'the update writes fields nobody sent, so renaming an item erases the count somebody just took')
+  const itemSheetFn = fnBody(laokaJs, 'editPantryItem') || ''
+  check('the item sheet carries the name and the category, not counts only',
+    /name: 'name'/.test(itemSheetFn) && /required: true/.test(itemSheetFn) &&
+      /name: 'subgroupId'/.test(itemSheetFn) && /name: 'stockMin'/.test(itemSheetFn),
+    'the sheet is counts-only again — a name or a shelf can only be changed by removing the item')
+  const pantryRowFn = fnBody(laokaJs, 'pantryRow') || ''
+  check('each pantry row edits and removes its OWN item, never the category',
+    /editPantryItem\(item\)/.test(pantryRowFn) && /removePantryItem\(item\)/.test(pantryRowFn) &&
+      !/PantryCategory/.test(pantryRowFn),
+    'the row\'s buttons act on the category again — removing one item takes the whole shelf with it')
+
+  // (i2) …and by asking, on a throwaway item in a throwaway shelf, both
+  // soft-deleted at the end like every other probe in this section. The refusals
+  // aim at a MEAL item and a MEAL category, where the only way to tell "refused"
+  // from "quietly moved" is to look at it afterwards.
+  const mealShelfId = (() => {
+    for (const g of lboot?.catalog || []) for (const s of g.subgroups || []) if (s) return s.id
+    return 0
+  })()
+  const pantryGroupId = (pantryTree[0] && pantryTree[0].id) || 0
+  const firstShelf = (() => {
+    for (const g of pantryTree) for (const s of g.subgroups || []) if (s) return s
+    return null
+  })()
+  if (!quiet || !pantryGroupId || !firstShelf || !mealItemId || !mealShelfId) {
+    log('  \x1b[90m– skipped the item-edit walk: no pantry shelf (or no meal item) to aim a probe at\x1b[0m')
+  } else {
+    let shelfProbe = 0
+    let itemProbe = 0
+    // The names carry the run's own stamp: a name is unique while it lives
+    // (`WHERE deleted_at IS NULL`), so a stable one would be fine — until a run
+    // dies before its cleanup and the NEXT run is refused with "already exists",
+    // which is a suite that fails depending on what a previous crash left behind.
+    const stamp = Date.now()
+    const probeShelfName = `zz smoke pantry shelf ${stamp}`
+    const probeItemName = `zz smoke edit probe ${stamp}`
+    try {
+      const madeShelf = await parse(await req('/laoka/api/subgroups', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: probeShelfName, groupId: pantryGroupId, slotRole: 'none' }),
+      }))
+      shelfProbe = (madeShelf && madeShelf.id) || 0
+      check('the suite could add a throwaway pantry shelf to file an item onto',
+        !!shelfProbe, `POST /laoka/api/subgroups answered ${JSON.stringify(madeShelf)}`)
+      const madeItem = await parse(await req('/laoka/api/pantry/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: probeItemName, subgroupId: firstShelf.id, stock: 7, stockMin: 3 }),
+      }))
+      itemProbe = (() => {
+        for (const g of madeItem?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+          if (i.name === probeItemName) return i.id
+        }
+        return 0
+      })()
+      check('and add a throwaway item to rename and move',
+        !!itemProbe, `POST /laoka/api/pantry/items did not answer with the new item (ok=${madeItem && madeItem.ok})`)
+      if (itemProbe && shelfProbe) {
+        // A rename carries NO count: an edit is partial by construction.
+        const renamed = await parse(await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { name: probeItemName + ' II' }))
+        check('renaming an item leaves its count and its level alone',
+          renamed?.item?.name === probeItemName + ' II' && renamed.item.stock === 7 && renamed.item.stockMin === 3,
+          `item=${JSON.stringify(renamed?.item)} — an edit that carries fields nobody sent is how a rename erases a count`)
+        // …and a move is a move: it is drawn under the shelf it was sent to.
+        const moved = await parse(await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { subgroupId: shelfProbe }))
+        const filedUnder = (() => {
+          for (const g of moved?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+            if (i.id === itemProbe) return s.id
+          }
+          return 0
+        })()
+        check('moving an item files it under the shelf it was sent to, count intact',
+          moved?.ok === true && filedUnder === shelfProbe && moved.item?.subgroupId === shelfProbe &&
+            moved.item?.stock === 7,
+          `drawn under ${filedUnder} (asked for ${shelfProbe}), item=${JSON.stringify(moved?.item)}`)
+        // The refusals. The domain boundary has to hold on the NEW fields too,
+        // not only on the count that was already guarded.
+        const atMeal = await jpatch(`/laoka/api/pantry/items/${mealItemId}`, { name: 'hijacked' })
+        check('renaming a MEAL ingredient through the pantry is refused',
+          atMeal.status === 404, `status ${atMeal.status} for meal item ${mealItemId}`)
+        const toMeal = await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { subgroupId: mealShelfId })
+        check('and a pantry item cannot be filed under a MEAL group',
+          toMeal.status === 400,
+          `status ${toMeal.status} for meal category ${mealShelfId} — an item there vanishes from every pantry list and appears to the meal planner as an ingredient`)
+        const nameless = await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { name: '   ' })
+        check('an item cannot be renamed to nothing',
+          nameless.status === 400, `status ${nameless.status} for a blank name`)
+        const nothing = await jpatch(`/laoka/api/pantry/items/${itemProbe}`, {})
+        check('and an edit that changes nothing is refused rather than written',
+          nothing.status === 400, `status ${nothing.status} for an empty body`)
+      }
+    } catch (e) {
+      bad('the item-edit walk ran to completion', `threw: ${e && e.message}`)
+    } finally {
+      // The CATALOGUE's door, not the pantry's: a mutation above can file the
+      // probe under a meal category, and the pantry route then refuses it (by
+      // design — that boundary is the point of the checks above), so the cleanup
+      // has to be the door that deletes an item in either domain.
+      if (itemProbe) await req(`/laoka/api/items/${itemProbe}`, { method: 'DELETE' })
+      if (shelfProbe) await req(`/laoka/api/pantry/categories/${shelfProbe}/delete`, { method: 'POST' })
+    }
+  }
+
+  // (j) The shape of the shelves, on the page the household lands on. Home's
+  // dashboard ends on one compact card, and its numbers have to BE the pantry's
+  // own: a summary that counts differently from the list it summarises is a lie
+  // nobody notices until the two disagree. So they are compared against
+  // `/laoka/api/pantry` — the payload the Pantry screen itself draws from.
+  const shape = await parse(await req('/laoka/api/pantry'))
+  const shelvesPage = await body(await req('/'))
+  const shapeCounted = (() => {
+    let items = 0
+    let categories = 0
+    for (const g of shape?.pantry || []) for (const s of g.subgroups || []) { categories++; items += (s.items || []).length }
+    return { items: items, categories: categories, toBuy: (shape?.toBuy || []).length }
+  })()
+  const cardAt = shelvesPage.indexOf('>Pantry</h3>')
+  const pantryCard = cardAt === -1 ? '' : shelvesPage.slice(cardAt, cardAt + 2000)
+  check('Home\'s dashboard ends on a pantry card that opens the pantry itself',
+    cardAt > -1 && /href="\/laoka\/\?tab=pantry"/.test(pantryCard) &&
+      shelvesPage.indexOf('/laoka/?tab=pantry') > shelvesPage.indexOf('Debts &amp; Credits'),
+    cardAt === -1 ? 'the dashboard has no pantry card at all'
+      : 'the pantry card is not the last card, or it does not carry the tab that opens the pantry')
+  check('and its numbers are the pantry screen\'s own, not a second count',
+    shapeCounted.items > 0 &&
+      new RegExp(`>${shapeCounted.items} items?<`).test(pantryCard) &&
+      new RegExp(`>${shapeCounted.categories} categor(y|ies)<`).test(pantryCard) &&
+      (shapeCounted.toBuy > 0
+        ? new RegExp(`>${shapeCounted.toBuy} to buy<`).test(pantryCard)
+        : />nothing to buy</.test(pantryCard)),
+    `the card reads ${(pantryCard.match(/>\d+ items?</) || ['nothing'])[0]} where the pantry has ${shapeCounted.items} item(s) in ${shapeCounted.categories} categor(ies) and ${shapeCounted.toBuy} to buy — a summary that counts differently is a summary nobody can trust`)
 }
 
 // ─── 23. A quantity or a price is TYPED, never nudged ────────────
