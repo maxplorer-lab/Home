@@ -330,7 +330,7 @@ function handleNewMessage(msg, isLive) {
             '<div class="message-row"><span class="line"></span><span class="text">' + icon + ' ' + escapeHtml(msg.message) + '</span><span class="line"></span></div>';
     } else {
         div = document.createElement('div');
-        const isMine = currentUser && msg.sender === currentUser.username;
+        const isMine = !!currentUser && sameName(msg.sender, currentUser.username);
         div.className = 'chat-msg' + (isMine ? ' mine' : '');
         if (isMine && currentUser.color) {
             div.style.background = currentUser.color;
@@ -466,14 +466,28 @@ document.addEventListener('click', function() { closeAllPickers(); });
 
 /** Render (or re-render) one message's pill row from maps of
  *  emoji -> count and username -> emoji. */
+/** Do two names mean the same person? Every identity join in this app folds
+ *  case, and this page is one of them: a rename (or a session minted before
+ *  it) must not turn a person's own messages, or their own reaction, into
+ *  somebody else's. */
+function sameName(a, b) {
+    return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+}
+
 function renderReactionRow(row, reactions, reactionUsers) {
     row.innerHTML = '';
     if (!reactions) return;
     const myName = currentUser ? currentUser.username : null;
+    // Which key in reaction_users is this person? Folded, so a reaction stored
+    // under the pre-rename spelling still lights up as THEIR pill (and toggles
+    // off, rather than adding a second one under the new name).
+    const reactedAs = reactionUsers && myName
+        ? Object.keys(reactionUsers).find(function(k) { return sameName(k, myName); }) || null
+        : null;
     Object.keys(reactions).forEach(function(em) {
         const count = reactions[em];
         if (!count) return;
-        const mine = !!(reactionUsers && myName && reactionUsers[myName] === em);
+        const mine = !!(reactedAs && reactionUsers[reactedAs] === em);
         const pill = document.createElement('button');
         pill.type = 'button';
         pill.className = 'chat-react-pill' + (mine ? ' mine' : '');

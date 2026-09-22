@@ -238,7 +238,7 @@ export async function resolveShareTarget(env: Env, subject: string): Promise<str
   }
   try {
     const row = await env.WAY_DB
-      .prepare(`SELECT username FROM users WHERE username = ?1`)
+      .prepare(`SELECT username FROM users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1`)
       .bind(id)
       .first<{ username: string }>()
     return row?.username ?? null
@@ -269,7 +269,7 @@ export async function subjectName(env: Env, subject: string): Promise<string> {
     /* a deployment with no devices table still has the account name below */
   }
   try {
-    const row = await env.WAY_DB.prepare(`SELECT username FROM users WHERE username = ?1`).bind(id).first<{ username: string }>()
+    const row = await env.WAY_DB.prepare(`SELECT username FROM users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1`).bind(id).first<{ username: string }>()
     if (row?.username) return row.username
   } catch {
     /* fall through to the subject itself */

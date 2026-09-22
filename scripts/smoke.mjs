@@ -37,6 +37,7 @@
 
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
+import { createRequire } from 'node:module'
 
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:8787').replace(/\/$/, '')
 const USER = process.env.SMOKE_USER || 'maxx'
@@ -2435,6 +2436,90 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
       `no account resolved from a login typed as "${swappedUser}", so there is no second spelling to forge a cookie with — fix the check above before reading this one`)
   }
 
+  // ── The same rename, through the OTHER door: the browser's socket ──────────
+  // A user session lasts 30 days too, so a browser still holds the pre-rename
+  // cookie and opens /ws with the old casing. The upgrade used to forward that
+  // spelling verbatim and the DO stamped it onto every chat row — the person's
+  // own bubbles rendered as somebody else's, and the push lookup (which must
+  // FIND the account to route anything) matched nothing: the other phone never
+  // rang while the sender's did. Both halves are driven here through a real
+  // WebSocket handshake carrying exactly that cookie, because no HTTP shape can
+  // reach this door. `ws` is loaded from the tree wrangler already ships: the
+  // global WebSocket cannot send a Cookie header, which is the only credential
+  // this handshake accepts.
+  let WSClient = null
+  try {
+    WSClient = createRequire(new URL('../node_modules/wrangler/package.json', import.meta.url))('ws')
+  } catch (e) {}
+  if (!devSecret || !canonical) {
+    check('the socket proof can run (it needs the local SESSION_SECRET and a resolved account)',
+      false,
+      'without both there is no pre-rename cookie to forge for the human door, so this half of the one-spelling rule stays unproven')
+  } else if (!WSClient) {
+    check('the socket proof can run (it needs the ws client wrangler already ships)',
+      false,
+      "could not load 'ws' from node_modules/wrangler — this check drives the real /ws handshake, which the global WebSocket cannot do (it takes no Cookie header), so the guard would otherwise pass while proving nothing")
+  } else {
+    let meId = 0
+    try { meId = (JSON.parse(await body(await req('/way/api/users/me'))) || {}).id ?? 0 } catch (e) {}
+    const humanPayload = Buffer.from(JSON.stringify({ userId: meId, username: staleId, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')
+    const forgedHuman = `${humanPayload}.${createHmac('sha256', devSecret).update(humanPayload).digest('base64url')}`
+    const marker = `one-spelling probe ${Date.now()}`
+    const ledgerNow = async () => {
+      try { return (JSON.parse(await body(await req('/way/api/debug/notify'))) || {}).lastNotify || null } catch (e) { return null }
+    }
+    const beforeNotify = await ledgerNow()
+    const seen = await new Promise((resolve) => {
+      const out = { you: null, echoed: null, err: null }
+      let sock = null
+      const finish = () => { try { sock && sock.close() } catch (e) {} ; resolve(out) }
+      const timer = setTimeout(finish, 8000)
+      try {
+        sock = new WSClient(BASE.replace(/^http/, 'ws') + '/ws', { headers: { Cookie: `way_user_session=${forgedHuman}` } })
+      } catch (e) {
+        out.err = String((e && e.message) || e)
+        clearTimeout(timer)
+        resolve(out)
+        return
+      }
+      sock.on('message', (raw) => {
+        let m = null
+        try { m = JSON.parse(String(raw)) } catch (e) {}
+        if (!m) return
+        if (m.type === 'snapshot') {
+          // `you` is the identity the DO stamped at connect time — the same one
+          // it writes onto every row (and onto every push title).
+          out.you = m.you ?? null
+          try { sock.send(JSON.stringify({ type: 'chat', message: marker })) } catch (e) {}
+        } else if (m.type === 'chat' && String(m.message || '').includes(marker)) {
+          // The DO echoes the row it stored, sender field included.
+          out.echoed = m.sender ?? null
+          clearTimeout(timer)
+          finish()
+        }
+      })
+      sock.on('error', (e) => { out.err = String((e && e.message) || 'socket error'); clearTimeout(timer); finish() })
+    })
+    check('a socket opened with the pre-rename casing still stamps the account\u2019s own name',
+      seen.you === canonical && seen.echoed === canonical,
+      `a session claiming "${staleId}" opened a socket as you=${seen.you ?? '(no snapshot)'} and stored sender=${seen.echoed ?? '(no echo)'}${seen.err ? ` (${seen.err})` : ''} — a socket echoing the token\u2019s casing re-stamps the old spelling onto every chat row, which is how the spelling that was just merged away comes back`)
+
+    // The push half, asked of the DO's own ledger rather than inferred: "no such
+    // user" is the exact outcome of a lookup that cannot find the account, and
+    // it is invisible from the outside — the frame looks sent and nothing rings.
+    // Polled (the routing runs behind the reply), and compared against the
+    // BASELINE, so a decision left by an earlier frame is not read as this one's.
+    let routed = null
+    for (let i = 0; i < 12; i++) {
+      const now = await ledgerNow()
+      if (now && now.at !== (beforeNotify && beforeNotify.at)) { routed = now; break }
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    check('\u2026and the chat it carried reaches the routing stage instead of "no such user"',
+      !!routed && routed.type === 'chat' && !/no such user/i.test(String(routed.outcome || '')),
+      `the DO\u2019s ledger still reads "${routed?.outcome ?? 'nothing new'}" for "${routed?.source ?? '\u2014'}" — a source lookup that finds no account routes nothing while /debug-notify reports a send`)
+  }
+
   const after = await readDiagJson()
   check('the drop sample says WHY, in language a person can read',
     (after.ingest?.drops || []).some((x) => x.gate === 'accuracy' && /limit/.test(x.detail)),
@@ -2451,6 +2536,7 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   // set, no channel configured, a push that throws), so the paths that cannot be
   // reached here are read instead.
   let notifySrc = '', diagSrc = '', adminSrc = '', idxSrc = '', doLedgerSrc = '', ingestSrc = '', querySrc = ''
+  let wayWorkerSrc = '', shareSrc = '', chatSrc = ''
   try { notifySrc = readFileSync(new URL('../src/lib/notify.ts', import.meta.url), 'utf8') } catch (e) {}
   try { diagSrc = readFileSync(new URL('../src/lib/diagnostics.ts', import.meta.url), 'utf8') } catch (e) {}
   try { adminSrc = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8') } catch (e) {}
@@ -2458,6 +2544,9 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   try { doLedgerSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
   try { ingestSrc = readFileSync(new URL('../src/way/routes/ingest.ts', import.meta.url), 'utf8') } catch (e) {}
   try { querySrc = readFileSync(new URL('../src/way/db/queries.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { wayWorkerSrc = readFileSync(new URL('../src/way/worker.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { shareSrc = readFileSync(new URL('../src/lib/share.ts', import.meta.url), 'utf8') } catch (e) {}
+  try { chatSrc = readFileSync(new URL('../public/chat/index.html', import.meta.url), 'utf8') } catch (e) {}
 
   // The rename's two contracts, read rather than assumed: the password check
   // must fold case (or the tracker is stricter than the login that shares its
@@ -2473,6 +2562,29 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
     /canonicalDeviceId\(env\.WAY_DB, session\.deviceId\)/.test(ingestSrc) &&
       !/const deviceId = session\.deviceId/.test(ingestSrc),
     'the device id goes straight from the 30-day cookie onto every ping — a session minted before a rename re-stamps the old spelling onto gps_pings.device_id')
+  // The human door and the push lookup, pinned in source as well as driven live:
+  // the live proof above catches a revert of either one, but only while a real
+  // socket and a recipient both exist — these read the code path itself, the way
+  // the phone-side pair above does.
+  check('…the socket resolves the ACCOUNT before it hands the DO a name',
+    /getUserByUsername\(env\.WAY_DB, session\.username\)/.test(wayWorkerSrc) &&
+      !/headers\.set\("X-WAY-Username", session\.username\)/.test(wayWorkerSrc),
+    'the /ws upgrade stamps the token\u2019s own casing, so a browser holding a session from before a rename writes the old spelling onto every chat row — and the push lookup below it can find no account')
+  check('…the push lookup folds case on the SOURCE name',
+    /u\.username\.toLowerCase\(\) === wanted/.test(doLedgerSrc) &&
+      !/cfg\.users\.find\(\(u\) => u\.username === sourceUsername\)/.test(doLedgerSrc),
+    'an exact match on the source routes NOTHING for a device or session spelled differently, while /debug-notify still reports the send — the one failure a push pipeline cannot show you')
+  check('…the reaction toggle collapses an old spelling onto the current one',
+    /Object\.keys\(users\)\.find\(\(k\) => k\.toLowerCase\(\) === reactor\.toLowerCase\(\)\)/.test(doLedgerSrc),
+    'a person who reacted before a rename keeps a second key, so their one reaction counts twice and the pill never toggles off')
+  check('…a share code minted for any casing resolves to the account',
+    /SELECT username FROM users WHERE lower\(username\) = lower\(\?1\)/.test(shareSrc) &&
+      !/WHERE username = \?1/.test(shareSrc),
+    'the share resolver is back to an exact match, so a code minted as "niri" resolves to nobody — the viewer waits on a name that cannot arrive')
+  check('…and the chat page folds names when it decides what is YOURS',
+    /sameName\(msg\.sender, currentUser\.username\)/.test(chatSrc) &&
+      /sameName\(k, myName\)/.test(chatSrc),
+    'rows written before the fix render as someone else\u2019s, and your own reaction pills stop toggling off')
 
 
   check('every way a push can fail to reach a phone is recorded',

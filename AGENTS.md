@@ -804,6 +804,25 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     before/after rather than scan that history. Never fix a casing problem on the
     phone: the server accepting both spellings and storing one is the durable fix
     (`scripts/one-off/2026-09-20-rename-niri-to-Niri/`, §1f).
+    The **human** door leaked the same way, and it is the one that bit on
+    2026-09-22: `/ws` stamped the DO with the *token's* spelling, so Niri's
+    pre-rename session kept writing `niri` onto chat rows — her own bubbles
+    rendered as someone else's, and `notifyEvent`, whose source lookup was an
+    **exact** match, found no account: MaxX's phone never rang while hers did,
+    and `/debug-notify` still reported a send. Three folds, all needed, because
+    each covers a different source: the socket resolves the account *before*
+    `X-WAY-Username`; `notifyEvent` folds the **SOURCE** (a tracking event's
+    source is a device id, spelled independently of the users row); and the
+    reaction toggle reuses an existing key that differs only by case, so one
+    person is never counted twice. The pages fold too (`sameName` in /chat), so
+    history written before the fix still reads as theirs — and its sender field
+    stays the account's own spelling from then on. Guarded in §19 ("a socket
+    opened with the pre-rename casing…", "…the push lookup folds case…") plus the
+    source reads beside them; falsified by
+    `scripts/one-off/2026-09-22-one-spelling/mutate.mjs` — N1, N2, N3, N4, N6 are
+    single faults, and **N5 is the PAIR** (socket *and* lookup both exact), which
+    is the only shape that turns the live routing check red, since either layer
+    alone routes correctly on its own. Marker: `notify-v16-one-spelling`.
 34. **A quantity has ONE arithmetic, and every surface that shows it calls that
     arithmetic.** Kilometres come from `computeLegsForDay` (geometry between
     consecutive stored points, split by classification) — the Trips card, the

@@ -64,7 +64,7 @@ const NTFY_SERVER_HOME_KEY = "ntfy_server";
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v15-share-window";
+const DO_BUILD = "notify-v16-one-spelling";
 
 /** What the public live-share view is allowed to know about ONE device. Its
  *  narrowness is the feature: no chat, no other device, no totals. */
@@ -675,6 +675,11 @@ export class FleetDO extends DurableObject<Env> {
             //       was created, not at midnight (rule 31). An instance that is
             //       still v14 would quietly answer with the whole day, which is
             //       exactly why the marker has to move.
+            // v16 = identity joins fold case: the notify SOURCE lookup, and the
+            //       reaction toggle's key (rule 33). One person, one spelling --
+            //       a pre-rename session or a differently-spelled device must
+            //       still route, and a v15 instance routes NOTHING for them
+            //       while still reporting a send.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
@@ -1513,9 +1518,14 @@ export class FleetDO extends DurableObject<Env> {
       try { users = rows[0].reaction_users ? JSON.parse(rows[0].reaction_users) : {}; } catch { users = {}; }
 
       // Toggle per user: same emoji removes, a different emoji replaces.
-      const previous = users[reactor];
-      if (previous === emoji) delete users[reactor];
-      else users[reactor] = emoji;
+      // The reactor's name is folded when looking for their existing key: a
+      // person who reacted before a rename is the same person, and keeping the
+      // old key would count them twice. The write always lands under the
+      // CURRENT spelling, so the map collapses onto one name per person.
+      const key = Object.keys(users).find((k) => k.toLowerCase() === reactor.toLowerCase()) ?? reactor;
+      const previous = users[key];
+      delete users[key];
+      if (previous !== emoji) users[reactor] = emoji;
 
       // Counts are always rebuilt from the users map -- one source of truth,
       // so the two JSON columns can never drift apart.
@@ -1740,7 +1750,16 @@ export class FleetDO extends DurableObject<Env> {
     };
     try {
       const cfg = await this.getNotifyConfig();
-      const source = cfg.users.find((u) => u.username === sourceUsername);
+      // Folded, on purpose. The SOURCE arrives from whichever door the event
+      // came through -- a chat frame carries the socket's name, a tracking
+      // event carries the device id -- and either can be spelled differently
+      // from the users row: a session minted before a rename, or a device
+      // still configured with the old casing. An exact match here routes
+      // NOTHING and still looks sent, which is the one failure a push pipeline
+      // cannot show you. Topics and subscriptions below are keyed by numeric
+      // id, so this lookup is the only place a spelling can decide the outcome.
+      const wanted = sourceUsername.trim().toLowerCase();
+      const source = cfg.users.find((u) => u.username.toLowerCase() === wanted);
       if (!source) {
         note(`no such user (users=${cfg.users.length})`);
         return;

@@ -21,6 +21,7 @@ import { handleIngest } from "./routes/ingest";
 import { handleAuth } from "./routes/auth";
 import { handleDashboardApi } from "./routes/dashboard-api";
 import { verifyToken } from "./lib/auth-crypto";
+import { getUserByUsername } from "./db/queries";
 import { USER_SESSION_COOKIE, getCookie } from "./lib/session";
 
 export { FleetDO } from "./do/FleetDO";
@@ -43,11 +44,22 @@ export async function handleWayWebSocket(request: Request, env: Env): Promise<Re
 
   const id = env.FLEET_DO.idFromName("fleet");
   const stub = env.FLEET_DO.get(id);
+  // The token's own spelling is NOT the identity. A session lasts 30 days, so
+  // the cookie a phone holds across a rename still carries the OLD casing, and
+  // the DO stamps it onto every chat row, reaction and push title: the person's
+  // own messages then read as someone else's, and the notify lookup (which is
+  // keyed by name) finds no account and rings nobody. Resolve the ACCOUNT here,
+  // exactly as the phone's door does (canonicalDeviceId in routes/ingest.ts),
+  // so one person has exactly one spelling no matter which door they used.
+  // A name with no row is passed through rather than refused: standalone W.A.Y
+  // deployments may have no users row at all, and the DO's own ledger already
+  // says "no such user" for it.
+  const account = await getUserByUsername(env.WAY_DB, session.username);
   // Forward the upgrade with the verified username attached as a header --
   // the DO uses this to stamp chat messages, never trusting whatever a
   // client-side message claims about who sent it.
   const forwarded = new Request(request, { headers: new Headers(request.headers) });
-  forwarded.headers.set("X-WAY-Username", session.username);
+  forwarded.headers.set("X-WAY-Username", account?.username ?? session.username);
   return stub.fetch(forwarded);
 }
 
