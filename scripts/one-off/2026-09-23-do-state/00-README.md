@@ -4,6 +4,9 @@
 changed.** The deliverable is a registry plus a check, not a fix: the audit found
 no unsafe field.
 
+One later change to the CHECK itself — not to the app — is recorded at the
+bottom: the undeclared rule was reading a field set that was not yet complete.
+
 This extends the module-scope audit from the same day (`../2026-09-23-module-state/`,
 rule 38) one level down, into the Durable Object — where the same family of bug
 hides behind the opposite intuition.
@@ -94,7 +97,7 @@ carries controls rather than only a verdict:
 node scripts/one-off/2026-09-23-do-state/mutate.mjs
 ```
 
-**No dev server needed.** 9/9 caught on the shipping source; the tree is restored
+**No dev server needed.** 10/10 caught on the shipping source; the tree is restored
 (hash-verified) or the run says `TREE NOT RESTORED`.
 
 | | Mutation | Red |
@@ -108,11 +111,38 @@ node scripts/one-off/2026-09-23-do-state/mutate.mjs
 | M7 | the analyzer stops seeding a method's parameters | the positive control |
 | M8 | the analyzer stops accepting database caches | the negative control (+ the real tree's two caches) |
 | M9 | the jsonc reader stops tracking strings | the URL control (+ the DO list empties) |
+| M10 | an assigned-only field stops being collected | the assigned-only control (the real tree stays green) |
 
 **M7 is the one to read.** It disarms the analyzer so thoroughly that the
 diagnostics-reader check goes green *for the wrong reason* — with no
 request-classified writes, it never runs. Only the positive control notices. That
 is the entire argument for the controls existing.
+
+## A bug in the check itself, found while wiring CI (same day)
+
+Putting the audit in CI (`Home/.github/workflows/gates.yml`) is what exposed this,
+because proving the gate can fail is the point of the exercise: adding a field to
+`FleetDO` the plain-JavaScript way made the CLI print it as **`(undeclared)`** in
+its own inventory and then say `do state: clean — every field is declared`, exit
+0.
+
+The cause was ordering. `fieldNames` is seeded from TypeScript property
+DECLARATIONS, the undeclared rule runs, and only afterwards does the method walk
+add every name the class ASSIGNS to `this`. So the one shape that has no
+declaration to be seeded from — a plain-JavaScript DO, which is exactly what
+`Lobby` is and the reason that seed exists at all — was tested before it was
+known, and finding 1 of the 5 never fired. Both readers take the fault list (the
+CLI and smoke §25), so both agreed on the wrong answer.
+
+The fix collects declarations and assignments in ONE pass before the rule runs,
+which also makes the classification complete (`isThisField` is built from that
+same set). The guard is a §25 control over a synthetic class whose only fields
+are assigned in JavaScript, and **M10** reverts the ordering. The real tree stays
+green under M10 — every field it reports is a declaration — so the control is the
+only thing that notices. M10 makes the collection not happen at all; the ordering
+bug left the same field set incomplete at the same point, which is why this is
+its faithful stand-in. That is the fourth analyzer bug in this pair of tools,
+and the first found by pointing a gate at itself rather than by reading the code.
 
 ## Residue
 

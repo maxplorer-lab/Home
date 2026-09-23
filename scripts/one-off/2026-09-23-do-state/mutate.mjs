@@ -92,6 +92,7 @@ const REASON = 'every registry entry states a reason, not just a kind'
 const NOTICES = 'the scan notices request data parked on `this` and read past an await'
 const HONEST = '…and leaves a constructor handle, a database cache and a keyed map alone'
 const JSONC = 'the jsonc reader keeps a URL value intact'
+const ASSIGNED_ONLY = 'a field that exists only by assignment is reported as undeclared'
 
 const FLEET = 'src/way/do/FleetDO.ts'
 const LIB = 'scripts/lib/do-state.mjs'
@@ -106,6 +107,7 @@ const GEOCACHE_POLICY = "  'FleetDO.geofenceCache': {\n    kind: 'db-cache',"
 const ALLOWED_DBCACHE = "  'db-cache': ['db', 'invalidate'],"
 const SQL_WHY = 'why: "the object\'s SQLite handle, captured once in the constructor",'
 const SEED_PARAMS = 'if (member.body) walk(member.body, [paramsOf(member)])'
+const ASSIGN_ONLY_FIELDS = 'if (isThisAccess(n) && writeKindOf(n)) fieldNames.add(n.name.text)'
 const JSONC_STRING = '    if (c === \'"\') { inString = true; out += c; continue }'
 const LOBBY_BINDING = '{ "name": "LOBBY", "class_name": "Lobby" }'
 
@@ -165,6 +167,25 @@ const MUTATIONS = [
     edits: [{ file: LIB, from: JSONC_STRING, to: "    if (false) { inString = true; out += c; continue }" }],
     expects: [JSONC, ANALYZED],       // the config no longer parses, so the DO list empties too
   },
+  {
+    id: 'M10', why: 'a field that exists only by assignment stops being collected, so nothing calls it undeclared',
+    // This is the mutation the earlier eight could not stand in for. M2 adds a
+    // field as a TypeScript DECLARATION, which the field seed sees; the shape
+    // that shipped broken was the other one — `this.x = …` in plain JavaScript,
+    // where the name only becomes a field during the walk. Collecting those
+    // after the undeclared check made the check report "every field is declared"
+    // about a class whose inventory said `(undeclared)`, and BOTH readers (the
+    // audit CLI and smoke §25) take the fault list, so both agreed on the wrong
+    // answer. The real tree stays green under this mutation — every field it
+    // reports is a declaration — so only the control notices, which is the
+    // point.
+    edits: [{
+      file: LIB,
+      from: ASSIGN_ONLY_FIELDS,
+      to: 'if (false && isThisAccess(n) && writeKindOf(n)) fieldNames.add(n.name.text)',
+    }],
+    expects: [ASSIGNED_ONLY],
+  },
 ]
 
 // ── run ──────────────────────────────────────────────────────────────
@@ -193,7 +214,7 @@ process.on('uncaughtException', (e) => { restore(); console.error('uncaught: ' +
 
 // preflight: green on the untouched tree, and every check RUNS.
 const pre = await run()
-const expectedNames = [ANALYZED, UNDECLARED, INTERLEAVE, WRONG_WRITE, READERS, REASON, NOTICES, HONEST, JSONC]
+const expectedNames = [ANALYZED, UNDECLARED, INTERLEAVE, WRONG_WRITE, READERS, REASON, NOTICES, HONEST, ASSIGNED_ONLY, JSONC]
 const missing = expectedNames.filter((n) => !pre.ran.includes(n))
 if (pre.failures.length || missing.length) {
   console.error('PREFLIGHT FAILED — the section is not green before any mutation.')

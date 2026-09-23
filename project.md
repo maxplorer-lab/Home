@@ -1290,7 +1290,12 @@ the follow it had just started.
   and its writes match that declaration. Keyed Maps are safe by construction; a
   cache must be request-independent; and `FleetDO.lastNotify` is the one field
   that holds request data, allowed only because it decides nothing, pinned by
-  naming its single permitted reader. `npm run audit:do-state` / smoke §25.
+  naming its single permitted reader. `npm run audit:do-state` / smoke §25. The
+  field set that rule tests is collected **whole** — declarations plus every
+  assignment to `this` — before it runs, because a half-collected set reports
+  "every field is declared" about a class it has just called undeclared. The type
+  gate and both audits are also the CI gate (`.github/workflows/gates.yml`), so a
+  pull request that reintroduces either family fails before it can be merged.
 * A tap either succeeds or says why. No save, message or reaction may fail
   silently — a dead network answers in the same shape as any other error, and
   the chat composer keeps unsent text in the box (see "A user ACTION must fail

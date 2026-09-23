@@ -315,14 +315,6 @@ export function scanDoState({
     const isThisAccess = (n) => ts.isPropertyAccessExpression(n)
       && n.expression.kind === ts.SyntaxKind.ThisKeyword
       && ts.isIdentifier(n.name)
-    for (const field of fieldNames) {
-      if (!policyTable[`${name}.${field}`]) {
-        faults.push({
-          code: 'undeclared', field, file, line: classLine,
-          detail: `${name}.${field} is instance state nobody declared: add it to DO_STATE_POLICY in scripts/lib/do-state.mjs with its kind and the reason it is object state rather than request data`,
-        })
-      }
-    }
 
     /** How a `this.field` node is written, from its own position in the tree. */
     const writeKindOf = (node) => {
@@ -345,6 +337,39 @@ export function scanDoState({
         return { how: 'mutator', rhs: null }
       }
       return null
+    }
+
+    // ── every name this class assigns to `this` ──
+    // This runs BEFORE the undeclared check below and before any method is
+    // classified, and the order is the whole point: the check is only as
+    // complete as `fieldNames` is when it runs. A field that exists only by
+    // assignment (`this.ctx = ctx` in a plain-JS class) is invisible to the
+    // declarations above, so collecting it any later -- which this did, after
+    // the method walk -- lists the field as `(undeclared)` in the inventory
+    // while pushing NO fault: the audit exits 0 and prints "every field is
+    // declared" about a class it has just called undeclared. That is finding 1
+    // of 5, the load-bearing one, dropped in BOTH readers at once -- the CLI and
+    // smoke §25 both take this fault list, so the suite agreed with the wrong
+    // answer and no control noticed. (The driver could not have caught it
+    // either: its undeclared mutation M2 adds a TypeScript DECLARATION, which
+    // the seed above does see.) Collecting the names here also completes the set
+    // `isThisField` classifies against, so an access that precedes the first
+    // write in source order is still recognised as a field.
+    {
+      const loose = (n) => {
+        if (isThisAccess(n) && writeKindOf(n)) fieldNames.add(n.name.text)
+        ts.forEachChild(n, loose)
+      }
+      for (const member of cls.members) loose(member)
+    }
+
+    for (const field of fieldNames) {
+      if (!policyTable[`${name}.${field}`]) {
+        faults.push({
+          code: 'undeclared', field, file, line: classLine,
+          detail: `${name}.${field} is instance state nobody declared: add it to DO_STATE_POLICY in scripts/lib/do-state.mjs with its kind and the reason it is object state rather than request data`,
+        })
+      }
     }
 
     /** The events of ONE method, in source order. */
@@ -440,14 +465,9 @@ export function scanDoState({
       return { method: methodName, events }
     }
 
-    // ── every name this class assigns to `this`, then the strict predicate ──
-    {
-      const loose = (n) => {
-        if (isThisAccess(n) && writeKindOf(n)) fieldNames.add(n.name.text)
-        ts.forEachChild(n, loose)
-      }
-      for (const member of cls.members) loose(member)
-    }
+    // `fieldNames` is complete by now -- declarations plus every assignment, all
+    // collected above -- so the strict predicate the walk classifies against is
+    // the same set the undeclared check tested.
     const isThisField = (n) => isThisAccess(n) && fieldNames.has(n.name.text)
 
     // ── walk every method of the class ──

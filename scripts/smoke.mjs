@@ -4637,6 +4637,35 @@ log('\n25. a Durable Object field is not per-request scratch space')
     honest.faults.length === 0,
     `the analyzer flagged honest object state: ${formatDoFaults(honest.faults).join('; ')}`)
 
+  // The shape the undeclared rule is most likely to miss, and DID: a field that
+  // exists ONLY by assignment. Every plain-JavaScript Durable Object is this
+  // shape (Laoka's `Lobby` sets `this.env` / `this.ctx` and declares nothing),
+  // and the check is only as complete as the field set is when it runs — so
+  // collecting assignments afterwards listed the field as `(undeclared)` in the
+  // inventory while raising no fault at all. Both readers below take the FAULT
+  // list, so the audit printed "every field is declared" and exited 0 on a class
+  // it had just called undeclared, and this section agreed. Asserted here from
+  // the scan rather than from the inventory so the two cannot disagree again.
+  const assignedOnly = scanDoState({
+    wranglerClasses: ['Probe'],
+    policy: {
+      'Probe.env': { kind: 'handle', why: 'the bindings, set in the constructor' },
+    },
+    extraSources: [{
+      path: 'synthetic/assigned-only.js',
+      text: [
+        'export class Probe {',
+        '  constructor(env) { this.env = env }',
+        '  note(body) { this.recent = body.id }',
+        '}',
+      ].join('\n'),
+    }],
+  })
+  check('a field that exists only by assignment is reported as undeclared',
+    assignedOnly.faults.filter((f) => f.code === 'undeclared').map((f) => f.field).sort().join(',') === 'recent',
+    `a class whose fields are assigned in plain JS reported ${formatDoFaults(assignedOnly.faults).join('; ') || '(no findings at all)'} — ` +
+      'listing a field as undeclared in the inventory is not enough: the fault list is what the audit CLI and this section both read')
+
   // The DO list is read out of a JSONC file whose comments a naive `//` strip
   // would eat along with a `https://` value — and a floor of that failure is a
   // config that does not parse, which would leave this whole section checking

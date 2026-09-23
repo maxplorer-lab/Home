@@ -73,6 +73,19 @@ declared in `DO_STATE_POLICY` (scripts/lib/do-state.mjs) with the reason it is
 object state, and that each field's writes match its declaration. Also read-only,
 also no server, also green in a normal `npm run verify` via smoke §25.
 
+The type gate and both audits are also **the CI gate**:
+`.github/workflows/gates.yml` runs `npm run check`, `npm run audit:module-state`
+and `npm run audit:do-state` on every pull request and on every push to `main` —
+none of the three needs a server, a database, a secret or the network. A second
+job runs the two falsification drivers (`scripts/one-off/2026-09-23-*/mutate.mjs`)
+for the reason above: an audit that has been quietly disarmed prints a clean tree
+for the rest of the project's life, so the gate has to be shown failing. `npm run
+smoke` is deliberately NOT there — it wants a running `wrangler dev`, a seeded
+local D1 and a resolved session, which makes it a local step (`npm run verify`),
+not something to run on every PR. **Marking a check REQUIRED is a repo setting and
+not a file:** Settings → Rules → require a status check, then pick `gates` (and
+`guards` if the anti-vacuity job should block a merge too).
+
 Local DB setup (first time only):
 
 ```bash
@@ -1148,6 +1161,18 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       declared kind) and exits 1 on any finding; `npm run smoke` §25 runs the same
       scan plus the controls that prove it can still fail (it must NOTICE a
       parked request value, and must LEAVE ALONE honest object state).
+    * **The undeclared rule is only as complete as the field set is when it
+      runs.** Declarations AND assignments are collected in one pass *before*
+      that rule. Collecting an assigned-only field later — `this.recent =
+      body.id` in a plain-JavaScript DO, which is exactly what `Lobby` is —
+      listed it as `(undeclared)` in the inventory while raising no fault: the
+      audit printed "every field is declared" and exited 0 about a class it had
+      just called undeclared, and smoke §25 agreed, because both read the fault
+      list. §25 now carries a control for that shape (`a field that exists only
+      by assignment is reported as undeclared`) and driver M10 reverts the
+      ordering (it stops the collection entirely, leaving the same field set
+      incomplete at the same point); the real tree stays green under M10, so the
+      control is the only thing that notices.
 
 ## Smoke test (local, after any identity change)
 
@@ -1302,6 +1327,7 @@ have their own separate repositories and their own history.
 | The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |
 | A login briefly shows or provisions another person's account (or a module row appears with the wrong password) | module-scope state carrying REQUEST data — rule 38. `npm run audit:module-state` reads every file under `src/` and names the binding; smoke §24 fails on it. The one that shipped was `let lastPassword` in `src/identity.ts`, and the wrong value lands in the WAY/Laoka row a person is CREATED with, which in W.A.Y is also their μlogger credential |
 | A tracking event acts on the wrong device, or one request's data appears in another's | request data parked on the DO's `this` — rule 39. A field assigned from a request and read past an `await` is shared with whatever request interleaves; `npm run audit:do-state` names the field and its kind, and smoke §25 fails on it. The one field allowed to hold request data (`FleetDO.lastNotify`) is declared `diagnostics` and may only be read by the method its registry entry names — a new reader means it has started deciding something |
+| `npm run audit:do-state` lists a field as `(undeclared)` and still exits 0 saying "every field is declared" | the undeclared rule ran before assignment-only fields were collected, so the field set was incomplete when it was tested — rule 39. Both the command and smoke §25 read the fault list, so both agreed on the wrong answer; the §25 control `a field that exists only by assignment is reported as undeclared` is what notices, and driver M10 reverts the ordering to prove the control is the thing holding it |
 
 ### What is actually served
 

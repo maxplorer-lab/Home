@@ -414,6 +414,14 @@ that request's data into another's turn. It reads the Durable Objects named in
 reason it is object state, which is how `FleetDO`'s two caches, four keyed Maps
 and one deliberately-exempt diagnostics slot stay accounted for.
 
+The type gate and those two audits are also the checks GitHub runs for you:
+`.github/workflows/gates.yml` runs on every pull request and every push to
+`main`, and carries a second job running the two falsification drivers — an audit
+nobody has seen fail is not a gate, and an analyzer that has been quietly
+disarmed prints a clean tree for the rest of the project's life. None of it needs
+a server, a database, a secret or the network beyond `npm ci`; `npm run smoke`
+stays local because it needs the first three.
+
 `npm run smoke` logs in once through `/login` and then proves: all four
 session cookies are minted, every tab and module API answers 200, the
 module documents are session-gated, bad credentials are rejected without

@@ -1,0 +1,113 @@
+name: Gates
+
+# What a pull request must pass before it can be merged, and what `main` must
+# pass after a push so a regression is visible on the branch that deploys.
+#
+# Why this is a gate and not a habit. The three checks below are exactly the
+# ones that cannot report their own absence: `tsc` passes because nothing is
+# wrongly typed, the module-scope audit passes because no binding is written,
+# and the Durable Object audit passes because every field is declared. So a pull
+# request that reintroduces request state looks identical to a clean one unless
+# something runs the audits — and a pull request that quietly WEAKENS an
+# analyzer looks clean too, in every case. Hence two jobs: `gates` runs the
+# checks, and `guards` runs the falsification drivers that prove the checks can
+# still go red at all. A gate nobody has seen fail is not a gate.
+#
+# Nothing here needs a dev server, a database, a secret or the network: every
+# step is read-only source analysis (plus `npm ci`). That is what makes it safe
+# on every pull request, including one opened from a fork — there is nothing to
+# withhold, because nothing is authenticated.
+#
+# `npm run smoke` is deliberately NOT here. It needs `wrangler dev` running, a
+# local D1 seeded with the dev account, and a resolved identity session, so it
+# belongs on a real machine (`npm run verify`) rather than in a check that has
+# to be quick and deterministic on every PR. The two audits are the half of that
+# suite which needs none of it; smoke §24 and §25 run the same two scans against
+# the running app, so between them nothing is lost.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: Type gate + shared-state audits
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `tsc --noEmit` over src/. The compiler and the Workers types both come
+      # from devDependencies, so this step needs nothing but the install above.
+      - name: Type gate
+        run: npm run check
+
+      # rule 38. A module-scope binding written from inside a function is shared
+      # state between every concurrent request in the isolate; the one that
+      # shipped was `let lastPassword` in src/identity.ts, where two overlapping
+      # logins could hash one person's password into another person's row.
+      - name: No request data in module scope
+        run: npm run audit:module-state
+
+      # rule 39. The same bug one level down: a DO field assigned from request
+      # data and read past an `await` belongs to whichever request interleaves,
+      # while looking exactly like ordinary object state.
+      - name: No request data parked on a Durable Object
+        run: npm run audit:do-state
+
+  guards:
+    name: The audits can still fail
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Separate job on a separate runner, for two reasons: it MUTATES files
+    # (temporarily), which must never overlap a job that reads them; and a
+    # failure here means something different from a failure in `gates` — the
+    # app is not necessarily wrong, the guard around it may be blind.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Each driver extracts one smoke section, applies one fault at a time, and
+      # asks whether the check that exists for it actually goes red. Both need
+      # no server. Both restore every file with the sha256 they started with and
+      # exit 2 if the tree does not come back byte-identical, so a mutation can
+      # never leak into a later step. Three separate analyzer variants reported
+      # a permanently green tree while these audits were being built (a set of
+      # `SyntaxKind` NAMES compared against `node.kind` NUMBERS; a method's own
+      # parameters never seeded onto the scope stack; that stack compared
+      # against names without being flattened), which is what this job is for.
+      - name: Module scope — every mutation still caught
+        run: node scripts/one-off/2026-09-23-module-state/mutate.mjs
+
+      - name: Durable Object — every mutation still caught
+        run: node scripts/one-off/2026-09-23-do-state/mutate.mjs
