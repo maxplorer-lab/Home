@@ -440,8 +440,9 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     render (like the cached address) and the radar re-anchored; `data-device` on
     each card is what makes the anchor findable, and a resize / orientation
     change / strip scroll re-anchors it. `npm run smoke` section 15 asserts both
-    halves, and `GET /way/api/debug/notify` reports the DO's build
-    (`notify-v15-share-window`).
+    halves, and `GET /way/api/debug/notify` reports the DO's build (`DO_BUILD`;
+    CUTOVER.md's post-deploy step names the value and smoke §12 keeps the two
+    equal).
 
 24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
     (`localStorage`, per device, an ISO instant) is compared against the newest
@@ -750,11 +751,14 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       ellipsis ate whichever of those did not fit, usually the one being asked
       about. Its parts are separate `<span>`s (separators are CSS `::before`, so
       none is left dangling at a wrap point).
-    `DO_BUILD` is `notify-v15-share-window`: a stale instance answers **404** on
+    The marker moved for this feature — the build that introduced it is
+    `notify-v15-share-window`: an instance older than that answers **404** on
     `/share-state`, which is how "the share is blank" stays distinguishable from
     "the instance is running old code" — and a *v14* instance would answer 200
-    while ignoring the window, which is why the marker has to move with this
-    feature rather than with the next one. `0006` must be applied to **home-db**
+    while ignoring the window, which is why the marker had to move with this
+    feature rather than with the next one. Read the CURRENT value from
+    `DO_BUILD`: CUTOVER.md's post-deploy step names it and smoke §12 keeps the
+    runbook and the code equal, so this file does not restate it. `0006` must be applied to **home-db**
     (local and remote) — and note that a deploy does NOT do it (rule 32).
     Without the table the READS stay quiet on purpose (`listShares` returns an
     empty list rather than 500ing the console, and the map's GET answers
@@ -822,7 +826,10 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     `scripts/one-off/2026-09-22-one-spelling/mutate.mjs` — N1, N2, N3, N4, N6 are
     single faults, and **N5 is the PAIR** (socket *and* lookup both exact), which
     is the only shape that turns the live routing check red, since either layer
-    alone routes correctly on its own. Marker: `notify-v16-one-spelling`.
+    alone routes correctly on its own. The fix moved `DO_BUILD` with it — the
+    build that carried it is `notify-v16-one-spelling` — because a socket still
+    stamping the old spelling routes wrongly while reporting a send. Read the
+    CURRENT value from CUTOVER.md, which smoke §12 keeps equal to the code.
 34. **A quantity has ONE arithmetic, and every surface that shows it calls that
     arithmetic.** Kilometres come from `computeLegsForDay` (geometry between
     consecutive stored points, split by classification) — the Trips card, the
@@ -1150,7 +1157,7 @@ have their own separate repositories and their own history.
 | A save or a chat message "did nothing at all" | the network path, not the server: `apiJson` answers a rejected fetch as `{ok:false, status:0}` so the caller's alert runs, and the chat composer clears only after `sendWs` returns true — smoke sections 15 and 12 fail if either goes back to silence. DevTools' Offline switch reproduces it in one step |
 | "Did the tracking rules actually do anything?" after a real-world test | `/admin/diagnostics` (admin-only). It is the ONLY way to tell "the phone was correctly filtered" from "the phone never uploaded" — every gate drops silently by contract (rule 30). Read the sums first: `received = accuracy + glitch + accepted`, `accepted = drawn + collapsed + unwitnessed + paused`. `collapsed` climbing with `drawn` flat is a parked phone working as designed, not a broken pipeline |
 | `/admin/diagnostics` shows no gates at all | the counters are **DURABLE and build-scoped**, so exactly three things empty them: a fresh deployment, a **build-marker bump** (`ensureSchema` clears them when `DO_BUILD` changes), or the **Reset counters** button. A restart or an eviction does NOT — so if a restart seems to have cleared them, the code changed too. An empty list right after a deploy is normal; send one upload and they reappear. If it persists with `"ingest": null`, the FleetDO binding or `/debug-notify` is the problem (rule 30) |
-| The share link says the code has ended, or the viewer's map is blank | first the easy half: `expired`/`revoked` (410) means the grant is spent — midnight UTC passed, or an admin revoked it — while `bad_pin` (400) means the code is simply wrong. A blank map with a 200 is the DO half: `GET /way/api/debug/notify` must report `notify-v15-share-window`, because a stale instance 404s `/share-state` and the page then honestly says it has nothing (rule 31) — and a **v14** instance is the subtler failure: it answers 200 while IGNORING the window, so the viewer sees points from earlier today |
+| The share link says the code has ended, or the viewer's map is blank | first the easy half: `expired`/`revoked` (410) means the grant is spent — midnight UTC passed, or an admin revoked it — while `bad_pin` (400) means the code is simply wrong. A blank map with a 200 is the DO half: `GET /way/api/debug/notify` must report the build CUTOVER.md's post-deploy step names, because an instance older than `notify-v15-share-window` 404s `/share-state` and the page then honestly says it has nothing (rule 31) — and a **v14** instance is the subtler failure: it answers 200 while IGNORING the window, so the viewer sees points from earlier today |
 | `/live` asks for a code and nothing is listed in `/admin` | `migrations-home/0006_share_links.sql` was never applied to THIS database (local or remote). `listShares` swallows the missing table on purpose, so the card is empty rather than broken — the console's own silence is the symptom |
 | A notification vanished last Tuesday and nobody can say why | `diag_events` in **home-db** (`/admin/diagnostics` → Notification ledger). It holds every push that did NOT reach a phone, with ntfy's own words. Rows expire after 90 days (the daily cron's prune), and `ledger.total: 0` means every push has been landing. If the ledger is unreadable, migration `migrations-home/0005_diagnostics.sql` was never applied |
 | A ping with a silly accuracy (say 50 m) still moves the dashboard | the gate is the FIRST thing in `FleetDO.handleIngest` (rule 29) — check `accuracyIsAcceptable` is still called before the speed filters and still reads `PRE_FILTER_MAX_ACCURACY_M` from config. And note the other direction: a client that sends NO accuracy always passes by design (null is accepted), so first check whether the field was sent at all |
