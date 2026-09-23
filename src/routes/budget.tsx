@@ -737,7 +737,11 @@ budget.post('/add-expense', async (c) => {
 
   const mode = String(body.mode || 'quick')
   const date = String(body.date)
-  const categoryId = String(body.category_id)
+  // The field is OPTIONAL: a hand-off form can be saved without a category, and
+  // `String(undefined)` is the string "undefined" -- which is truthy, reaches the
+  // insert as a category id, and answers 500 (FOREIGN KEY) instead of saving the
+  // expense. A missing field is no category.
+  const categoryId = String(body.category_id || '')
   const description = String(body.description || '').trim() || null
   // A form the BROWSER submits has every newline normalised to CRLF by the
   // urlencoded serializer, so the same list typed by hand would be stored with
@@ -761,16 +765,31 @@ budget.post('/add-expense', async (c) => {
 
   if (!amount || amount <= 0) return c.redirect('/budget?err=invalid_amount')
 
-  // A save that carries a Laoka week is that week's expense, not a new one. If
-  // the week already has one (sent from Laoka, or saved twice from a stale tab),
-  // the SAME transaction is corrected -- amount and notes only, never the date,
-  // category or description the household chose. That is the rule the one-press
-  // path already follows, and it is what makes this form safe to resubmit.
+  // A save that carries a Laoka week (or a pantry trip) is THAT shopping's
+  // expense, not a new one. If it already has one (sent from the module, or saved
+  // twice from a stale tab), the SAME transaction is corrected -- amount, notes
+  // and items only, never the date, category or description the household chose.
+  // That is the rule the one-press path already follows, and it is what makes this
+  // form safe to resubmit.
+  //
+  // The identity is honoured in BOTH modes, and that is the point: a Quick save is
+  // still a save of the shopping the form was opened for (the household typed one
+  // number instead of checking the lines). Honouring it only on the itemized pane
+  // meant a Quick save left the week or trip looking unsent, so the Pantry tab went
+  // on offering the same shopping -- and a second tap charged the budget twice,
+  // which is the one thing this whole path exists to prevent.
   const laokaWeek = Number(body.laoka_week || 0)
   const pantryTrip = Number(body.pantry_trip || 0)
+  // An itemised save counts the lines it carries, which is what the ledger's
+  // item_count has always counted. A Quick save carries no itemized lines at all,
+  // so the count is the source's OWN -- the shopping that was bought -- which is
+  // also the figure the Pantry screen prints as "last trip: … 3 items".
+  const itemCount = mode === 'itemized'
+    ? itemizedCount(notes)
+    : await sourceItemCount(c.env, laokaWeek, pantryTrip, itemizedCount(notes))
   const id = generateId()
   let adopted: string | null = null
-  if (laokaWeek && mode === 'itemized') {
+  if (laokaWeek) {
     const existing = await c.env.HOME_DB.prepare('SELECT transaction_id FROM laoka_imports WHERE laoka_week_id = ?')
       .bind(laokaWeek)
       .first<{ transaction_id: string }>()
@@ -784,7 +803,7 @@ budget.post('/add-expense', async (c) => {
       if (live) adopted = existing.transaction_id
     }
   }
-  if (pantryTrip && !adopted && mode === 'itemized') {
+  if (pantryTrip && !adopted) {
     const existing = await c.env.LAOKA_DB.prepare('SELECT transaction_id FROM pantry_trips WHERE id = ?')
       .bind(pantryTrip)
       .first<{ transaction_id: string | null }>()
@@ -797,8 +816,8 @@ budget.post('/add-expense', async (c) => {
   }
 
   if (adopted) {
-    if (pantryTrip) await refreshPantryExpense(c.env, pantryTrip, adopted, amount, notes)
-    else await refreshLaokaExpense(c.env, laokaWeek, adopted, amount, notes, itemizedCount(notes))
+    if (pantryTrip) await refreshPantryExpense(c.env, pantryTrip, adopted, amount, notes, itemCount)
+    else await refreshLaokaExpense(c.env, laokaWeek, adopted, amount, notes, itemCount)
     return c.redirect('/budget')
   }
 
@@ -807,11 +826,11 @@ budget.post('/add-expense', async (c) => {
      VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)`
   ).bind(id, date, amount, categoryId || null, description, notes, user.id).run()
 
-  if (laokaWeek && mode === 'itemized') {
-    await recordLaokaImport(c.env, laokaWeek, id, amount, itemizedCount(notes), categoryId || null)
+  if (laokaWeek) {
+    await recordLaokaImport(c.env, laokaWeek, id, amount, itemCount, categoryId || null)
   }
-  if (pantryTrip && mode === 'itemized') {
-    await markPantryTripPushed(c.env, pantryTrip, id, amount, itemizedCount(notes))
+  if (pantryTrip) {
+    await markPantryTripPushed(c.env, pantryTrip, id, amount, itemCount)
   }
 
   await notifyTransaction(c.env, id)
@@ -1058,6 +1077,7 @@ async function refreshPantryExpense(
   transactionId: string,
   amount: number,
   notes: string | null,
+  itemCount: number,
 ) {
   await env.DB.prepare('UPDATE transactions SET amount = ?, notes = ? WHERE id = ?')
     .bind(amount, notes, transactionId)
@@ -1065,8 +1085,28 @@ async function refreshPantryExpense(
   await env.LAOKA_DB.prepare(
     "UPDATE pantry_trips SET transaction_id = ?, amount = ?, item_count = ? WHERE id = ?"
   )
-    .bind(transactionId, amount, itemizedCount(notes), tripId)
+    .bind(transactionId, amount, itemCount, tripId)
     .run()
+}
+
+/** How many items a QUICK save from a hand-off form represents: the source's own
+ * priced lines -- the shopping that was actually bought -- rather than the lines of
+ * a free-text note. Falls back to the notes when the source has nothing left to
+ * count (a stale tab, or a week whose lines are already gone). */
+async function sourceItemCount(env: Env, weekId: number, tripId: number, fallback: number) {
+  if (weekId) return (await laokaPricedLines(env, weekId)).length || fallback
+  if (tripId) {
+    const handoff = await pantryHandoff(env, tripId)
+    if (handoff) return handoff.lines.length || fallback
+    // The lines are already gone -- this trip has been pushed, and a re-save is
+    // correcting the expense it became. The count the trip already records is the
+    // honest one; answering 0 here would erase it on a re-save.
+    const row = await env.LAOKA_DB.prepare('SELECT item_count FROM pantry_trips WHERE id = ?')
+      .bind(tripId)
+      .first<{ item_count: number | null }>()
+    return (row && row.item_count) ? row.item_count : fallback
+  }
+  return fallback
 }
 
 /** Marks a trip as spent: which expense it became, how much, how many lines, and

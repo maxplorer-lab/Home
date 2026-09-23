@@ -2083,6 +2083,33 @@ log('\n17. Laoka as a tab: scrolling, the sticky nav, and the export ribbon')
   check('the Sompitra tab icon is no longer the old wallet/card',
     !moneyPath.includes('M17 10.5a1.5'),
     'the wallet path is back on the Sompitra tab')
+
+  // A link into the app can name an INNER tab of a module, not just the module.
+  // Home's dashboard ends on a pantry card, and without this that card would
+  // drop the household on the week plan instead of the shelves they tapped. The
+  // shell only CARRIES the request into the frame's src — which tabs exist is the
+  // module's own business, and the module reads the name at boot.
+  const frameSrcOf = (html) => {
+    const tag = (html.match(/<iframe[^>]*>/g) || []).find((t) => /module-frame/.test(t)) || ''
+    return (tag.match(/src="([^"]*)"/) || [])[1] || '(no src)'
+  }
+  const shellPantry = await body(await req('/laoka/?tab=pantry'))
+  check('a link can open an inner tab of a module, not just the module',
+    frameSrcOf(shellPantry) === '/laoka/index.html?tab=pantry',
+    `the frame src is ${frameSrcOf(shellPantry)} — the shell ignores ?tab, so a card that links to a module's tab lands on whatever screen that module opens on`)
+  // The value comes from the address bar and ends up inside a URL in the page, so
+  // anything that is not a plain lowercase tab name is dropped, never reflected.
+  for (const junk of ['not%20a%20tab', '%2F..%2Fbudget', '%3Cb%3E', 'PANTRY']) {
+    const shellJunk = await body(await req(`/laoka/?tab=${junk}`))
+    check(`the shell drops "${junk}" instead of carrying it into the frame`,
+      frameSrcOf(shellJunk) === '/laoka/index.html',
+      `the frame src is ${frameSrcOf(shellJunk)} — a value typed into the address bar reaches the URL the module parses`)
+  }
+  const laokaScript = await body(await req('/laoka/app.js'))
+  check('and the module reads the tab it was opened with',
+    /new URLSearchParams\(window\.location\.search\)\.get\('tab'\)/.test(laokaScript) &&
+      /NAV\[n\]\[0\] === wanted/.test(laokaScript),
+    'the frame is handed ?tab and the module ignores it, so the deep link does nothing')
 }
 
 // ─── 18. One brand: one typeface, brand glyphs, one colour per screen ──
@@ -3703,6 +3730,17 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
           (qtyAlone.toBuy || []).some((i) => i.id === buy.id && i.tripPrice === null && i.tripQty === 1),
         `trip=${JSON.stringify(qtyAlone?.trip)} — a quantity-only tap started a shopping`)
 
+      // The other half of that rule: a price of ZERO is an emptied box, not a
+      // free item. Every reader of a line asks `price > 0`, so a stored 0 is a
+      // line that draws nowhere, that no empty-trip check can count -- an "Ar 0"
+      // trip whose hand-off button opens an empty form -- and it can never be
+      // cleared, because clearing walks the lines that DO draw.
+      const zero = await parse(await jpatch('/laoka/api/pantry/trip', { itemId: buy.id, price: 0, qty: 1 }))
+      check('a price of zero records nothing and opens no trip',
+        zero?.ok === true && !zero.trip &&
+          (zero.toBuy || []).some((i) => i.id === buy.id && i.tripPrice === null),
+        `trip=${JSON.stringify(zero?.trip)} — a zero price left a line nothing shows and nothing can empty`)
+
       const priced = await parse(await jpatch('/laoka/api/pantry/trip', { itemId: buy.id, price: 1000, qty: 3 }))
       check('a unit price and a quantity open a trip and total the product',
         priced?.trip && priced.trip.count === 1 && priced.trip.total === 3000 && priced.trip.pushedAt === null,
@@ -3740,6 +3778,16 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
         priceOnly?.trip && priceOnly.trip.total === 10000 &&
           (priceOnly.toBuy || []).some((i) => i.id === buy.id && i.tripPrice === 2000 && i.tripQty === 5),
         `trip=${JSON.stringify(priceOnly?.trip)}`)
+      // A fraction is not money here. The trip multiplies price × qty EXACTLY,
+      // while the Sompitra hand-off truncates each line to whole Ariary before it
+      // sends it, so a stored 1,000.5 at 3 would be 3,001.5 on the screen and
+      // 3,000 in the budget. The boxes take digits now, so only the API can post
+      // one — and the API is a door too.
+      const fraction = await parse(await jpatch('/laoka/api/pantry/trip', { itemId: buy.id, price: 1000.5, qty: 3.7 }))
+      check('a fractional price or count is stored whole, so both totals agree',
+        fraction?.trip && fraction.trip.total === 3000 &&
+          (fraction.toBuy || []).some((i) => i.id === buy.id && i.tripPrice === 1000 && i.tripQty === 3),
+        `trip=${JSON.stringify(fraction?.trip)} — the screen total and the total the budget receives would differ by the fraction`)
 
       const ghost = await body(await req('/budget/add-expense?from_pantry=999999'))
       check('a trip that does not exist gives an ordinary empty form',
@@ -3760,18 +3808,76 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
     }
   }
 
+  // (d2) The same rule by hand: REMOVING AN ITEM takes its price, and the trip
+  // that price opened, with it. A line joins `items` on `deleted_at IS NULL`, so
+  // one left behind draws nowhere and is still counted by `dropEmptyPantryTrip` —
+  // a trip that can never be dropped. A throwaway item is created for this (and
+  // soft-deleted at the end) rather than touching the household's real shelves;
+  // each run leaves one soft-deleted probe row in the LOCAL laoka DB, invisible
+  // everywhere, exactly like the category probe in (b). Skipped out loud when a
+  // trip is already in progress, for the same reason the trip walk is.
+  const quiet = await parse(await req('/laoka/api/pantry'))
+  const probeSub = (() => {
+    for (const g of pantryTree) for (const s of g.subgroups || []) if (s) return s
+    return null
+  })()
+  if (!quiet || !probeSub) {
+    log('  \x1b[90m– skipped the removal walk: no pantry category to file a probe item under\x1b[0m')
+  } else if (quiet.trip) {
+    log('  \x1b[90m– skipped the removal walk: a pantry trip is already in progress\x1b[0m')
+  } else {
+    let probeItem = 0
+    try {
+      const made = await parse(await req('/laoka/api/pantry/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // Counted down, so the probe is on the to-buy list and can be priced.
+        body: JSON.stringify({ name: 'zz smoke pantry probe', subgroupId: probeSub.id, stock: 0, stockMin: 2 }),
+      }))
+      probeItem = (() => {
+        for (const g of made?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+          if (i.name === 'zz smoke pantry probe') return i.id
+        }
+        return 0
+      })()
+      check('the suite could add a throwaway pantry item to remove', !!probeItem,
+        `POST /laoka/api/pantry/items did not answer with the new item (ok=${made && made.ok})`)
+      if (probeItem) {
+        const pricedProbe = await parse(await jpatch('/laoka/api/pantry/trip', { itemId: probeItem, price: 500, qty: 1 }))
+        check('and price it, so there is a trip to strand',
+          !!pricedProbe?.trip && pricedProbe.trip.total === 500,
+          `trip=${JSON.stringify(pricedProbe?.trip && { id: pricedProbe.trip.id, total: pricedProbe.trip.total })}`)
+        const gone = await parse(await req(`/laoka/api/pantry/items/${probeItem}/delete`, { method: 'POST' }))
+        const stillInTree = (() => {
+          for (const g of gone?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+            if (i.id === probeItem) return true
+          }
+          return false
+        })()
+        check('removing the item takes its price, and the trip it opened, with it',
+          gone?.ok === true && gone.trip === null && !stillInTree,
+          `trip=${JSON.stringify(gone?.trip)} — a line nobody can see still keeps the trip alive, so it can never be dropped`)
+        probeItem = 0
+      }
+    } catch (e) {
+      bad('the removal walk ran to completion', `threw: ${e && e.message}`)
+    } finally {
+      if (probeItem) await req(`/laoka/api/pantry/items/${probeItem}/delete`, { method: 'POST' })
+      await req('/laoka/api/pantry/trip/clear', { method: 'POST' })
+    }
+  }
+
   // The identity of a purchase: a pushed trip keeps the expense it became. That
   // record is what the Pantry screen shows as "last trip", and what the Sompitra
   // save ADOPTS instead of inserting a second one.
   //
-  // The pantry's own write half is deliberately not exercised here: pushing
-  // clears a trip's prices on purpose, so a second submit could only rewrite the
-  // notes of an expense whose lines no longer exist -- the destructive direction
-  // the shared rule forbids -- and creating a throwaway expense would leave a
-  // dangling trip on the screen. What a re-submit DOES is the same adoption
-  // Laoka's half proves for real in section 13, through the same helper; what is
-  // pinned here is that the record that adoption reads exists, and that both
-  // doors go through one rule.
+  // The ITEMIZED re-save is deliberately not exercised here: pushing clears a
+  // trip's prices on purpose, so a second submit could only rewrite the notes of
+  // an expense whose lines no longer exist -- the destructive direction the shared
+  // rule forbids. The QUICK save in (d3) IS exercised, because that is the door
+  // that used to ignore the identity altogether. What a re-submit DOES is the same
+  // adoption Laoka's half proves for real in section 13, through the same helper;
+  // what is pinned here is that the record that adoption reads exists, and that
+  // both doors go through one rule.
   check('a pushed trip keeps the expense it became',
     !live || !live.lastTrip || (!!live.lastTrip.transactionId && live.lastTrip.amount !== null),
     'the last pushed trip does not remember its expense, so nothing could adopt it')
@@ -3804,6 +3910,113 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
     /replace\(\/\\r\\n\?\/g, '\\n'\)/.test(budgetCode),
     'the POST no longer normalises CRLF, so the same list is stored differently by hand and by Laoka')
 
+  // (d3) The identity of a hand-off survives a QUICK save — the one half a file
+  // guard cannot prove, because the fault is only visible in what the budget ends
+  // up holding. A Quick save carries one typed number instead of the lines, and
+  // every identity branch used to be conditioned on the ITEMIZED pane: a Quick
+  // save left the shopping looking unsent, so the module offered it again and the
+  // next tap charged the household twice for one shop. So this walk saves for real
+  // and reads the budget back. It is self-cleaning except for the pantry_trips row
+  // itself — a pushed trip is HISTORY (that is what "last trip" shows) and no door
+  // exists to forget one. The probes are throwaway items, soft-deleted at the end,
+  // and there are TWO of them on purpose: the count assertions below are only
+  // meaningful when "items bought" (2) and "units bought" (3) are different
+  // numbers, and when neither is 0.
+  const preSave = await parse(await req('/laoka/api/pantry'))
+  if (!preSave || !probeSub) {
+    log('  \x1b[90m– skipped the quick-save walk: no pantry category to file a probe item under\x1b[0m')
+  } else if (preSave.trip) {
+    log('  \x1b[90m– skipped the quick-save walk: a pantry trip is already in progress\x1b[0m')
+  } else {
+    let probeItems = []
+    const desc = `zz smoke quick hand-off ${Date.now()}`
+    const addProbe = async (name) => {
+      const made = await parse(await req('/laoka/api/pantry/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, subgroupId: probeSub.id, stock: 0, stockMin: 2 }),
+      }))
+      for (const g of made?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+        if (i.name === name) return i.id
+      }
+      return 0
+    }
+    try {
+      const one = await addProbe('zz smoke quick probe')
+      const two = await addProbe('zz smoke quick probe two')
+      probeItems = [one, two].filter(Boolean)
+      const priced = one
+        ? await parse(await jpatch('/laoka/api/pantry/trip', { itemId: one, price: 100, qty: 2 }))
+        : null
+      const pricedTwo = two
+        ? await parse(await jpatch('/laoka/api/pantry/trip', { itemId: two, price: 50, qty: 1 }))
+        : null
+      const tripId = pricedTwo?.trip?.id || priced?.trip?.id || 0
+      // TWO items, THREE units, Ar 250 — and the pair of checks below asks the
+      // budget for a count of 2. Only the number of ITEMS BOUGHT can answer 2:
+      // counted per unit it would be 3, and counted from the notes (which a Quick
+      // save does not send) it would be 0, so the figure a re-save lands on tells
+      // all three apart. A one-item probe cannot tell them apart — it was the
+      // reason this walk read green while the guard behind it proved nothing.
+      check('the suite could price a throwaway trip to save',
+        probeItems.length === 2 && !!tripId && pricedTwo.trip.total === 250,
+        `items=${JSON.stringify(probeItems)}, trip=${JSON.stringify(pricedTwo?.trip)}`)
+      if (tripId) {
+        // QUICK: one number, no itemized lines at all — what a household does when
+        // the list is long and they trust the total the row showed them.
+        const save = (amount, extra) => req('/budget/add-expense', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form(Object.assign({
+            mode: 'quick', date: new Date().toISOString().slice(0, 10),
+            amount: String(amount), description: desc, pantry_trip: String(tripId),
+          }, extra || {})),
+        })
+        // The form the household meets leaves the category EMPTY on purpose (the
+        // hand-off exists so they pick one), and a field the browser does not send
+        // at all -- a hand-off posted without the select -- must still save: an
+        // absent field read as the string "undefined" reaches the insert as a
+        // category id and answers 500 instead of saving the expense.
+        const cat = ((await body(await req('/budget/add-expense')))
+          .match(/name="category_id"[\s\S]{0,900}?<option value="([^"]+)"/) || [])[1] || ''
+        const first = await save(200)
+        const afterFirst = await parse(await req('/laoka/api/pantry'))
+        check('a Quick save of a hand-off form is still that shopping',
+          first.status === 302 && !!afterFirst?.lastTrip && !!afterFirst.lastTrip.transactionId &&
+            afterFirst.lastTrip.amount === 200 && afterFirst.lastTrip.count === 2 && !afterFirst.trip,
+          `status ${first.status}, trip=${JSON.stringify(afterFirst?.lastTrip)} — the save left the shopping looking unsent (so its own screen offers it again and the next tap charges the budget twice), or recorded a count of ${afterFirst?.lastTrip?.count} for a two-item, three-unit shop`)
+        check('and a hand-off saved without a category picked still saves',
+          first.status === 302,
+          `status ${first.status} — a hand-off posted without the category field answers 500 instead of saving, and the household's typed total is lost`)
+        const again = await save(250, { category_id: cat })
+        const afterAgain = await parse(await req('/laoka/api/pantry'))
+        check('and saving it again corrects that ONE expense, never a second one',
+          again.status === 302 && !!afterAgain?.lastTrip &&
+            afterAgain.lastTrip.transactionId === afterFirst?.lastTrip?.transactionId &&
+            afterAgain.lastTrip.amount === 250 && afterAgain.lastTrip.count === 2,
+          `status ${again.status}, before=${JSON.stringify(afterFirst?.lastTrip)}, after=${JSON.stringify(afterAgain?.lastTrip)} — a second save inserted a new expense, or erased how many items were bought`)
+        // …and what the household would actually see: the shopping listed once.
+        const budgetPage = await body(await req('/budget'))
+        const shown = (budgetPage.match(new RegExp(desc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length
+        check('and the budget lists that shopping exactly once',
+          shown === 1,
+          `the budget lists it ${shown} times — a hand-off saved twice must correct the expense, not add one`)
+        // The probe's own expense goes, the way any other probe's does.
+        const at = budgetPage.indexOf(desc)
+        const tx = at === -1 ? null : budgetPage.slice(at).match(/action="\/budget\/delete\/([^"]+)"/)?.[1]
+        if (tx) await req(`/budget/delete/${encodeURIComponent(tx)}`, { method: 'POST' })
+        const settled = await body(await req('/budget'))
+        check('the probe expense is cleaned up',
+          !settled.includes(desc),
+          'the pantry save probe is still in the budget')
+      }
+    } catch (e) {
+      bad('the quick-save walk ran to completion', `threw: ${e && e.message}`)
+    } finally {
+      for (const id of probeItems) await req(`/laoka/api/pantry/items/${id}/delete`, { method: 'POST' })
+      await req('/laoka/api/pantry/trip/clear', { method: 'POST' })
+    }
+  }
+
   // (e) Laoka's own doors, unchanged by the split: the reviewed save on the
   // pre-filled form, and the one-press refresh, both from a week's numbers.
   const fromLaoka = await body(await req('/budget/add-expense?from_laoka=999999'))
@@ -3827,10 +4040,10 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
     /ALTER TABLE pantry_lines ADD COLUMN qty/.test(lineQtyMigration) && /DEFAULT 1/.test(lineQtyMigration),
     'pantry_lines has no qty column, so a unit price cannot be multiplied by anything')
   // The CALL, not just the constant: `MAX_QTY` being declared proves nothing if
-  // the quantity stops going through `readAmount` with it (found by mutating the
-  // call site, which left the declaration behind and the guard green).
+  // the quantity stops going through a bounded reader with it (found by mutating
+  // the call site, which left the declaration behind and the guard green).
   check('the API refuses an absurd quantity as well as an absurd price',
-    /readAmount\(body\.qty, MAX_QTY, false\)/.test(pantryRoute) && /const MAX_QTY = \d+/.test(pantryRoute),
+    /readWhole\(body\.qty, MAX_QTY, false\)/.test(pantryRoute) && /const MAX_QTY = \d+/.test(pantryRoute),
     'the trip route validates a price but not a quantity — one slipped keystroke can multiply the trip by 100000')
   check('the trip total is the sum of the LINE totals',
     /l\.total/.test(pantryRoute),
@@ -3854,6 +4067,258 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
   check('the week\'s list no longer offers pantry items at all',
     !/pantryToggle/.test(laokaJs) && !/showPantry/.test(laokaJs),
     'the week\'s list still has a pantry toggle — the two lists are one list again')
+
+  // (h) Three ways the same money could go wrong on a real phone, all of them
+  // found by using the screen rather than reading it.
+  //
+  //   1. A price commits on BLUR, so its reply always lands while the household
+  //      is already in the NEXT box. Rebuilding the list there destroyed that box
+  //      and dropped focus to <body> — the half-typed number went with it, and a
+  //      partial "123" could even be committed by the involuntary blur. Watched
+  //      happen on the dev server with 1.2 s of latency. A price write therefore
+  //      paints the money, and every other write waits while a box has focus.
+  const writeFn = fnBody(laokaJs, 'pantryWrite') || ''
+  check('a price reply repaints the money, never the box being typed in',
+    /opts\.money && swapPantryFoot\(\)/.test(writeFn) && /isTyping\(\)/.test(writeFn) &&
+      /function swapPantryFoot\(\)/.test(laokaJs) && /\{ money: true \}/.test(laokaJs),
+    'a price reply rebuilds the list, so it destroys the box the household is already typing in and the half-typed number is lost')
+  check('and the money it repaints is the state the server just answered with',
+    /state\.bootstrap\.pantryToBuy \|\| \[\]/.test(fnBody(laokaJs, 'swapPantryFoot') || '') &&
+      /state\.bootstrap\.pantryTrip/.test(fnBody(laokaJs, 'pantryFoot') || ''),
+    'the repaint draws a captured copy of the list instead of the live state, so the total would lag one reply behind')
+  //   2. Money here is whole Ariary and every READER of a line asks `price > 0`,
+  //      so a stored 0 is a line that draws nowhere and that no empty-trip check
+  //      can count: an "Ar 0" trip whose hand-off button opens an empty form.
+  check('a price of zero is an emptied box, not a free item',
+    /Number\(fields\.price\)\s*===\s*0/.test(queries) && /if \(unit === 0\) unit = null;/.test(laokaJs),
+    'a zero price is stored as a line every reader skips — the screen offers a hand-off of Ar 0, and the trip can never be emptied')
+  //   3. Removing an ITEM takes its line, exactly as removing a category does.
+  const delItemFn = fnBody(queries, 'deletePantryItem') || ''
+  const itemDeleteRoute = (() => {
+    const at = pantryRoute.indexOf("pattern: '/api/pantry/items/:id/delete'")
+    return at === -1 ? '' : pantryRoute.slice(at, at + 900)
+  })()
+  check('removing a pantry item takes its price, and the trip it emptied, with it',
+    delItemFn.indexOf('DELETE FROM pantry_lines') > -1 &&
+      delItemFn.indexOf('DELETE FROM pantry_lines') < delItemFn.indexOf('SET deleted_at') &&
+      /dropEmptyPantryTrip\(ctx\.env, trip\.id\)/.test(itemDeleteRoute),
+    'a line on a removed item joins nothing but is still counted, so the trip it was priced on can never be dropped')
+  // Belt and braces, and the healing path for any database that already holds
+  // such a row: “empty” means empty OF THE LINES THAT DRAW, which is the same
+  // list the screen, the trip payload and the hand-off are built from.
+  check('a trip only counts the lines it can actually draw',
+    /JOIN items i ON i\.id = p\.item_id/.test(fnBody(queries, 'dropEmptyPantryTrip') || ''),
+    'dropEmptyPantryTrip counts raw rows, so a line whose item is gone keeps a trip alive that nothing on the screen can empty')
+  check('and takes its undrawable rows with it when it goes',
+    /DELETE FROM pantry_lines WHERE trip_id = \?1/.test(fnBody(queries, 'dropEmptyPantryTrip') || ''),
+    'a dropped trip leaves its stale line rows behind, and every later lookup joins pantry_lines by item_id alone — so an item with no trip would still report a price')
+  check('the week\'s empty-list note no longer promises pantry items',
+    !/plus every Pantry item/.test(laokaJs),
+    'the note on an unplanned week still says the list is the plan plus every pantry item, which the split made false')
+
+  //   4. A fraction is not money. The trip multiplies price × qty exactly while
+  //      the Sompitra hand-off truncates each line to whole Ariary, so a stored
+  //      fraction is the same shopping at two totals. The screen's boxes take
+  //      digits; this is the same rule at the door, because the API is a door too.
+  check('the API stores a price and a quantity whole, like the boxes do',
+    /readWhole\(body\.price, MAX_PRICE, true\)/.test(pantryRoute) &&
+      /readWhole\(body\.qty, MAX_QTY, false\)/.test(pantryRoute) &&
+      /value: Math\.trunc\(r\.value\)/.test(fnBody(pantryRoute, 'readWhole') || ''),
+    'a fractional price is stored, so the total on the trip and the total that reaches the budget disagree by the fraction')
+
+  //   5. A price commits on BLUR, so the tap that follows it — ✖ Clear, or the
+  //      🛒 Review & save button — can reach the server FIRST. A clear that lands
+  //      first is overtaken by the price it meant to remove ("clear" that leaves
+  //      the money on screen, watched happen), and a hand-off that lands first
+  //      sends the shopping a reply behind the one the household is looking at.
+  check('the clear waits for a price that is still in flight',
+    /function pantryPriceWriteWaiting\(\)/.test(laokaJs) &&
+      /pantryPriceWrite = pantryWrite\('PATCH', '\/api\/pantry\/trip'/.test(laokaJs) &&
+      /await pantryPriceWriteWaiting\(\);\s*await pantryWrite\('POST', '\/api\/pantry\/trip\/clear'/.test(laokaJs),
+    'the clear can be overtaken by a price typed a moment earlier, so ✖ Clear leaves the money on the screen')
+  check('and the hand-off waits for it too, so it sends the shopping that was priced',
+    /await pantryPriceWriteWaiting\(\)/.test(fnBody(laokaJs, 'openPantryExpense') || ''),
+    'the hand-off navigates while a price is still in flight, so the budget gets the total from one reply ago')
+
+  //   6. The identity of a hand-off is honoured in BOTH modes. Conditioning it on
+  //      the itemized pane is what let a Quick save leave the week or trip looking
+  //      unsent — its own screen offered the same shopping again and the second
+  //      save charged the budget twice. (Section (d3) saves for real and reads the
+  //      budget back; this is the code rule behind it.)
+  // Slice on CODE, not on a comment: `src()` strips comments before anything
+  // reads it, so a `// ─── GET …` marker is not there to find (this guard was red
+  // on a correct tree until it stopped looking for one).
+  const postExpense = (() => {
+    const at = budgetCode.indexOf("budget.post('/add-expense'")
+    const until = budgetCode.indexOf("budget.get('/add-income'")
+    return at === -1 || until === -1 ? '' : budgetCode.slice(at, until)
+  })()
+  check('the hand-off identity is honoured in both modes, not only the itemized pane',
+    postExpense.length > 0 &&
+      /if \(laokaWeek\) \{/.test(postExpense) &&
+      /if \(pantryTrip && !adopted\) \{/.test(postExpense) &&
+      /markPantryTripPushed\(c\.env, pantryTrip, id/.test(postExpense) &&
+      !/&& mode === 'itemized'/.test(postExpense),
+    'a Quick save of a hand-off form leaves the shopping looking unsent, so it is offered again and a second tap charges the budget twice')
+  check('and a Quick save records how many items the SHOPPING had',
+    /async function sourceItemCount\(/.test(budgetCode) &&
+      /item_count FROM pantry_trips WHERE id = \?/.test(fnBody(budgetCode, 'sourceItemCount') || ''),
+    'a Quick save counts the lines of a free-text note (usually none) instead of the shopping bought, and a re-save then erases the count the trip already had')
+
+  // (i) ONE item, edited on its own. The Pantry is the only screen that manages
+  //     its items — the meal Catalog is scoped to `is_pantry = 0` and never lists
+  //     them — and its sheet was counts-only. So an item's NAME and the category
+  //     holding it were permanent: a typo could only be undone by removing the
+  //     item, and a staple filed on the wrong shelf could only be moved by
+  //     removing it, taking its count, its price and the trip line that price
+  //     opened with it. Both are editable ON THE ITEM now, which is what the four
+  //     checks below pin: the row's buttons act on the item (never on the category
+  //     heading above it), and an edit writes only what it was given.
+  const itemEditRoute = (() => {
+    const at = pantryRoute.indexOf("pattern: '/api/pantry/items/:id'")
+    const until = pantryRoute.indexOf("pattern: '/api/pantry/items/:id/delete'")
+    return at === -1 || until <= at ? '' : pantryRoute.slice(at, until)
+  })()
+  check('a pantry item can be renamed, and filed under another pantry category',
+    /if \(body\.name !== undefined\)/.test(itemEditRoute) && /fields\.name = name/.test(itemEditRoute) &&
+      /isPantryCategory\(ctx\.env, subgroupId\)/.test(itemEditRoute),
+    'the item route cannot rename an item or re-file it, so a typo or a staple on the wrong shelf can only be undone by removing the item — its count, its price and its trip line with it')
+  const updItemFn = fnBody(queries, 'updatePantryItem') || ''
+  check('an edit writes only the fields it was given, so a rename cannot wipe a count',
+    /if \(fields\.name !== undefined\)/.test(updItemFn) && /if \(fields\.subgroupId !== undefined\)/.test(updItemFn) &&
+      /if \(fields\.stock !== undefined\)/.test(updItemFn) && /if \(fields\.stockMin !== undefined\)/.test(updItemFn) &&
+      /UPDATE items SET ' \+ sets\.join\(', '\)/.test(updItemFn),
+    'the update writes fields nobody sent, so renaming an item erases the count somebody just took')
+  const itemSheetFn = fnBody(laokaJs, 'editPantryItem') || ''
+  check('the item sheet carries the name and the category, not counts only',
+    /name: 'name'/.test(itemSheetFn) && /required: true/.test(itemSheetFn) &&
+      /name: 'subgroupId'/.test(itemSheetFn) && /name: 'stockMin'/.test(itemSheetFn),
+    'the sheet is counts-only again — a name or a shelf can only be changed by removing the item')
+  const pantryRowFn = fnBody(laokaJs, 'pantryRow') || ''
+  check('each pantry row edits and removes its OWN item, never the category',
+    /editPantryItem\(item\)/.test(pantryRowFn) && /removePantryItem\(item\)/.test(pantryRowFn) &&
+      !/PantryCategory/.test(pantryRowFn),
+    'the row\'s buttons act on the category again — removing one item takes the whole shelf with it')
+
+  // (i2) …and by asking, on a throwaway item in a throwaway shelf, both
+  // soft-deleted at the end like every other probe in this section. The refusals
+  // aim at a MEAL item and a MEAL category, where the only way to tell "refused"
+  // from "quietly moved" is to look at it afterwards.
+  const mealShelfId = (() => {
+    for (const g of lboot?.catalog || []) for (const s of g.subgroups || []) if (s) return s.id
+    return 0
+  })()
+  const pantryGroupId = (pantryTree[0] && pantryTree[0].id) || 0
+  const firstShelf = (() => {
+    for (const g of pantryTree) for (const s of g.subgroups || []) if (s) return s
+    return null
+  })()
+  if (!quiet || !pantryGroupId || !firstShelf || !mealItemId || !mealShelfId) {
+    log('  \x1b[90m– skipped the item-edit walk: no pantry shelf (or no meal item) to aim a probe at\x1b[0m')
+  } else {
+    let shelfProbe = 0
+    let itemProbe = 0
+    // The names carry the run's own stamp: a name is unique while it lives
+    // (`WHERE deleted_at IS NULL`), so a stable one would be fine — until a run
+    // dies before its cleanup and the NEXT run is refused with "already exists",
+    // which is a suite that fails depending on what a previous crash left behind.
+    const stamp = Date.now()
+    const probeShelfName = `zz smoke pantry shelf ${stamp}`
+    const probeItemName = `zz smoke edit probe ${stamp}`
+    try {
+      const madeShelf = await parse(await req('/laoka/api/subgroups', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: probeShelfName, groupId: pantryGroupId, slotRole: 'none' }),
+      }))
+      shelfProbe = (madeShelf && madeShelf.id) || 0
+      check('the suite could add a throwaway pantry shelf to file an item onto',
+        !!shelfProbe, `POST /laoka/api/subgroups answered ${JSON.stringify(madeShelf)}`)
+      const madeItem = await parse(await req('/laoka/api/pantry/items', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: probeItemName, subgroupId: firstShelf.id, stock: 7, stockMin: 3 }),
+      }))
+      itemProbe = (() => {
+        for (const g of madeItem?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+          if (i.name === probeItemName) return i.id
+        }
+        return 0
+      })()
+      check('and add a throwaway item to rename and move',
+        !!itemProbe, `POST /laoka/api/pantry/items did not answer with the new item (ok=${madeItem && madeItem.ok})`)
+      if (itemProbe && shelfProbe) {
+        // A rename carries NO count: an edit is partial by construction.
+        const renamed = await parse(await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { name: probeItemName + ' II' }))
+        check('renaming an item leaves its count and its level alone',
+          renamed?.item?.name === probeItemName + ' II' && renamed.item.stock === 7 && renamed.item.stockMin === 3,
+          `item=${JSON.stringify(renamed?.item)} — an edit that carries fields nobody sent is how a rename erases a count`)
+        // …and a move is a move: it is drawn under the shelf it was sent to.
+        const moved = await parse(await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { subgroupId: shelfProbe }))
+        const filedUnder = (() => {
+          for (const g of moved?.pantry || []) for (const s of g.subgroups || []) for (const i of s.items || []) {
+            if (i.id === itemProbe) return s.id
+          }
+          return 0
+        })()
+        check('moving an item files it under the shelf it was sent to, count intact',
+          moved?.ok === true && filedUnder === shelfProbe && moved.item?.subgroupId === shelfProbe &&
+            moved.item?.stock === 7,
+          `drawn under ${filedUnder} (asked for ${shelfProbe}), item=${JSON.stringify(moved?.item)}`)
+        // The refusals. The domain boundary has to hold on the NEW fields too,
+        // not only on the count that was already guarded.
+        const atMeal = await jpatch(`/laoka/api/pantry/items/${mealItemId}`, { name: 'hijacked' })
+        check('renaming a MEAL ingredient through the pantry is refused',
+          atMeal.status === 404, `status ${atMeal.status} for meal item ${mealItemId}`)
+        const toMeal = await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { subgroupId: mealShelfId })
+        check('and a pantry item cannot be filed under a MEAL group',
+          toMeal.status === 400,
+          `status ${toMeal.status} for meal category ${mealShelfId} — an item there vanishes from every pantry list and appears to the meal planner as an ingredient`)
+        const nameless = await jpatch(`/laoka/api/pantry/items/${itemProbe}`, { name: '   ' })
+        check('an item cannot be renamed to nothing',
+          nameless.status === 400, `status ${nameless.status} for a blank name`)
+        const nothing = await jpatch(`/laoka/api/pantry/items/${itemProbe}`, {})
+        check('and an edit that changes nothing is refused rather than written',
+          nothing.status === 400, `status ${nothing.status} for an empty body`)
+      }
+    } catch (e) {
+      bad('the item-edit walk ran to completion', `threw: ${e && e.message}`)
+    } finally {
+      // The CATALOGUE's door, not the pantry's: a mutation above can file the
+      // probe under a meal category, and the pantry route then refuses it (by
+      // design — that boundary is the point of the checks above), so the cleanup
+      // has to be the door that deletes an item in either domain.
+      if (itemProbe) await req(`/laoka/api/items/${itemProbe}`, { method: 'DELETE' })
+      if (shelfProbe) await req(`/laoka/api/pantry/categories/${shelfProbe}/delete`, { method: 'POST' })
+    }
+  }
+
+  // (j) The shape of the shelves, on the page the household lands on. Home's
+  // dashboard ends on one compact card, and its numbers have to BE the pantry's
+  // own: a summary that counts differently from the list it summarises is a lie
+  // nobody notices until the two disagree. So they are compared against
+  // `/laoka/api/pantry` — the payload the Pantry screen itself draws from.
+  const shape = await parse(await req('/laoka/api/pantry'))
+  const shelvesPage = await body(await req('/'))
+  const shapeCounted = (() => {
+    let items = 0
+    let categories = 0
+    for (const g of shape?.pantry || []) for (const s of g.subgroups || []) { categories++; items += (s.items || []).length }
+    return { items: items, categories: categories, toBuy: (shape?.toBuy || []).length }
+  })()
+  const cardAt = shelvesPage.indexOf('>Pantry</h3>')
+  const pantryCard = cardAt === -1 ? '' : shelvesPage.slice(cardAt, cardAt + 2000)
+  check('Home\'s dashboard ends on a pantry card that opens the pantry itself',
+    cardAt > -1 && /href="\/laoka\/\?tab=pantry"/.test(pantryCard) &&
+      shelvesPage.indexOf('/laoka/?tab=pantry') > shelvesPage.indexOf('Debts &amp; Credits'),
+    cardAt === -1 ? 'the dashboard has no pantry card at all'
+      : 'the pantry card is not the last card, or it does not carry the tab that opens the pantry')
+  check('and its numbers are the pantry screen\'s own, not a second count',
+    shapeCounted.items > 0 &&
+      new RegExp(`>${shapeCounted.items} items?<`).test(pantryCard) &&
+      new RegExp(`>${shapeCounted.categories} categor(y|ies)<`).test(pantryCard) &&
+      (shapeCounted.toBuy > 0
+        ? new RegExp(`>${shapeCounted.toBuy} to buy<`).test(pantryCard)
+        : />nothing to buy</.test(pantryCard)),
+    `the card reads ${(pantryCard.match(/>\d+ items?</) || ['nothing'])[0]} where the pantry has ${shapeCounted.items} item(s) in ${shapeCounted.categories} categor(ies) and ${shapeCounted.toBuy} to buy — a summary that counts differently is a summary nobody can trust`)
 }
 
 // ─── 23. A quantity or a price is TYPED, never nudged ────────────
@@ -3946,6 +4411,21 @@ log('\n23. Every number box in the app is typed, never nudged')
       /<script src="\/shared\/number-entry\.js"/.test(html),
       `${path} does not load /shared/number-entry.js, so its number boxes come back with spinner buttons and wheel stepping`)
   }
+
+  // (e) What a typed decimal MEANS, once the box takes digits. "1250.75" is
+  //     1,250 Ariary — the household is typing cents — and a rule that merely
+  //     dropped the non-digits made it 125,075: a silent hundred-fold price, on
+  //     the one screen whose whole job is money (seen live on the dev server).
+  //     Thousands separators are the other way round ("1,250" IS 1,250), so only
+  //     the fraction is cut. Every money box asks the same helper, which is why
+  //     one `split` (and exactly ONE strip) is what this reads.
+  const appJsAll = src('public/laoka/app.js')
+  check('a typed decimal is cut at the point, never merged into a bigger price',
+    /function wholeDigits\(/.test(appJsAll) &&
+      /split\('\.'\)\[0\]/.test(fnBody(appJsAll, 'wholeDigits') || '') &&
+      (appJsAll.match(/wholeDigits\(/g) || []).length >= 5 &&
+      (appJsAll.match(/replace\(\/\[\^0-9\]\/g/g) || []).length === 1,
+    'a decimal point is stripped instead of cut, so a typed 1250.75 is stored as 125075 — and a fifth money box with its own copy of the rule can disagree again')
 }
 
 // ─── summary ─────────────────────────────────────────────────────

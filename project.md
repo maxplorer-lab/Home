@@ -165,6 +165,18 @@ you are in.
   not focused is left completely alone, and the pantry's own − / + count
   steppers are deliberate taps, so they stay. Rule 37 in `AGENTS.md`; smoke §23
   pins the rule, its limits, and every document's include.
+* **A reply never rebuilds the box you are typing in.** A pantry price commits
+  on **blur**, so its answer always lands while the household is already in the
+  next box — and a full re-render there destroyed that box, dropped focus to
+  `<body>`, and took the half-typed number with it (seen live on the dev server
+  with 1.2 s of latency, which is what a phone on a network actually has). A
+  price write therefore repaints **only the money** (`.pantryfoot`, rebuilt from
+  the state the answer carried) and leaves every input alone, and the other
+  pantry writes defer while a box has focus (`isTyping()` → `state.deferred`,
+  drained on `focusout`) — the rule `applyState`, `applyRemote` and
+  `softRefresh` already followed for the week's list. Smoke §22 (h) pins it: a
+  guard that only re-rendered and restored focus would still lose the characters
+  typed after the commit landed.
 
 ## The brand system (one typeface, one accent per screen, brand glyphs)
 
@@ -824,11 +836,30 @@ purchase cannot be sent twice by leaving prices behind. What the trip became —
 3 items" after the lines are gone. `item_count` has to live there, not be counted
 from `pantry_lines`, for exactly that reason.
 
+**A price of zero is an emptied box, not a free item.** Every reader of a line
+asks `price > 0` — `getPantryTripLines`, and therefore the trip payload and the
+Sompitra hand-off — so a stored 0 would be a line that draws nowhere while still
+counting as a row on the trip: an "Ar 0" shopping whose hand-off button opens an
+empty form, which the clear button cannot even empty, because clearing walks the
+lines that *do* draw. Money here is whole Ariary, and both doors say the same
+thing: `setPantryPrice` on the server, the row's `commit` on the screen.
+
+**A typed decimal is cut at the point, never merged.** `wholeDigits()` removes
+thousands separators and cuts the fraction, so a typed "1250.75" is 1,250 Ariary
+rather than 125,075. It is the ONE rule for every money box in Laoka (the week's
+line prices, the weekly budget, the Settings default, and the Pantry's unit price
+and quantity); the four inline copies it replaced are what let the same typo mean
+two different prices on two screens.
+
 **Clearing the prices drops an emptied trip** (`dropEmptyPantryTrip`). An
 unpushed trip with no lines is not a trip: left in place it draws an "Ar 0"
 shopping on the screen and makes the next count look like it continued somebody's
-abandoned trip. A **pushed** trip is never dropped — that row is the identity of
-an expense that exists in the budget, and losing it is how the same shopping gets
+abandoned trip. "Empty" means empty of **the lines that can be drawn** (the same
+rows `getPantryTripLines` returns), not of raw rows — a line whose item is gone
+can never be shown, priced or cleared, so counting it would keep a trip alive
+that nothing on the screen can empty. That clause also heals such a row on the
+next write. A **pushed** trip is never dropped — that row is the identity of an
+expense that exists in the budget, and losing it is how the same shopping gets
 charged twice.
 
 **Adding a household item works from the screen where the need appears.** The
@@ -848,12 +879,42 @@ that order, and the confirm names how many items go — because the two other
 behaviours are worse: leaving the items hides counts nobody can see or change
 (`getPantryTree` and `getLowStockItemIds` both filter `s.deleted_at IS NULL`),
 and leaving their priced lines strands a trip that draws nothing and can never
-be dropped (`dropEmptyPantryTrip` counts rows). An **empty** category still
+be dropped. **Removing a single item follows the same rule, one level down**:
+`deletePantryItem` clears its line before soft-deleting it, and the route then
+drops the trip that emptied — the item path is the easier one to forget, and it
+is the one that was missed first. An **empty** category still
 draws, with a muted line saying so, which is also the only place its rename and
 remove buttons can be reached from. The meal Catalog's own *Add a type* form no
 longer offers a pantry group: its tree is `is_pantry = 0`, so a group created
 there was invisible in the screen that made it and reappeared as a second
 heading on the Pantry tab.
+
+**An item is edited on the ITEM, not through its category.** Each row carries
+its own ✏️ and 🗑, and the sheet holds the four things that describe an item: its
+**name**, the **category** it is filed under, how many are at home, and when to
+reorder. Before that the sheet was counts-only, so a typo in a name — or a staple
+filed on the wrong shelf — could only be undone by *removing the item*, which
+takes its count, its restored price and the trip line that price opened with it.
+`PATCH /api/pantry/items/:id` therefore accepts any subset of those four fields
+and writes only the ones it was sent (`updatePantryItem`): an edit is partial by
+construction, so renaming an item cannot erase a count nobody touched. Two
+boundaries hold on the new fields exactly as they do on a count — the item must
+be a pantry item (`isPantryItem` → 404), and a destination must be a pantry
+category (`isPantryCategory` → 400) — because an item filed under a meal
+category would vanish from every pantry list and appear to the planner as an
+ingredient.
+
+**The shape of the shelves is on Home.** The dashboard's last card is the pantry
+in one line — how many items, how many categories, and how many are to buy — and
+every number comes from the pantry's own queries (`pantrySummary` →
+`getPantryTree` + `listPantryToBuy`), so a summary cannot disagree with the list
+it summarises. It reads Laoka's database through a DB-scoped env (`{ DB:
+c.env.LAOKA_DB }`) and, when that read throws, says the shelves could not be read
+rather than showing zeros — zeros would claim an empty pantry. The card carries
+`?tab=pantry`, which the shell forwards into the frame's src
+(`/laoka/index.html?tab=pantry`) and the module reads at boot; the value comes
+from the address bar, so the shell drops anything that is not a plain lowercase
+tab name instead of reflecting it into that URL.
 
 ## Forgetting a template
 

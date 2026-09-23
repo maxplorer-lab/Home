@@ -34,6 +34,20 @@ const read = (p) => readFileSync(new URL(p, root), 'utf8')
 const write = (p, s) => writeFileSync(new URL(p, root), s)
 const sha = (p) => createHash('sha256').update(readFileSync(new URL(p, root))).digest('hex')
 
+// ── line endings ─────────────────────────────────────────────────────
+// This working tree is a WINDOWS checkout: the files on disk are CRLF, while
+// every anchor below (and every `to:`) is written with a plain \n. Matching raw
+// bytes therefore missed every multi-line anchor -- and a missed anchor is a
+// SKIPPED mutation, which changed no code and still exited 0. The whole report
+// looked green and had proved half of itself nothing. So anchors are matched
+// against a normalised copy, the edit is applied there, and the file is written
+// back with the ending it already had.
+const normalized = (p) => read(p).replace(/\r\n/g, '\n')
+function writeKeepingEol(p, text) {
+  const crlf = read(p).includes('\r\n')
+  write(p, crlf ? text.replace(/\n/g, '\r\n') : text)
+}
+
 // ── extract section 22 out of the shipping suite ─────────────────────
 const smoke = read('scripts/smoke.mjs')
 const start = smoke.indexOf('// ─── 22. Two shopping lists')
@@ -48,9 +62,14 @@ const section = smoke.slice(start, end).replace(/import\.meta\.url/g, '__root')
 
 let pass = 0
 const failures = []
+// Every check name that EXECUTED, pass or fail. Red-only bookkeeping cannot tell
+// a guard that held from one that never ran: a walk that skipped, or an `expects`
+// name that no longer exists, reads exactly like a caught mutation. The verdict
+// below asks both questions — did it run, and did it go red.
+const ran = []
 const log = (...a) => console.log(...a)
-const ok = (name) => { pass++; log(`  \x1b[32m✓\x1b[0m ${name}`) }
-const bad = (name, detail) => { failures.push(name); log(`  \x1b[31m✗\x1b[0m ${name} \x1b[31m${detail}\x1b[0m`) }
+const ok = (name) => { pass++; ran.push(name); log(`  \x1b[32m✓\x1b[0m ${name}`) }
+const bad = (name, detail) => { failures.push(name); ran.push(name); log(`  \x1b[31m✗\x1b[0m ${name} \x1b[31m${detail}\x1b[0m`) }
 const check = (name, condition, detail = '') => { condition ? ok(name) : bad(name, detail || 'assertion failed') }
 
 const jar = new Map()
@@ -248,8 +267,11 @@ const MUTATIONS = [
   {
     id: 'M10', file: APPJS,
     why: 'the pantry hand-off navigates the IFRAME instead of the top document',
-    from: "window.top.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(tripId);",
-    to: "window.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(tripId);",
+    // The id the hand-off goes to is re-read after the in-flight price settles
+    // (`id`, not the `tripId` argument) — an anchor quoting the old variable
+    // silently skipped, which is how this one was found on 2026-09-22.
+    from: "window.top.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(id);",
+    to: "window.location.href = '/budget/add-expense?from_pantry=' + encodeURIComponent(id);",
     expects: ['the pantry hand-off leaves the iframe instead of drawing inside it'],
   },
   {
@@ -308,8 +330,8 @@ const MUTATIONS = [
   {
     id: 'M18', file: PANTRY,
     why: 'the route validates a price but not a quantity',
-    from: "      if (hasQty) {\n        const qty = readAmount(body.qty, MAX_QTY, false);",
-    to: "      if (hasQty) {\n        const qty = readAmount(body.qty, 100000000, false);",
+    from: "      if (hasQty) {\n        const qty = readWhole(body.qty, MAX_QTY, false);",
+    to: "      if (hasQty) {\n        const qty = readWhole(body.qty, 100000000, false);",
     expects: ['the API refuses an absurd quantity'],
   },
   {
@@ -336,9 +358,62 @@ const MUTATIONS = [
   {
     id: 'M22', file: APPJS,
     why: 'the row sends the unit price but not the quantity',
-    from: "pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit, qty: q });",
-    to: "pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit });",
+    from: "pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit, qty: q }, { money: true });",
+    to: "pantryWrite('PATCH', '/api/pantry/trip', { itemId: item.id, price: unit }, { money: true });",
     expects: ['the screen shows the restock price it will send'],
+  },
+  {
+    id: 'M37', file: APPJS,
+    why: 'the price reply goes back to rebuilding the whole list (the tidy-up that reads best)',
+    from: '    if (opts && opts.money && swapPantryFoot()) return res;\n',
+    to: '',
+    expects: ['a price reply repaints the money, never the box being typed in'],
+  },
+  {
+    id: 'M38', file: APPJS,
+    why: 'the repaint is handed an empty list instead of the state the server just sent',
+    from: 'card.parentNode.replaceChild(pantryFoot(state.bootstrap.pantryToBuy || []), card);',
+    to: 'card.parentNode.replaceChild(pantryFoot([]), card);',
+    expects: ['and the money it repaints is the state the server just answered with'],
+  },
+  {
+    id: 'M39', file: QUERIES,
+    why: 'a price of zero is stored like any other price',
+    from: 'const clearing = fields.price === null || Number(fields.price) === 0;',
+    to: 'const clearing = fields.price === null;',
+    expects: ['a price of zero is an emptied box, not a free item', 'a price of zero records nothing and opens no trip'],
+  },
+  {
+    id: 'M40', file: QUERIES,
+    why: 'removing an item leaves its priced line behind',
+    from: "  await env.DB.prepare('DELETE FROM pantry_lines WHERE item_id = ?1').bind(itemId).run();\n  await env.DB.prepare(\n    \"UPDATE items SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL\"",
+    to: "  await env.DB.prepare(\n    \"UPDATE items SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL\"",
+    // Only the CODE guard can see this one. The outcome the walk asks about stays
+    // right by the second mechanism alone (`dropEmptyPantryTrip` counts only the
+    // lines that can DRAW, so a removed item's price no longer keeps the trip
+    // alive) — real defence in depth, and the reason M51 removes both at once.
+    expects: ['removing a pantry item takes its price, and the trip it emptied, with it'],
+  },
+  {
+    id: 'M42', file: QUERIES,
+    why: 'an empty trip is judged by raw ROWS again, so a line nobody can draw keeps it alive',
+    from: "'SELECT pushed_at, (SELECT COUNT(*) FROM pantry_lines p JOIN items i ON i.id = p.item_id ' +\n    'WHERE p.trip_id = ?1 AND i.deleted_at IS NULL AND p.price IS NOT NULL AND p.price > 0) AS n ' +\n",
+    to: "'SELECT pushed_at, (SELECT COUNT(*) FROM pantry_lines WHERE trip_id = ?1) AS n ' +\n",
+    expects: ['a trip only counts the lines it can actually draw'],
+  },
+  {
+    id: 'M43', file: QUERIES,
+    why: 'a dropped trip leaves its stale line rows behind',
+    from: "  await env.DB.prepare('DELETE FROM pantry_lines WHERE trip_id = ?1').bind(tripId).run();\n",
+    to: '',
+    expects: ['and takes its undrawable rows with it when it goes'],
+  },
+  {
+    id: 'M41', file: APPJS,
+    why: 'the empty-week note goes back to promising pantry items',
+    from: "text: 'Generate and save a week first. The list is what this week\\'s cooking needs — staples and household goods are bought on the Pantry tab.'",
+    to: "text: 'Generate and save a week first. The list is the saved plan plus every Pantry item.'",
+    expects: ["the week's empty-list note no longer promises pantry items"],
   },
   {
     id: 'M23', file: QUERIES,
@@ -453,6 +528,92 @@ const MUTATIONS = [
     to: '',
     expects: ['removing a category takes its items AND their trip lines with it'],
   },
+
+  // ── the three ways the same money went wrong on a real phone ──
+  {
+    id: 'M44', file: PANTRY,
+    why: 'a fractional price is stored again, so the trip and the budget disagree by the fraction',
+    from: 'const price = readWhole(body.price, MAX_PRICE, true);',
+    to: 'const price = readAmount(body.price, MAX_PRICE, true);',
+    expects: ['a fractional price or count is stored whole, so both totals agree',
+      'the API stores a price and a quantity whole, like the boxes do'],
+  },
+  {
+    id: 'M45', file: APPJS,
+    why: 'the clear stops waiting for the price that is still in flight',
+    from: "      await pantryPriceWriteWaiting();\n      await pantryWrite('POST', '/api/pantry/trip/clear', {});",
+    to: "      await pantryWrite('POST', '/api/pantry/trip/clear', {});",
+    expects: ['the clear waits for a price that is still in flight'],
+  },
+  {
+    id: 'M46', file: APPJS,
+    why: 'the hand-off navigates while a price is still in flight',
+    from: "async function openPantryExpense(tripId) {\n  // A price typed a moment ago may still be in flight: send the shopping that was\n  // actually priced, not the one a reply behind it.\n  await pantryPriceWriteWaiting();",
+    to: "async function openPantryExpense(tripId) {",
+    expects: ['and the hand-off waits for it too, so it sends the shopping that was priced'],
+  },
+  {
+    id: 'M47', file: BUDGET,
+    why: 'the week\u2019s identity is honoured on the itemized pane only -- the reversal this walk was written for',
+    from: '  if (laokaWeek) {\n    const existing = await c.env.HOME_DB',
+    to: "  if (laokaWeek && mode === 'itemized') {\n    const existing = await c.env.HOME_DB",
+    expects: ['the hand-off identity is honoured in both modes, not only the itemized pane'],
+  },
+  {
+    id: 'M48', file: BUDGET,
+    why: 'a Quick save stops adopting the expense it already made (the pantry door)',
+    from: '  if (pantryTrip && !adopted) {',
+    to: "  if (pantryTrip && !adopted && mode === 'itemized') {",
+    // The live walk is the point of this one: the same shopping saved twice must
+    // stay ONE expense, and the code guard alone cannot say that.
+    expects: ['the hand-off identity is honoured in both modes, not only the itemized pane',
+      'and saving it again corrects that ONE expense, never a second one',
+      'and the budget lists that shopping exactly once',
+      'the probe expense is cleaned up'],
+  },
+  {
+    id: 'M49', file: BUDGET,
+    why: 'a re-save stops reading the count the trip already records',
+    from: '    return (row && row.item_count) ? row.item_count : fallback',
+    to: '    return fallback',
+    // Only the WALK can see this one: the fault keeps the SQL read in place and
+    // changes what is returned, so the code guard above it stays green by design.
+    // Naming both here made the mutation uncatchable — `expects` is "all of these
+    // must go red", not "any".
+    expects: ['and saving it again corrects that ONE expense, never a second one'],
+  },
+  {
+    id: 'M50', file: BUDGET,
+    why: 'an absent category field reads as the STRING "undefined" again',
+    from: "const categoryId = String(body.category_id || '')",
+    to: 'const categoryId = String(body.category_id)',
+    expects: ['and a hand-off saved without a category picked still saves'],
+  },
+  {
+    id: 'M51', file: QUERIES,
+    why: 'a removed item keeps its line, AND that line keeps its trip alive — both redundant guards at once',
+    from: "  await env.DB.prepare('DELETE FROM pantry_lines WHERE item_id = ?1').bind(itemId).run();\n  await env.DB.prepare(\n    \"UPDATE items SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL\"",
+    to: "  await env.DB.prepare(\n    \"UPDATE items SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL\"",
+    // The PAIR is the fault the walk is for: with either clause alone the trip
+    // still ends, which is why M40 and M42 each keep an outcome-neutral edit and
+    // this one takes both. All three checks go red (the two code guards for the
+    // clauses, and the walk that reads the trip back).
+    also: [{
+      file: QUERIES,
+      from: "'SELECT pushed_at, (SELECT COUNT(*) FROM pantry_lines p JOIN items i ON i.id = p.item_id ' +\n    'WHERE p.trip_id = ?1 AND i.deleted_at IS NULL AND p.price IS NOT NULL AND p.price > 0) AS n ' +\n",
+      to: "'SELECT pushed_at, (SELECT COUNT(*) FROM pantry_lines WHERE trip_id = ?1) AS n ' +\n",
+    }],
+    expects: ['removing the item takes its price, and the trip it opened, with it',
+      'removing a pantry item takes its price, and the trip it emptied, with it',
+      'a trip only counts the lines it can actually draw'],
+  },
+  {
+    id: 'M52', file: APPJS,
+    why: 'a typed decimal is stripped instead of cut, so 1250.75 becomes 125075',
+    from: "  return String(raw == null ? '' : raw).replace(/[\\s,]/g, '').split('.')[0].replace(/[^0-9]/g, '');",
+    to: "  return String(raw == null ? '' : raw).replace(/[^0-9]/g, '');",
+    expects: ['a typed decimal is cut at the point, never merged into a bigger price'],
+  },
 ]
 
 // ── run ──────────────────────────────────────────────────────────────
@@ -491,6 +652,65 @@ const runSection = new Function(
   `return (async () => {\n${section}\n})()`
 )
 
+/** Put back whatever `preparePantry` changed, so a run leaves the local shelf as
+ *  it found it. */
+async function restorePrepared(prepared) {
+  if (!prepared) return
+  await tryReq(`/laoka/api/pantry/items/${prepared.id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stock: prepared.stock, stockMin: prepared.stockMin }),
+  })
+}
+
+/** Anything on the budget that was not there before the driver started is the
+ *  driver's own mess — the suite's walks post probe expenses, and M9 posts a
+ *  second one. Delete exactly those, and say so out loud. */
+async function sweepProbeExpenses(label) {
+  const txPage = await tryReq('/budget/transactions')
+  const nowIds = txPage
+    ? [...(await body(txPage)).matchAll(/data-tx-details="([^"]+)"/g)].map((x) => x[1])
+    : []
+  for (const id of nowIds.filter((x) => !baseline.includes(x))) {
+    const res = await tryReq(`/budget/delete/${id}`, { method: 'POST' })
+    log(`  \x1b[90m↺ removed the probe expense this ${label} created (${id}) → ${res ? res.status : 'no answer'}\x1b[0m`)
+    deleted.push(id)
+  }
+}
+
+// ── preflight ────────────────────────────────────────────────────────
+// A guard can only catch a fault if it RUNS and is GREEN on the clean tree. One
+// that is already red, or that never executes at all (a walk that skipped reports
+// nothing), makes every verdict below meaningless while looking exactly like a
+// wall of catches. So all expected checks are exercised once, unmutated, first.
+// This is what caught M49 asking a one-item probe for a count of two: the walk
+// was red before any file was touched.
+{
+  const expected = [...new Set(chosen.flatMap((m) => m.expects))]
+  pass = 0
+  failures.length = 0
+  ran.length = 0
+  const prepared = await preparePantry()
+  try {
+    await runSection(BASE, smokeUrl, log, ok, bad, check, req, body, form, fnBody, readFileSync, URL, fetch, jar)
+  } catch (err) {
+    bad('section ran to completion', `threw: ${err && err.message}`)
+  } finally {
+    await restorePrepared(prepared)
+    await settled()
+  }
+  const reds = [...new Set(failures)]
+  const absent = expected.filter((name) => !ran.some((n) => n.startsWith(name)))
+  if (reds.length || absent.length) {
+    console.error('\x1b[31mpreflight: the section is not clean before any mutation, so the verdicts below would prove nothing.\x1b[0m')
+    for (const f of reds) console.error(`  \x1b[31m✗\x1b[0m ${f}`)
+    for (const a of absent) console.error(`  \x1b[33m· never ran:\x1b[0m ${a}`)
+    console.error('Fix the tree (or the expectation) first — nothing was mutated.')
+    process.exit(2)
+  }
+  log(`\x1b[32mpreflight: ${expected.length} expected check(s) ran, and all were green on the clean tree.\x1b[0m`)
+  await sweepProbeExpenses('preflight')
+}
+
 const results = []
 for (const m of chosen) {
   // A mutation may span several files (`also`): the fault that breaks a screen
@@ -498,7 +718,7 @@ for (const m of chosen) {
   // is read, written, sha-checked and restored together.
   const edits = [{ file: m.file, from: m.from, to: m.to }].concat(m.also || [])
   const backups = edits.map((e) => ({ file: e.file, text: read(e.file), sha: sha(e.file) }))
-  const missing = edits.find((e) => !read(e.file).includes(e.from))
+  const missing = edits.find((e) => !normalized(e.file).includes(e.from))
   if (missing) {
     results.push({ id: m.id, verdict: 'SKIPPED — anchor missing' })
     log(`\x1b[33m${m.id}\x1b[0m could not be applied: anchor missing in ${missing.file}`)
@@ -507,9 +727,10 @@ for (const m of chosen) {
   log(`\n\x1b[1m${m.id}\x1b[0m ${m.why}`)
   pass = 0
   failures.length = 0
+  ran.length = 0
   const prepared = await preparePantry()
   try {
-    for (const e of edits) write(e.file, read(e.file).replace(e.from, e.to))
+    for (const e of edits) writeKeepingEol(e.file, normalized(e.file).replace(e.from, e.to))
     await runSection(BASE, smokeUrl, log, ok, bad, check, req, body, form, fnBody, readFileSync, URL, fetch, jar)
   } catch (err) {
     bad('section ran to completion', `threw: ${err && err.message}`)
@@ -521,34 +742,44 @@ for (const m of chosen) {
         process.exit(3)
       }
     }
-    if (prepared) {
-      await tryReq(`/laoka/api/pantry/items/${prepared.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stock: prepared.stock, stockMin: prepared.stockMin }),
-      })
-    }
+    await restorePrepared(prepared)
   }
 
   const unique = [...new Set(failures)]
   const hit = m.expects.every((name) => unique.some((f) => f.startsWith(name)))
   const extra = unique.filter((f) => !m.expects.some((name) => f.startsWith(name)))
-  results.push({ id: m.id, verdict: hit ? (extra.length ? `RED +${extra.length} extra` : 'RED — own check only') : 'GREEN — not caught', extra })
+  // An expected check that never executed cannot have caught anything: the walk
+  // it lives in skipped, or the name no longer exists in the suite. Reported as
+  // NOT RUN and counted as a failure, never as a quiet pass.
+  const unrun = m.expects.filter((name) => !ran.some((n) => n.startsWith(name)))
+  const verdict = unrun.length
+    ? `NOT RUN — ${unrun[0].slice(0, 60)}`
+    : hit ? (extra.length ? `RED +${extra.length} extra` : 'RED — own check only') : 'GREEN — not caught'
+  results.push({ id: m.id, verdict, extra })
   log(`  \x1b[90m${unique.length} red: ${unique.map((f) => f.split(' —')[0]).join(' | ') || '(none)'}\x1b[0m`)
-  log(hit ? '  \x1b[32m▲ mutation caught\x1b[0m' : '  \x1b[31m▲ NOT caught\x1b[0m')
+  if (unrun.length) {
+    log(`  \x1b[31m▲ NOT caught — the check it should turn red never ran: ${unrun.join('; ')}\x1b[0m`)
+  } else {
+    log(hit ? '  \x1b[32m▲ mutation caught\x1b[0m' : '  \x1b[31m▲ NOT caught\x1b[0m')
+  }
 
   // A mutation can really write (M9 posts a second expense). Clean up anything
   // that was not there before the driver started, and say so out loud.
   if (!(await settled())) log('  \x1b[31mthe dev server did not come back after the restore\x1b[0m')
-  const txPage = await tryReq('/budget/transactions')
-  const nowIds = txPage
-    ? [...(await body(txPage)).matchAll(/data-tx-details="([^"]+)"/g)].map((x) => x[1])
-    : []
-  for (const id of nowIds.filter((x) => !baseline.includes(x))) {
-    const res = await tryReq(`/budget/delete/${id}`, { method: 'POST' })
-    log(`  \x1b[90m↺ removed the probe expense this mutation created (${id}) → ${res ? res.status : 'no answer'}\x1b[0m`)
-    deleted.push(id)
-  }
+  await sweepProbeExpenses('mutation')
   await new Promise((r) => setTimeout(r, 400))
+}
+
+// The driver restores CODE, not DATA. A mutation that strands a trip (M51 and
+// M40/M42 leave an item's line behind, which keeps an undrawable trip alive) is
+// the point of the exercise — but leaving that row in the local database hands
+// the next run a pantry with a trip already in progress, and the suite's own
+// walks then report failures that belong to the mutation, not the tree. One
+// clear writes it off: with the code restored, `dropEmptyPantryTrip` counts the
+// lines that DRAW (none of them do) and takes the stale rows with it.
+await tryReq('/laoka/api/pantry/trip/clear', { method: 'POST' })
+if ((await body(await tryReq('/laoka/api/pantry')) || '').includes('"trip":{"id"')) {
+  log('\x1b[33m· a pantry trip is still in progress after the run — clear it in Laoka → Pantry\x1b[0m')
 }
 
 log('\n── mutation report ────────────────────────────')
@@ -557,15 +788,27 @@ for (const r of results) {
   log(`  \x1b[${colour}m${r.verdict.padEnd(22)}\x1b[0m ${r.id}`)
 }
 const uncaught = results.filter((r) => r.verdict.startsWith('GREEN')).length
-log(uncaught ? `\n\x1b[31m${uncaught} guard(s) did not catch their own fault\x1b[0m` : '\n\x1b[32mEvery mutation turned its own check red.\x1b[0m')
+const unrun = results.filter((r) => r.verdict.startsWith('NOT RUN')).length
+// A skipped anchor changes NO code, so it proves nothing either — it fails the
+// run the same way an uncaught fault does, instead of hiding in the report.
+const skipped = results.filter((r) => r.verdict.startsWith('SKIPPED')).length
+if (uncaught || unrun || skipped) {
+  log(`\n\x1b[31m${uncaught} guard(s) did not catch their own fault${unrun ? `, ${unrun} never ran` : ''}${skipped ? `, ${skipped} anchor(s) missing (nothing was changed)` : ''}\x1b[0m`)
+} else {
+  log('\n\x1b[32mEvery mutation turned its own check red.\x1b[0m')
+}
 
 // M9 makes the reviewed save post a SECOND expense, so the ledger ends up
 // pointing at the probe this driver just deleted. That is state, not code, and
 // only the operator can put it back — so say exactly how.
 if (deleted.length) {
   log(`\n\x1b[33mcleanup took ${deleted.length} probe expense(s) out of the local database.\x1b[0m`)
-  log('The local laoka_imports row now points at one of them, so the suite will skip its save half')
-  log('(it only ever corrects an expense that exists). Re-point it with:\n')
+  // Only SOME of these matter: the suite's own walks post their probes and the
+  // driver takes them back, which changes nothing. The one that bites is M9's
+  // second expense — the week the local laoka_imports row points at — so this
+  // says what to look for rather than claiming every run needs a repair.
+  log('If the suite now SKIPS its save half, one of them was the week that laoka_imports row')
+  log('points at (it only ever corrects an expense that exists). Re-point it with:\n')
   log(`  npx wrangler d1 execute home-db --local --command 'UPDATE laoka_imports SET transaction_id = "<the live expense id>" WHERE laoka_week_id = <week>'\n`)
 }
-process.exit(uncaught ? 1 : 0)
+process.exit(uncaught || unrun || skipped ? 1 : 0)

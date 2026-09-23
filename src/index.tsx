@@ -298,7 +298,9 @@ app.get('/laoka', (c) => c.redirect('/laoka/'))
 app.get('/laoka/', async (c) => {
   const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
-  return c.html(<ModuleShell kind="laoka" displayName={user.display_name || user.username} />)
+  // `?tab=` is carried into the module's own document (Laoka reads it at boot),
+  // which is what lets a link land on the Pantry rather than the week plan.
+  return c.html(<ModuleShell kind="laoka" displayName={user.display_name || user.username} tab={c.req.query('tab')} />)
 })
 // Chromeless module document for the shell's fetch (edge-side otherwise;
 // gated here so the signed-out UI never renders).

@@ -7,6 +7,9 @@ import { HOME_TABS, Icon } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
 import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedTone } from '../lib/utils'
 import { classifyTransaction } from '../lib/notify'
+// The pantry's OWN queries. Home shows a summary of the shelves, and it has to
+// be the same arithmetic the Pantry screen draws from -- see `pantrySummary`.
+import { pantrySummary } from '../laoka/data/queries.js'
 import type { Env, User, Transaction, DebtCreditAccount } from '../db/schema'
 
 const dashboard = new Hono<{ Bindings: Env; Variables: { user: User } }>()
@@ -122,6 +125,26 @@ dashboard.get('/', async (c) => {
       blurb: key === 'way' ? 'the family map' : key === 'laoka' ? 'meals for the week' : 'the family room',
     }
   })
+
+  // ── The pantry, for the card at the foot of this page ──
+  // It lives in Laoka's own database, and its queries ask for `env.DB` (the
+  // binding name Laoka uses) while knowing nothing about which worker calls
+  // them — so they are handed a DB-scoped env rather than the whole one.
+  // A Laoka binding that is missing or unreadable must not take Home down with
+  // it: the card says it cannot read the shelves instead of showing zeros, which
+  // would claim an empty pantry.
+  let pantry: { items: number; categories: number; toBuy: number } | null = null
+  try {
+    pantry = await pantrySummary({ DB: c.env.LAOKA_DB })
+  } catch {
+    pantry = null
+  }
+  // Laoka's own colour, from the same table the tab bar renders. Read with a
+  // fallback rather than asserted: the card is decoration, and a tab table that
+  // ever loses its Laoka entry must not 500 the page the household lands on.
+  const laokaTab = HOME_TABS.find(t => t.tab === 'laoka')
+  const laokaColor = laokaTab ? laokaTab.color : '#ea580c'
+  const laokaInk = laokaTab ? laokaTab.ink : '#c2410c'
 
   return c.html(
     <Layout title="Dashboard" user={user} activeTab="dashboard">
@@ -455,6 +478,45 @@ dashboard.get('/', async (c) => {
           </div>
         </Card>
       </div>
+
+      {/* The pantry in one line, and one tap away. It answers "is anything
+          needed?" without opening Laoka, and every number comes from the Pantry
+          screen's OWN queries (`pantrySummary` → `getPantryTree` +
+          `listPantryToBuy`), so a summary cannot disagree with the list it
+          summarises. The link carries the tab, so it lands ON the pantry. */}
+      <Card title="Pantry" icon="bowl" className="mt-4">
+        <a href="/laoka/?tab=pantry" class="flex items-center gap-2 -mb-0.5 active:scale-[0.99] transition-transform">
+          <span class="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+            {pantry ? (
+              <>
+                <span class="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                  {pantry.items} {pantry.items === 1 ? 'item' : 'items'}
+                </span>
+                <span class="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                  {pantry.categories} {pantry.categories === 1 ? 'category' : 'categories'}
+                </span>
+                {pantry.toBuy > 0 ? (
+                  // Orange is Laoka's own colour, so "to buy" reads as the same
+                  // fact the Pantry tab highlights.
+                  <span
+                    class="text-[11px] px-2 py-0.5 rounded-full font-bold"
+                    style={{ backgroundColor: `${laokaColor}1f`, color: laokaInk }}
+                  >
+                    {pantry.toBuy} to buy
+                  </span>
+                ) : (
+                  <span class="text-[11px] px-2 py-0.5 rounded-full bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400">
+                    nothing to buy
+                  </span>
+                )}
+              </>
+            ) : (
+              <span class="text-[11px] text-gray-400">the shelves could not be read just now</span>
+            )}
+          </span>
+          <Icon name="chev-right" className="w-4 h-4 text-gray-300 shrink-0" />
+        </a>
+      </Card>
     </Layout>
   )
 })

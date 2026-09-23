@@ -163,11 +163,26 @@ export async function isPantryItem(env, itemId) {
   return !!row && Number(row.is_pantry) === 1;
 }
 
-/** Sets an item's count, its reorder level, or takes it out of the count
- * entirely (`stock: null`). Returns the row as the client needs it. */
-export async function setItemStock(env, itemId, fields) {
+/** Edits ONE pantry item: its name, the category it is filed under, its count,
+ * or its reorder level. Every field is optional and the ones not sent are left
+ * exactly as they were, so a rename cannot wipe a count. `stock: null` takes the
+ * item out of the count entirely. Returns the row the pantry screen needs, or
+ * null when nothing was sent.
+ *
+ * The pantry is the only screen that manages these, and a pantry item is the
+ * only thing this may touch -- the ROUTE asks `isPantryItem` first, and the
+ * category it moves between is checked with `isPantryCategory` there too. */
+export async function updatePantryItem(env, itemId, fields) {
   const sets = [];
   const binds = [];
+  if (fields.name !== undefined) {
+    sets.push('name = ?' + (binds.length + 1));
+    binds.push(fields.name);
+  }
+  if (fields.subgroupId !== undefined) {
+    sets.push('subgroup_id = ?' + (binds.length + 1));
+    binds.push(fields.subgroupId);
+  }
   if (fields.stock !== undefined) {
     sets.push('stock = ?' + (binds.length + 1));
     binds.push(fields.stock === null ? null : fields.stock);
@@ -180,13 +195,17 @@ export async function setItemStock(env, itemId, fields) {
   binds.push(itemId);
   await env.DB.prepare('UPDATE items SET ' + sets.join(', ') + ' WHERE id = ?' + binds.length + ' AND deleted_at IS NULL')
     .bind(...binds).run();
-  const row = await env.DB.prepare('SELECT id, name, stock, stock_min FROM items WHERE id = ?1')
-    .bind(itemId).first();
+  const row = await env.DB.prepare(
+    'SELECT i.id, i.name, i.stock, i.stock_min, i.subgroup_id, s.name AS subgroup_name ' +
+    'FROM items i LEFT JOIN subgroups s ON s.id = i.subgroup_id WHERE i.id = ?1'
+  ).bind(itemId).first();
   if (!row) return null;
   return {
     id: row.id, name: row.name,
     stock: (row.stock === null || row.stock === undefined) ? null : Number(row.stock),
     stockMin: Number(row.stock_min),
+    subgroupId: row.subgroup_id,
+    subgroupName: row.subgroup_name,
     low: row.stock !== null && row.stock !== undefined && Number(row.stock) < Number(row.stock_min)
   };
 }
@@ -218,6 +237,9 @@ export async function getPantryTree(env) {
     if (r.item_id === null || r.item_id === undefined) continue;
     s.items.push({
       id: r.item_id, name: r.item_name, notes: r.notes,
+      // The item's OWN category id, so the editor can show where it is filed
+      // (and move it) without the client hunting through the tree it just drew.
+      subgroupId: r.subgroup_id,
       // null = nobody counts this item (see migration 0009).
       stock: (r.stock === null || r.stock === undefined) ? null : Number(r.stock),
       stockMin: Number(r.stock_min),
@@ -265,9 +287,16 @@ export async function addPantryItem(env, fields) {
   return res.meta ? res.meta.last_row_id : null;
 }
 
-/** Soft-deletes a pantry item. Same idiom as the meal catalog: nothing is erased,
- * so a week or a trip that mentioned it still reads. */
+/** Soft-deletes a pantry item, and its line on the current trip with it.
+ *
+ * Same idiom as the meal catalog -- nothing is erased, so a week that mentioned
+ * it still reads -- but the LINE has to go, exactly as it does when a whole
+ * category is removed (see deletePantryCategory): `getPantryTripLines` joins
+ * `items.deleted_at IS NULL`, so a price left on a removed item would draw
+ * nowhere and still be counted by `dropEmptyPantryTrip` -- a trip that can never
+ * be dropped. The caller drops the trip once its last line is gone. */
 export async function deletePantryItem(env, itemId) {
+  await env.DB.prepare('DELETE FROM pantry_lines WHERE item_id = ?1').bind(itemId).run();
   await env.DB.prepare(
     "UPDATE items SET deleted_at = datetime('now') WHERE id = ?1 AND deleted_at IS NULL"
   ).bind(itemId).run();
@@ -312,9 +341,13 @@ export async function renamePantryCategory(env, subgroupId, fields) {
  * the confirm names the count, and this returns it.
  *
  * The items' trip lines go first. A line belongs to a trip AND to an item that
- * still exists (`getPantryTripLines` joins `items.deleted_at IS NULL`), but
- * `dropEmptyPantryTrip` counts ROWS -- so leaving them would strand a trip that
- * draws nothing and can never be dropped. Returns how many items went with it. */
+ * still exists (`getPantryTripLines` joins `items.deleted_at IS NULL`), so
+ * leaving them would strand a trip that draws nothing -- and although
+ * `dropEmptyPantryTrip` asks about the lines that can be DRAWN (and so would end
+ * such a trip on its next write), the rows themselves would never be reachable
+ * again: nothing else ever deletes a `pantry_lines` row. Returns how many items
+ * went with it. The item-level removal (`deletePantryItem`) is the same rule one
+ * level down. */
 export async function deletePantryCategory(env, subgroupId) {
   const row = await env.DB.prepare(
     'SELECT COUNT(*) AS n FROM items WHERE subgroup_id = ?1 AND deleted_at IS NULL'
@@ -364,9 +397,15 @@ export async function getCurrentPantryTrip(env, create) {
  * A quantity with no price stores NOTHING: "I bought three" is not a purchase
  * until somebody says what one cost, and a line with no money on it would show
  * on the hand-off as a bought item for Ar 0.
+ *
+ * For the same reason a price of ZERO clears as well. Money here is whole
+ * Ariary, and every reader of a line asks `price > 0` (getPantryTripLines, the
+ * Sompitra hand-off), so a stored 0 is a line that draws nowhere and that
+ * `dropEmptyPantryTrip` still counts -- a trip showing "Ar 0" with a hand-off
+ * button that opens an empty form. One rule, both doors: 0 is an emptied box.
  */
 export async function setPantryPrice(env, itemId, fields) {
-  const clearing = fields.price === null;
+  const clearing = fields.price === null || Number(fields.price) === 0;
   if (clearing) {
     const trip = await getCurrentPantryTrip(env, false);
     if (!trip) return null;
@@ -411,11 +450,24 @@ export async function setPantryPrice(env, itemId, fields) {
  * twice. Returns true when a row actually went away. */
 export async function dropEmptyPantryTrip(env, tripId) {
   const row = await env.DB.prepare(
-    'SELECT pushed_at, (SELECT COUNT(*) FROM pantry_lines WHERE trip_id = ?1) AS n ' +
+    // What it counts is the lines that DRAW -- the same rows `getPantryTripLines`
+    // and the hand-off return -- not raw rows. A line whose item is gone (a row
+    // written before its removal cleared lines, on any database) can never be
+    // shown, priced or cleared, so counting it would keep a trip alive that
+    // nothing on the screen can empty. This also heals such a row away: the next
+    // write that empties the trip drops it.
+    'SELECT pushed_at, (SELECT COUNT(*) FROM pantry_lines p JOIN items i ON i.id = p.item_id ' +
+    'WHERE p.trip_id = ?1 AND i.deleted_at IS NULL AND p.price IS NOT NULL AND p.price > 0) AS n ' +
     'FROM pantry_trips WHERE id = ?1'
   ).bind(tripId).first();
   if (!row || row.pushed_at) return false;
   if (Number(row.n) > 0) return false;
+  // The trip's remaining rows go with it. They are the ones that cannot draw (a
+  // deleted item's price, on a database from before that path cleared lines),
+  // and a row whose trip is gone is not merely invisible: nothing will ever
+  // reach it again, and every later lookup joins `pantry_lines` by `item_id`
+  // alone -- so it would report a price for an item that has no trip.
+  await env.DB.prepare('DELETE FROM pantry_lines WHERE trip_id = ?1').bind(tripId).run();
   await env.DB.prepare('DELETE FROM pantry_trips WHERE id = ?1 AND pushed_at IS NULL').bind(tripId).run();
   return true;
 }
@@ -483,6 +535,28 @@ export async function listPantryToBuy(env) {
       tripTotal: (r.trip_price === null || r.trip_price === undefined) ? null : Number(r.trip_price) * qty
     };
   });
+}
+
+/** The pantry in three numbers: how many items are on the shelves, how many
+ * categories hold them, and how many are below their reorder level.
+ *
+ * For anyone who needs the SHAPE of the shelves rather than the shelves — Home's
+ * dashboard card. It counts the same two things the Pantry screen draws from:
+ * `getPantryTree` for the shelves and `listPantryToBuy` for the to-buy rule. The
+ * to-buy number is that function's own length rather than a second comparison
+ * here, so a summary cannot disagree with the list it is summarising. */
+export async function pantrySummary(env) {
+  const tree = await getPantryTree(env);
+  const toBuy = await listPantryToBuy(env);
+  let items = 0;
+  let categories = 0;
+  for (const g of tree) {
+    for (const s of (g.subgroups || [])) {
+      categories++;
+      items += (s.items || []).length;
+    }
+  }
+  return { items: items, categories: categories, toBuy: toBuy.length };
 }
 
 // ------------------------------------------------------------ wishlists
