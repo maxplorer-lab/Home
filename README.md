@@ -384,6 +384,8 @@ npm run smoke                                  # end-to-end checks, exit 0 = gre
 BASE_URL=http://127.0.0.1:8793 npm run smoke   # non-default port
 npm run verify                                 # both, in order
 npm run audit:remote                           # the four REMOTE dbs vs migrations-* (read-only)
+npm run audit:module-state                     # request state in module scope, in src/ (read-only)
+npm run audit:do-state                         # request data parked on a DO's `this` (read-only)
 npm run deploy:dry-run                         # builds + resolves bindings
 ```
 
@@ -394,6 +396,23 @@ them — so the code can be live and correct while the table it writes does not
 exist, silently (this is how live shares were un-mintable in production on
 2026-09-20). It reads only, is safe against production, and exits non-zero on a
 gap — run it before a release, and after adding any `migrations-*/*.sql`.
+
+`npm run audit:module-state` answers the other question reading the code
+decides: **is any module-scope binding written by a request?** One Worker
+isolate serves concurrent requests and interleaves them at every `await`, so
+such a binding is shared state between unrelated people — it is only visible by
+reading the code, since it throws nothing and needs a second request to
+trigger. `npm run smoke` §24 runs the same scan (so `npm run verify` covers it)
+and holds the guard to its own controls.
+
+`npm run audit:do-state` is its sibling one level down, and answers the
+question a single-threaded object invites you to get wrong: a Durable Object
+serializes INSTRUCTIONS, not REQUESTS, and two requests interleave at every
+`await` — so a field assigned from one request and read past an await carries
+that request's data into another's turn. It reads the Durable Objects named in
+`wrangler.jsonc` and requires every field on `this` to be declared with the
+reason it is object state, which is how `FleetDO`'s two caches, four keyed Maps
+and one deliberately-exempt diagnostics slot stay accounted for.
 
 `npm run smoke` logs in once through `/login` and then proves: all four
 session cookies are minted, every tab and module API answers 200, the

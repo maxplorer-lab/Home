@@ -292,16 +292,27 @@ export interface ModuleAccounts {
   laoka: { id: number; username: string } | null
 }
 
-// The password is only available at login time; the auto-repair path never
-// needs to CREATE accounts (it repairs sessions for accounts that exist),
-// so it is threaded via this module-level field instead of changing every
-// call signature. Set per request before ensureModuleAccounts runs.
-let lastPassword: string | null = null
-
 /** Make sure this person exists in every module database. Missing rows are
  * created with the SAME username and credentials; existing rows are left
- * alone (legacy accounts simply get linked by username). */
-export async function ensureModuleAccounts(env: Env, user: HomeUser): Promise<ModuleAccounts> {
+ * alone (legacy accounts simply get linked by username).
+ *
+ * `password` is what a row CREATED here gets hashed into it, or null on the
+ * auto-repair path — which only repairs sessions for accounts that already
+ * exist and must never create one.
+ *
+ * It arrives as a PARAMETER, and that is load-bearing rather than stylistic.
+ * One Worker isolate serves concurrent requests and interleaves them at every
+ * `await` below, so a module-level field holding the password let one person's
+ * login hash the OTHER person's password into a freshly created row. In W.A.Y
+ * that same hash doubles as the μlogger Basic-Auth credential (rule 5), so the
+ * blast radius of that swap is a phone's upload credential. A parameter cannot
+ * be shared between two requests, which removes the class instead of the
+ * instance.
+ *
+ * There is deliberately NO default: a default would let a new caller silently
+ * land on the no-create path and leave a person without module accounts, which
+ * is precisely the outcome the parameter exists to make visible. */
+export async function ensureModuleAccounts(env: Env, user: HomeUser, password: string | null): Promise<ModuleAccounts> {
   const out: ModuleAccounts = { sompitra: null, way: null, laoka: null }
   const name = user.username
   const display = (user.display_name || user.username).trim()
@@ -327,8 +338,8 @@ export async function ensureModuleAccounts(env: Env, user: HomeUser): Promise<Mo
     const found = await env.WAY_DB.prepare('SELECT id, username FROM users WHERE lower(username) = lower(?1)').bind(name).first<{ id: number; username: string }>()
     if (found) {
       out.way = found
-    } else if (lastPassword) {
-      const passwordHash = await wayHashPassword(lastPassword)
+    } else if (password) {
+      const passwordHash = await wayHashPassword(password)
       const made = await env.WAY_DB.prepare(
         "INSERT INTO users (username, password_hash, role) VALUES (?1, ?2, ?3)"
       ).bind(name, passwordHash, user.role === 'admin' ? 'admin' : 'member').run()
@@ -344,13 +355,13 @@ export async function ensureModuleAccounts(env: Env, user: HomeUser): Promise<Mo
     ).bind(name).first<{ id: number; username: string; password_hash: string | null }>()
     if (found) {
       out.laoka = { id: found.id, username: found.username }
-      if (!found.password_hash && lastPassword && pepperConfigured(env)) {
-        const hashed = await hashPassword(env, lastPassword)
+      if (!found.password_hash && password && pepperConfigured(env)) {
+        const hashed = await hashPassword(env, password)
         await env.LAOKA_DB.prepare('UPDATE users SET password_hash = ?1, password_salt = ?2, password_iterations = ?3 WHERE id = ?4')
           .bind(hashed.hash, hashed.salt, hashed.iterations, found.id).run()
       }
-    } else if (lastPassword && pepperConfigured(env)) {
-      const hashed = await hashPassword(env, lastPassword)
+    } else if (password && pepperConfigured(env)) {
+      const hashed = await hashPassword(env, password)
       const made = await env.LAOKA_DB.prepare(
         'INSERT INTO users (username, role, display_name, password_hash, password_salt, password_iterations) VALUES (?1, ?2, ?3, ?4, ?5, ?6)'
       ).bind(name, user.role === 'admin' ? 'admin' : 'member', display, hashed.hash, hashed.salt, hashed.iterations).run()
@@ -359,21 +370,6 @@ export async function ensureModuleAccounts(env: Env, user: HomeUser): Promise<Mo
   } catch { /* ignore */ }
 
   return out
-}
-
-/** Provision with credentials (login path — may create rows). */
-export async function ensureModuleAccountsWithPassword(env: Env, user: HomeUser, password: string): Promise<ModuleAccounts> {
-  lastPassword = password
-  try {
-    return await ensureModuleAccounts(env, user)
-  } finally {
-    lastPassword = null
-  }
-}
-
-/** Provision without credentials (repair path — never creates rows). */
-export async function ensureModuleAccountsWithoutPassword(env: Env, user: HomeUser): Promise<ModuleAccounts> {
-  return ensureModuleAccounts(env, user)
 }
 
 // ── Module session minting ───────────────────────────────────────
@@ -403,9 +399,10 @@ interface MintedCookie {
  * values. Provisioning runs first so the session rows reference real users. */
 export async function mintModuleCookies(env: Env, user: HomeUser, secure: boolean, password?: string): Promise<MintedCookie[]> {
   const out: MintedCookie[] = []
-  const accounts = password !== undefined
-    ? await ensureModuleAccountsWithPassword(env, user, password)
-    : await ensureModuleAccountsWithoutPassword(env, user)
+  // The login path passes the password; the repair path passes nothing, which
+  // becomes an explicit null. Both spell the decision out at the call site —
+  // see the parameter's own note for why it is not carried in module scope.
+  const accounts = await ensureModuleAccounts(env, user, password ?? null)
 
   // Sompitra — D1-backed session row + raw-token cookie (its native scheme).
   if (accounts.sompitra) {

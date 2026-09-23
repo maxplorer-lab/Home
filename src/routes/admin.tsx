@@ -6,7 +6,7 @@ import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
 import {
   listHomeUsers, createHomeUser, setHomePassword,
-  ensureModuleAccountsWithPassword, getHomeUserFromCookie,
+  ensureModuleAccounts, getHomeUserFromCookie,
 } from '../identity'
 import type { Env, User } from '../db/schema'
 import type { HomeUser } from '../identity'
@@ -386,7 +386,7 @@ admin.post('/users', async (c) => {
 
   // Provision into every module right away (best-effort) so the person's
   // accounts exist before their first login.
-  try { await ensureModuleAccountsWithPassword(c.env, res.user, password) } catch { /* repair path covers it */ }
+  try { await ensureModuleAccounts(c.env, res.user, password) } catch { /* repair path covers it */ }
 
   return c.redirect('/admin?ok=1')
 })

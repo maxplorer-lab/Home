@@ -206,6 +206,14 @@ export class FleetDO extends DurableObject<Env> {
   } | null = null;
   private notifyCooldowns = new Map<string, number>();
   private notifyDaily = new Map<string, { day: string; count: number }>();
+  // The LAST notification routing decision. This is the ONE field on this object
+  // written from request data on purpose, and it is allowed to be here for one
+  // reason: it decides nothing. No branch anywhere consults it — it exists so
+  // /debug-notify can report why a push did or did not route without a live tail.
+  // The declared reader list in `DO_STATE_POLICY` (scripts/lib/do-state.mjs) is
+  // what pins that, and `npm run smoke` §25 goes red the moment another method
+  // reads it, because at that point the value has started deciding something and
+  // belongs in a parameter like any other request data (AGENTS.md rule 39).
   private lastNotify: { at: string; source: string; type: string; outcome: string } | null = null;
   // "deviceId:fenceName" -> thresholds already announced on this approach.
   private approachFired = new Map<string, Set<number>>();

@@ -8,6 +8,8 @@
     "check": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
     "audit:remote": "node scripts/schema-audit.mjs",
+    "audit:module-state": "node scripts/module-state-audit.mjs",
+    "audit:do-state": "node scripts/do-state-audit.mjs",
     "verify": "npm run check && npm run smoke",
     "deploy:dry-run": "wrangler deploy --dry-run",
     "cf-typegen": "wrangler types"

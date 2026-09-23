@@ -5,7 +5,8 @@
 // plus node:fs to read repo sources: CUTOVER.md, whose post-deploy step names
 // a value the Durable Object has to report (section 12), and the WAY Durable
 // Object, whose live push must carry the accuracy the HUD falls back to
-// (section 9b)).
+// (section 9b)). Section 24 goes further and parses EVERY file under src/ with
+// the compiler in node_modules — see scripts/lib/module-state.mjs.
 //
 //   npm run dev                 # in one terminal (or the detached recipe)
 //   npm run smoke               # in another
@@ -32,12 +33,15 @@
 //   9b. the HUD reads what the tracker sends
 //  10. unified settings & channels       21. Settings → Map: the share row
 //  11. two channels per person           22. two shopping lists
-//  23. a number is typed, never nudged
+//  23. a number is typed, never nudged   24. no request data in module scope
+//  25. no request data on a DO's `this`
 // Exit code 0 = all green, 1 = something regressed.
 
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { scanModuleState, formatFindings } from './lib/module-state.mjs'
+import { scanDoState, formatDoFaults, stripJsonc, DO_STATE_POLICY } from './lib/do-state.mjs'
 
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:8787').replace(/\/$/, '')
 const USER = process.env.SMOKE_USER || 'maxx'
@@ -4426,6 +4430,222 @@ log('\n23. Every number box in the app is typed, never nudged')
       (appJsAll.match(/wholeDigits\(/g) || []).length >= 5 &&
       (appJsAll.match(/replace\(\/\[\^0-9\]\/g/g) || []).length === 1,
     'a decimal point is stripped instead of cut, so a typed 1250.75 is stored as 125075 — and a fifth money box with its own copy of the rule can disagree again')
+}
+
+// ─── 24. no request data lives in module scope ───────────────────
+log('\n24. one isolate, many requests: module scope is not storage')
+{
+  // The bug class: a binding declared at MODULE scope that a request WRITES.
+  // One Worker isolate serves concurrent requests and interleaves them at every
+  // `await`, so such a binding is shared state between unrelated people.
+  // `src/identity.ts` carried a `let lastPassword` exactly like that: set at
+  // login, read across several D1 round-trips, cleared in a `finally` — each
+  // request individually correct, and two overlapping logins could hash one
+  // person's password into the other's freshly created row. In W.A.Y that hash
+  // also IS the μlogger Basic-Auth credential (rule 5).
+  //
+  // It needs OVERLAP to fail, so it has no symptom to notice, no error to read
+  // and no line in any log. That is why this is a source check.
+  //
+  // (a) is the tree. (b) and (c) are the reason (a) can be believed: a scan
+  // whose input silently empties — wrong folder, unresolvable typescript, or a
+  // set of kind NAMES compared against kind NUMBERS — reports a green tree
+  // forever. A guard that cannot fail is decoration, so the analyzer has to be
+  // seen noticing a fault it is not currently looking at, and NOT flagging the
+  // read-only module constants that are all over this codebase.
+  const src = (p) => {
+    try {
+      return readFileSync(new URL('../' + p, import.meta.url), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    } catch (e) { return '' }
+  }
+  const faults = scanModuleState({ root: 'src' })
+  check('no module-scope binding in src/ is written from inside a function',
+    faults.length === 0,
+    `shared between concurrent requests: ${formatFindings(faults).join('; ')}`)
+
+  const control = scanModuleState({
+    extraSources: [{
+      path: 'synthetic/control.ts',
+      text: [
+        'const CACHE = new Map<string, string>();',
+        'let counter = 0;',
+        'export function writes(): number { counter = counter + 1; CACHE.set("k", "v"); return counter; }',
+      ].join('\n'),
+    }],
+  })
+  check('the scan notices a reassigned `let` and a mutated Map it is not currently looking at',
+    control.some((f) => f.name === 'counter') && control.some((f) => f.name === 'CACHE'),
+    'the analyzer found neither shape, so a clean result from it means nothing')
+
+  const honest = scanModuleState({
+    extraSources: [{
+      path: 'synthetic/honest.ts',
+      text: [
+        'export const CONFIG = { retries: 3 };',
+        'export const LIST = [1, 2, 3];',
+        'export function reads(): number { return CONFIG.retries + LIST.length; }',
+      ].join('\n'),
+    }],
+  })
+  check('read-only module constants are not reported',
+    honest.length === 0,
+    `the analyzer flags a constant that is only read: ${formatFindings(honest).join('; ')}`)
+
+  // (d) The instance itself, pinned in the code. A parameter cannot be shared
+  // between two requests; module scope can. `password` is REQUIRED and carries
+  // NO default, so a later caller cannot land on the never-create path by
+  // saying nothing — which would leave a person without module accounts, the
+  // outcome the parameter exists to make visible.
+  const identity = src('src/identity.ts')
+  // Only the PARAMETER is pinned here — whether it carries a default is the
+  // next check's question, so the two can be falsified one at a time.
+  check('the provisioning password arrives as a parameter',
+    /export async function ensureModuleAccounts\(env: Env, user: HomeUser, password: string \| null/.test(identity),
+    'ensureModuleAccounts no longer takes the password as an explicit parameter')
+  check('…with no default, so a caller cannot skip credentials by silence',
+    !/password: string \| null =/.test(identity),
+    'the password parameter has a default, so a new caller silently lands on the never-create path')
+  check('both provisioning call sites state the password explicitly',
+    /ensureModuleAccounts\(env, user, password \?\? null\)/.test(identity) &&
+      /ensureModuleAccounts\(c\.env, res\.user, password\)/.test(src('src/routes/admin.tsx')),
+    'a call site no longer passes the password, so its accounts would be created without credentials')
+  check('the module-level password field itself is gone',
+    !identity.includes('lastPassword'),
+    'a module-level password field is back in src/identity.ts')
+}
+
+// ─── 25. no request data parked on a DO's `this` ─────────────────
+log('\n25. a Durable Object field is not per-request scratch space')
+{
+  // Same family as §24, one level down. A Durable Object is single-threaded,
+  // which is exactly the trap: it guarantees no two INSTRUCTIONS overlap and
+  // says nothing about two REQUESTS, which interleave at every `await`. So
+  // `this.currentDevice = body.deviceId` … `await` … `use(this.currentDevice)`
+  // hands request A's device to request B, while looking like ordinary object
+  // state.
+  //
+  // Unlike §24 the answer is not "no state on `this`": a geofence cache, a
+  // cooldown map and the daily push ledger all belong on the object and would
+  // be pointless anywhere else. So every field must be DECLARED — with its kind
+  // and the reason it is object state — and the writes must match the
+  // declaration. That is what makes this a decision rather than a convention.
+  //
+  // Scope comes from wrangler.jsonc's durable_objects bindings and not from
+  // `extends DurableObject`: Laoka's `Lobby` is a plain class and a DO all the
+  // same, and the bindings are the list Cloudflare actually instantiates.
+  const readRepo = (p) => { try { return readFileSync(new URL('../' + p, import.meta.url), 'utf8') } catch (e) { return '' } }
+  const rawConfig = readRepo('wrangler.jsonc')
+  let configured = []
+  try {
+    configured = (JSON.parse(stripJsonc(rawConfig)).durable_objects?.bindings ?? [])
+      .map((b) => b.class_name).filter(Boolean)
+  } catch (e) { configured = [] }
+
+  const { classes, faults: doFaults } = scanDoState({ root: 'src' })
+  const withCode = (...codes) => doFaults.filter((f) => codes.includes(f.code))
+
+  const configFault = withCode('config-unreadable')
+  check('every Durable Object named in wrangler.jsonc is analyzed',
+    configFault.length === 0 &&
+      configured.length > 0 &&
+      classes.length === configured.length &&
+      configured.every((n) => classes.some((c) => c.name === n)),
+    configFault.length
+      ? formatDoFaults(configFault).join('; ')
+      : `wrangler.jsonc names ${configured.join(', ') || '(none — the config did not parse)'} but this section analyzed ${classes.map((c) => c.name).join(', ') || '(nothing)'}: a Durable Object it cannot see is a Durable Object nobody is checking`)
+
+  check('no Durable Object instance field is undeclared',
+    withCode('undeclared').length === 0,
+    formatDoFaults(withCode('undeclared')).join('; '))
+
+  // The rule this section exists for: request data parked on the object and
+  // read after an interleaving point, or read by a later request entirely.
+  check('no DO field carries request data across an interleaving point',
+    withCode('read-after-await', 'cross-request').length === 0,
+    formatDoFaults(withCode('read-after-await', 'cross-request')).join('; '))
+
+  check('every DO field is written only the way its declared kind allows',
+    withCode('wrong-write').length === 0,
+    formatDoFaults(withCode('wrong-write')).join('; '))
+
+  // The one field written from request data on purpose. Its exemption is what
+  // the reader list buys: `notifyEvent` may write it (that is the record), and
+  // only the debug payload may read it. A NEW reader means the value has
+  // started deciding something, and then it is request state like any other.
+  check('the diagnostics slot still decides nothing (its readers are declared)',
+    withCode('undeclared-reader').length === 0 &&
+      (DO_STATE_POLICY['FleetDO.lastNotify']?.readOnlyIn ?? []).length > 0,
+    formatDoFaults(withCode('undeclared-reader')).join('; ') ||
+      'FleetDO.lastNotify lost its declared reader list, so nothing pins "it decides nothing"')
+
+  check('every registry entry states a reason, not just a kind',
+    Object.entries(DO_STATE_POLICY).every(([, v]) => (v.why || '').length >= 20),
+    `entries whose reason is missing or a placeholder: ${Object.entries(DO_STATE_POLICY).filter(([, v]) => (v.why || '').length < 20).map(([k]) => k).join(', ')}`)
+
+  // ── the controls ──
+  // Without these the section is a scan that has only ever been pointed at a
+  // clean tree, which cannot show that it would notice anything. The two that
+  // matter are the interleaving fault (must be SEEN) and honest object state
+  // (must be LEFT ALONE — a guard that cries wolf gets turned off).
+  const probe = scanDoState({
+    wranglerClasses: ['Probe'],
+    extraSources: [{
+      path: 'synthetic/interleave.ts',
+      text: [
+        'export class Probe {',
+        '  private slot: string | null = null',
+        '  constructor(private env: any) { this.slot = null }',
+        '  async handle(body: { id: string }) {',
+        '    this.slot = body.id',
+        '    await this.env.DB.prepare("SELECT 1").first()',
+        '    return this.slot',
+        '  }',
+        '}',
+      ].join('\n'),
+    }],
+  })
+  check('the scan notices request data parked on `this` and read past an await',
+    probe.faults.some((f) => f.code === 'read-after-await'),
+    `the analyzer found no interleaving fault in a class that has one: ${formatDoFaults(probe.faults).join('; ') || '(no findings at all)'}`)
+
+  const honest = scanDoState({
+    wranglerClasses: ['Probe'],
+    policy: {
+      'Probe.env': { kind: 'handle', why: 'the bindings, set in the constructor' },
+      'Probe.ctx': { kind: 'handle', why: 'the object context, set in the constructor' },
+      'Probe.cache': { kind: 'db-cache', why: 'rows refilled from the database' },
+      'Probe.cooldowns': { kind: 'keyed', why: 'per-key rate-limit stamps' },
+    },
+    extraSources: [{
+      path: 'synthetic/honest.ts',
+      text: [
+        'export class Probe {',
+        '  private cache: any[] | null = null',
+        '  private cooldowns = new Map<string, number>()',
+        '  constructor(env: any, ctx: any) { this.env = env; this.ctx = ctx }',
+        '  async warm() {',
+        '    const { results } = await this.env.DB.prepare("SELECT 1").all()',
+        '    this.cache = results',
+        '  }',
+        '  note(key: string) { this.cooldowns.set(key, Date.now()) }',
+        '}',
+      ].join('\n'),
+    }],
+  })
+  check('…and leaves a constructor handle, a database cache and a keyed map alone',
+    honest.faults.length === 0,
+    `the analyzer flagged honest object state: ${formatDoFaults(honest.faults).join('; ')}`)
+
+  // The DO list is read out of a JSONC file whose comments a naive `//` strip
+  // would eat along with a `https://` value — and a floor of that failure is a
+  // config that does not parse, which would leave this whole section checking
+  // nothing. So the reader is pinned on a value it must not damage.
+  let urlIntact = false
+  try { urlIntact = String(JSON.parse(stripJsonc(rawConfig)).vars?.NTFY_URL || '').startsWith('https://') } catch (e) { urlIntact = false }
+  check('the jsonc reader keeps a URL value intact',
+    urlIntact,
+    'wrangler.jsonc no longer parses with its https:// values whole, so the Durable Object list above could be silently empty')
 }
 
 // ─── summary ─────────────────────────────────────────────────────

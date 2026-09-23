@@ -316,6 +316,16 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
   * W.A.Y row: hashed in **W.A.Y's own** `salt:hash` PBKDF2-100k format,
     because that hash doubles as the μlogger Basic-Auth credential.
   * Laoka row: Laoka-format hash; legacy rows with a NULL password get merged.
+* **The password is a PARAMETER, never module state.** `ensureModuleAccounts(env,
+  user, password)` takes it **required**, and there is deliberately no default:
+  the login path passes the password, the auto-repair path passes `null`, and
+  both spell the decision out at the call site. One isolate serves concurrent
+  requests and interleaves them at every `await` inside provisioning, so a
+  module-level field would let one person's login hash the OTHER person's
+  password into a freshly created row — and in W.A.Y that hash is the μlogger
+  Basic-Auth credential. The class is enforced, not just fixed: `npm run
+  audit:module-state` reads every file under `src/`, and smoke §24 runs the same
+  scan plus the controls that prove it can still fail (AGENTS.md rule 38).
 * **Sessions**: central session in `home-db`; module sessions in each module's
   native mechanism (D1 rows for Sompitra/Laoka, signed token for W.A.Y).
 * **Auto-repair**: any module 401 (or Laoka's `200 {user:null}`) with a live
@@ -1260,6 +1270,27 @@ the follow it had just started.
 * `home-db` never stores module data and modules never store identity.
 * Every module call from the identity engine is wrapped in try/catch: a
   broken module must never break login.
+* **Module scope is not request storage.** A binding declared at module scope
+  that a request WRITES is shared state between concurrent requests in the same
+  isolate, because the isolate interleaves them at every `await`. Reading module
+  state is fine and is all over this codebase (`CONFIG`, the column lists, the
+  tab tables); what is a bug is a write reachable from a function — reassigning
+  the binding, writing through it, or calling a mutator on it. It has no
+  symptom: it needs two requests to overlap, so it throws nothing, logs nothing
+  and fails no build. `npm run audit:module-state` (smoke §24) is the detector —
+  with its own two controls, because a scan that silently scans nothing is the
+  failure mode of exactly this kind of guard.
+* **The same family one level down: `this` in a Durable Object is shared too.** A
+  DO is single-threaded, which says nothing about two REQUESTS — they interleave
+  at every `await`, so a single slot assigned from a request and read past one
+  hands request A's device to request B, invisibly. Unlike module scope, state on
+  `this` is legitimate and this app leans on it (a geofence cache, a cooldown map,
+  the daily push ledger), so the rule is that every field is DECLARED with the
+  reason it is object state — `DO_STATE_POLICY` in `scripts/lib/do-state.mjs` —
+  and its writes match that declaration. Keyed Maps are safe by construction; a
+  cache must be request-independent; and `FleetDO.lastNotify` is the one field
+  that holds request data, allowed only because it decides nothing, pinned by
+  naming its single permitted reader. `npm run audit:do-state` / smoke §25.
 * A tap either succeeds or says why. No save, message or reaction may fail
   silently — a dead network answers in the same shape as any other error, and
   the chat composer keeps unsent text in the box (see "A user ACTION must fail

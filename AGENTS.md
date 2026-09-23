@@ -43,6 +43,8 @@ npm run check          # tsc --noEmit (must pass before you claim done)
 npm run smoke          # end-to-end checks against a RUNNING dev server
 npm run verify         # check + smoke — what "tested locally" means here
 npm run audit:remote   # REMOTE schema vs migrations-* (read-only, exits 1 on a gap)
+npm run audit:module-state # module-scope request state in src/ (read-only; rule 38)
+npm run audit:do-state   # request data on a DO's `this` (read-only; rule 39)
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
 npm run deploy         # wrangler deploy (see rule 17 first)
@@ -58,6 +60,18 @@ seed account (`maxx`); override with `SMOKE_USER` / `SMOKE_PASS`. Set
 the check rule 32 exists for: it answers "did every migration reach every
 environment?" Pass `--dir <path> --binding <BINDING>` to audit one directory
 instead of all four — which is how it can be falsified.
+
+`npm run audit:module-state` parses every file under `src/` with the TypeScript
+compiler and fails if any module-scope binding is written from inside a function
+— the class rule 38 exists for. `npm run smoke` §24 runs the same scan, so a
+normal `npm run verify` covers it; the standalone command is for looking at the
+answer without a server up, and for CI.
+
+`npm run audit:do-state` is its sibling one level down: it reads the Durable
+Objects named in `wrangler.jsonc` and asserts that every field on `this` is
+declared in `DO_STATE_POLICY` (scripts/lib/do-state.mjs) with the reason it is
+object state, and that each field's writes match its declaration. Also read-only,
+also no server, also green in a normal `npm run verify` via smoke §25.
 
 Local DB setup (first time only):
 
@@ -1055,6 +1069,86 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       explaining why it loads it — that is exactly how the first version of the
       guard stayed green with a `<script>` deleted).
 
+38. **Module scope is not request storage — a request's data travels as a
+    PARAMETER.** One Worker isolate serves many requests and interleaves them at
+    every `await`, so a module-level binding that a request WRITES is shared
+    state between unrelated people. `src/identity.ts` carried a
+    `let lastPassword` exactly like that: set at login, read across several D1
+    round-trips inside `ensureModuleAccounts`, cleared in a `finally`. Every
+    request was individually correct — which is why it survived review, a rename
+    and a merge — and two OVERLAPPING logins could hash one person's password
+    into the other's freshly created row. In W.A.Y that hash also IS the μlogger
+    Basic-Auth credential (rule 5), so the swap hands one person's phone
+    credential to another account.
+
+    * **Reading** module state is fine, and this codebase is full of it
+      (`const CONFIG = …`, the column lists, the tab tables). What is not fine is
+      a WRITE reachable from a function body: reassigning the binding, writing
+      through it (`CACHE[k] = v`, `state.user = u`), or calling a mutator on it
+      (`CACHE.set`, `LIST.push`).
+    * **Nothing about this class fails a build or throws at runtime.** It needs
+      two requests to OVERLAP, so there is no symptom to notice, no error to read
+      and no log line to grep — reading the code is the only detector, so it has
+      a check instead of a convention.
+    * **`ensureModuleAccounts(env, user, password)` takes the password as a
+      REQUIRED parameter with NO default.** The login path passes it; the
+      auto-repair path passes `null` explicitly. A default would let a later
+      caller silently land on the never-create path and leave a person without
+      module accounts — the outcome the parameter exists to make visible.
+    * **`npm run audit:module-state` answers the question for a person or for
+      CI** (read-only, exits 1 on a fault), and smoke §24 holds the same scan
+      plus the two controls that keep it honest: it must NOTICE a fault it is
+      not currently looking at, and it must NOT report a read-only constant.
+      That pairing is the point — a scan whose input silently empties (wrong
+      folder, unresolvable typescript, or `SyntaxKind` NAMES compared against
+      `node.kind` NUMBERS) reports a green tree forever. That third bug was
+      written and caught while building this, which is what the controls are for.
+    * **This applies to `src/` only.** Pages under `public/` keep timers, drag
+      state and in-flight flags in module scope deliberately: one page, one user,
+      one thread — nothing to share.
+
+39. **`this` inside a Durable Object is shared too, one object at a time.** A DO
+    is single-threaded, and that is the trap rather than the reassurance: it
+    guarantees no two INSTRUCTIONS overlap and says nothing about two REQUESTS,
+    which interleave at every `await`. So
+
+        this.currentDevice = body.deviceId   // request A
+        ... await ...                        // request B assigns the same field
+        use(this.currentDevice)              // A now acts on B's device
+
+    leaks one tracking event's device into another request's turn while looking
+    exactly like ordinary object state — no error, no log line, no failing test.
+    It is the same family as rule 38, one level down.
+
+    * **State on `this` is not the bug — UNDECLARED state is.** A geofence cache,
+      a cooldown map and the daily push ledger all belong on the object and
+      would be pointless anywhere else. `DO_STATE_POLICY` in
+      `scripts/lib/do-state.mjs` is where each field states its kind and WHY it
+      is object state, and §25 fails a new field until somebody writes that down.
+    * **A single slot written from a request and read past an `await` is the
+      bug.** Keyed state — a `Map` addressed by device, person or event — cannot
+      collide this way, which is why those are Maps rather than one field.
+    * **`FleetDO.lastNotify` is the one deliberate exception, and it is PINNED
+      rather than excused.** It holds request data and is allowed to because it
+      decides NOTHING: its registry entry names the single method allowed to read
+      it (`fetch`, for the `/debug-notify` payload). A new reader makes §25 red,
+      because that is the moment the value starts deciding something and belongs
+      in a parameter like any other request data.
+    * **A cache must be request-INDEPENDENT by construction.** `geofenceCache`
+      and `notifyCache` are refilled from the database and invalidated to null;
+      two requests racing to refill one compute the same value, so a lost update
+      costs a query and changes nothing anybody can observe. Feed a cache from
+      request data and §25 says `wrong-write`.
+    * **Scope comes from the bindings, not from the base class.** Laoka's `Lobby`
+      is a plain class and a Durable Object all the same, so the audit reads
+      `wrangler.jsonc`'s `durable_objects.bindings` — and a class named there and
+      missing from the source is itself a finding. A `//` inside a URL in that
+      file is why its reader is a real scanner and not a regex.
+    * **`npm run audit:do-state`** prints the inventory (every field and its
+      declared kind) and exits 1 on any finding; `npm run smoke` §25 runs the same
+      scan plus the controls that prove it can still fail (it must NOTICE a
+      parked request value, and must LEAVE ALONE honest object state).
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -1206,6 +1300,8 @@ have their own separate repositories and their own history.
 | A drive home never announces `arrived at Home` (no chat row, no push) while `left Home` still works | the entry was never CONFIRMED, and the usual cause is the **rolling average**, not the dwell: `processOutside` restarts `entryStartTime` on every ping whose `speedBuffer` average is ≥ `WALKING_DRIVING_THRESHOLD` (10 km/h), and that buffer holds only `SPEED_BUFFER_SIZE` (3) samples — after a 30 km/h approach the first stationary pings each reset the clock, so the 30 s `ENTRY_GUARD_SECONDS` cannot mature. Three stationary pings on a ~40 s cadence is what settles it (measured 2026-09-19). The second cause is the arrival key: if `maybeLogGeofenceEvent` is keyed on the literal `OUTSIDE` again, a device sitting in `UNKNOWN` (unwitnessed crossing, rule 28) can never announce its arrival |
 | A `left Home` row plus a multi-km spike appear while the phone never left the fence | the exit started from a ping that did not witness the crossing (rule 28). Check `EXIT_WITNESS_GAP_S` against the move cadence, and that `s.geoState = "OUTSIDE"` is still the only `OUTSIDE` assignment — smoke section 15 fails on both, and on the DO drawing or storing an `unwitnessed` ping |
 | The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |
+| A login briefly shows or provisions another person's account (or a module row appears with the wrong password) | module-scope state carrying REQUEST data — rule 38. `npm run audit:module-state` reads every file under `src/` and names the binding; smoke §24 fails on it. The one that shipped was `let lastPassword` in `src/identity.ts`, and the wrong value lands in the WAY/Laoka row a person is CREATED with, which in W.A.Y is also their μlogger credential |
+| A tracking event acts on the wrong device, or one request's data appears in another's | request data parked on the DO's `this` — rule 39. A field assigned from a request and read past an `await` is shared with whatever request interleaves; `npm run audit:do-state` names the field and its kind, and smoke §25 fails on it. The one field allowed to hold request data (`FleetDO.lastNotify`) is declared `diagnostics` and may only be read by the method its registry entry names — a new reader means it has started deciding something |
 
 ### What is actually served
 
