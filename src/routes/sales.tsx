@@ -39,11 +39,11 @@ sales.get('/', async (c) => {
       {/* Stats */}
       <div class="grid grid-cols-3 gap-3 mb-5">
         <div class="bg-green-50 dark:bg-green-900/20 rounded-2xl p-4 border border-green-100 dark:border-green-800 text-center">
-          <p class="text-xs text-green-700 dark:text-green-400 font-semibold uppercase">Revenue</p>
+          <p class="text-[12px] text-green-700 dark:text-green-400 font-semibold">Revenue</p>
           <p class="text-lg font-bold text-green-700 dark:text-green-400">{mga(totalRevenue)}</p>
         </div>
         <div class="bg-red-50 dark:bg-red-900/20 rounded-2xl p-4 border border-red-100 dark:border-red-800 text-center">
-          <p class="text-xs text-red-700 dark:text-red-400 font-semibold uppercase">Cost</p>
+          <p class="text-[12px] text-red-700 dark:text-red-400 font-semibold">Cost</p>
           <p class="text-lg font-bold text-red-700 dark:text-red-400">{mga(totalCost)}</p>
         </div>
         {/* Profit is a period's net result, so it wears the net colour (teal) and
@@ -51,7 +51,7 @@ sales.get('/', async (c) => {
             the dashboard use. It was blue, a hue the money palette does not use
             for anything. */}
         <div class={`rounded-2xl p-4 border text-center ${totalProfit >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 border-teal-100 dark:border-teal-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
-          <p class={`text-xs font-semibold uppercase ${totalProfit >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Profit</p>
+          <p class={`text-[12px] font-semibold ${totalProfit >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Profit</p>
           <p class={`text-lg font-bold ${totalProfit >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(totalProfit)}</p>
         </div>
       </div>

@@ -47,13 +47,25 @@ install's precache.
 
 ## One app, one look
 
-Three things make the six tabs read as one product rather than three apps in a
+Four things make the six tabs read as one product rather than three apps in a
 coat:
 
 * **One typeface.** Plus Jakarta Sans, loaded by every document including the
   sign-in screen, with the system stack behind it as the offline fallback.
   Before this, W.A.Y shipped Jakarta while Sompitra, Laoka and the chat shipped
-  Segoe UI — two typefaces, two tabs.
+  Segoe UI — two typefaces, two tabs. Loading it is not enough: the `body` rule
+  that applies it lives in the shared chrome styles, so a document that only
+  linked the font rendered in the system face — which is what the sign-in
+  screen did until the design pass.
+* **One surface system, one type scale.** Five tokens (paper, sheet, rule, and
+  two ink weights) decide every colour in the app, every panel is the same
+  `.card`, and labels are sentence case. The card titles, tiles and sub-navs
+  used to be 10px ALL-CAPS micro-type, and every box on every page was a white
+  `rounded-2xl` with the same shadow — which is why nothing on a screen looked
+  more important than anything else on it. **Home leads with one figure** (cash
+  on hand), and everything else is a ruled ledger row under it. Captions clear
+  4.5:1 and labels 6:1 by measurement, not by eye — `npm run smoke` section 26
+  reads the token values and does the maths.
 * **One accent per screen, taken from the tab you tapped.** The screen's colour
   (`--accent`) and its filled-surface variant (`--accent-ink`) come from the
   same table the tab bar renders, so a Sompitra screen is teal inside and out:
@@ -72,15 +84,20 @@ dot**: chat is the only module that receives things while you are somewhere
 else (a message, or another module's activity line), so a red dot on that tab
 says "there is something new" from any screen. It is a dot rather than a count
 — a count has to be owned by whoever last read the room, and a wrong number is
-worse than a vague dot. Money keeps one meaning on every money screen:
+worse than a vague dot. Where there is room to name them, Home does: its second
+card lists what arrived since this device last looked — one clipped row per
+message, newest first — with the count above them. Money keeps one meaning on every money screen:
 **green in, red out, teal a period's net result, orange what we owe, purple
 what is owed to us**, and every amount is tabular so columns line up. Cash on
 hand is the one deliberate exception — it is a *health reading* rather than a
 direction, so it uses Sompitra's balance scale (red under zero, then yellow,
-blue, green as the balance grows). Kiné's own tiles keep Sompitra's original
-colours too: they count sessions, not money. `npm run smoke` section 18 fails if
-a money colour drifts — it reads the **served pages**, so a blue "Net" or a blue
-"owed to us" cannot come back unnoticed.
+blue, green as the balance grows), printed at the 700 step in light mode because
+a 30px figure in `yellow-500` on white is 2.3:1. Kiné counts sessions, not
+money, so its delivered count is ink and its payments are green like every other
+franc arriving (they used to be orange — the colour of money going *out* — on
+the same screen that printed income in green). `npm run smoke` section 18 fails
+if a money colour drifts — it reads the **served pages**, so a blue "Net" or a
+blue "owed to us" cannot come back unnoticed.
 
 That one chat is also **where the app reports activity**, so the household
 does not have to watch each module to know what happened. WAY's arrivals and

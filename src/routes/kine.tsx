@@ -321,7 +321,7 @@ kine.get('/', async (c) => {
                     </p>
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0">
-                    <span class={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${ec.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{ec.status}</span>
+                    <span class={`text-[11px] px-2 py-0.5 rounded font-semibold capitalize ${ec.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{ec.status}</span>
                     <a href={`/kine/clients/view/${ec.customer_id}`} class="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded" title="View details">👁</a>
                     <a href={`/kine/clients/edit/${ec.customer_id}`} class="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded" title="Edit client">✏️</a>
                     <form method="post" action={`/kine/contract/${ec.contract_id}/reopen`}>
@@ -559,19 +559,19 @@ kine.get('/clients/view/:id', async (c) => {
                       {sc.end_date ? ` · finished ${sc.end_date}` : ''}
                     </p>
                   </div>
-                  <span class={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${sc.status === 'active' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{sc.status}</span>
+                  <span class={`text-[11px] px-2 py-0.5 rounded font-semibold capitalize ${sc.status === 'active' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{sc.status}</span>
                 </div>
                 <div class="grid grid-cols-3 gap-2 text-center text-sm">
                   <div class="rounded-lg bg-blue-50 dark:bg-blue-900/20 py-2">
-                    <p class="text-[10px] uppercase text-blue-600 dark:text-blue-400 font-semibold">Delivered</p>
+                    <p class="text-[12px] text-blue-600 dark:text-blue-400 font-semibold">Delivered</p>
                     <p class="font-bold text-blue-600 dark:text-blue-400">{delivered}</p>
                   </div>
                   <div class="rounded-lg bg-orange-50 dark:bg-orange-900/20 py-2">
-                    <p class="text-[10px] uppercase text-orange-600 dark:text-orange-400 font-semibold">Paid</p>
+                    <p class="text-[12px] text-orange-600 dark:text-orange-400 font-semibold">Paid</p>
                     <p class="font-bold text-orange-600 dark:text-orange-400">{paid.toLocaleString('en-US')}</p>
                   </div>
                   <div class={`rounded-lg py-2 ${due === 0 ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400' : due > 0 ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400' : 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400'}`}>
-                    <p class="text-[10px] uppercase font-semibold">Due</p>
+                    <p class="text-[12px] font-semibold">Due</p>
                     <p class="font-bold">{due.toLocaleString('en-US')}</p>
                   </div>
                 </div>

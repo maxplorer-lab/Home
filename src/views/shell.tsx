@@ -113,7 +113,7 @@ export function ModuleShell({ kind, displayName, tab }: ShellProps) {
           panel of Home rather than a separate dark app. */}
       <body
         style={{ '--accent': tabColorFor(kind), '--accent-ink': tabInkFor(kind) }}
-        class="home-host flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+        class="home-host flex flex-col"
       >
         {/* ── the one Home header ── */}
         <HomeHeader displayName={displayName} badge={mod.badge} active={kind} />

@@ -2,7 +2,8 @@
 import { Hono } from 'hono'
 import { setCookie, getCookie, deleteCookie } from 'hono/cookie'
 import { PressFeedbackStyle, PressFeedbackScript } from '../views/feedback'
-import { BrandFontLinks } from '../views/app-chrome'
+import { BrandFontLinks, CHROME_CSS, Icon } from '../views/app-chrome'
+import type { FC } from 'hono/jsx'
 import {
   HOME_COOKIE, SOMPITRA_COOKIE, WAY_COOKIE, LAOKA_COOKIE,
   HOME_SESSION_DAYS,
@@ -17,90 +18,147 @@ const auth = new Hono<{ Bindings: Env }>()
 
 const MAX_AGE_HOME = HOME_SESSION_DAYS * 24 * 60 * 60
 
+// ─── The front door ──────────────────────────────────────────
+// Sign-in, first-run claim and change-password are the only screens a person
+// sees BEFORE they are inside the app, and they used to be a different app:
+// a permanent dark gradient card in the system typeface (the one page that
+// never loaded the brand `body` rule), with ❌/⏳/🚫/🔐 glued to every message.
+//
+// One shell now, wearing the app's own tokens (see CHROME_CSS): the same
+// paper, the same sheets, the same type scale, and the module marks along the
+// bottom so the door says what is behind it. It follows the theme like every
+// other screen instead of forcing dark.
+const ROOMS = [
+  { icon: 'receipt', label: 'Sompitra', color: '#0d9488' },
+  { icon: 'pin',     label: 'WAY',      color: '#0284c7' },
+  { icon: 'bowl',    label: 'Laoka',    color: '#ea580c' },
+  { icon: 'chat',    label: 'Chat',     color: '#7c3aed' },
+]
+
+/** One message per failure, in the app's own voice: what happened, then what
+    to do about it. Matches the `?err=` values the POST handlers redirect with. */
+function authMessage(err: string): string {
+  if (err === 'bad_credentials') return 'That username and password do not match. Check the spelling, then try again.'
+  if (err === 'locked') return 'Too many tries from this device. Wait a minute, then try again.'
+  if (err === 'inactive') return 'That account is switched off. An admin can turn it back on.'
+  if (err === 'no_pepper') return 'This server cannot check passwords yet: the sign-in pepper is not set.'
+  if (err === 'taken') return 'This Home already has an owner.'
+  if (err === 'bad_token') return 'That setup token is not the one this server expects.'
+  if (err === 'bad_current') return 'That is not your current password.'
+  if (err === 'weak') return 'Use at least 8 characters.'
+  return 'Something went wrong. Try again.'
+}
+
+const AuthAlert: FC<{ tone: 'bad' | 'good'; message: string }> = ({ tone, message }) => (
+  <div
+    role="status"
+    class={`mb-4 rounded-xl border px-3.5 py-2.5 text-[13px] leading-snug ${tone === 'good'
+      ? 'border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-900/25 dark:text-green-300'
+      : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/25 dark:text-red-300'}`}
+  >{message}</div>
+)
+
+/** The label + input pair, in the app's tokens rather than the dark-mode greys
+    the old page hard-coded. Every field on all three screens is one of these. */
+const Field: FC<{ label: string; name: string; type?: string; placeholder?: string; autocomplete?: string
+  required?: boolean, minlength?: number, maxlength?: number
+  autocapitalize?: 'none' | 'off' | 'on' | 'sentences' | 'words' | 'characters' }> = ({
+  label, name, type = 'text', placeholder, autocomplete, required, minlength, maxlength, autocapitalize,
+}) => (
+  <div>
+    <label for={name} class="t-label block mb-1.5">{label}</label>
+    <input
+      id={name}
+      type={type}
+      name={name}
+      placeholder={placeholder}
+      autocomplete={autocomplete}
+      autocapitalize={autocapitalize}
+      spellcheck={false}
+      required={required}
+      minlength={minlength}
+      maxlength={maxlength}
+      class="w-full rounded-xl border px-3.5 py-3 text-[15px]"
+      style={{ backgroundColor: 'var(--paper)', borderColor: 'var(--rule)', color: 'var(--ink)' }}
+    />
+  </div>
+)
+
+const AuthShell: FC<{ title: string; heading: string; blurb: string; children?: any }> = ({ title, heading, blurb, children }) => (
+  <html lang="en" class="h-full">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+      <title>{title} – Home</title>
+      {/* The sign-in screen is the app's first impression: same brand typeface,
+          same tokens, same dark-mode switch as everything behind it. */}
+      <BrandFontLinks />
+      <script src="https://cdn.tailwindcss.com" />
+      <script dangerouslySetInnerHTML={{ __html: `
+        if (localStorage.getItem('theme') === 'dark' ||
+            (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark')
+        }
+      `}} />
+      <PressFeedbackStyle />
+      {/* CHROME_CSS carries the tokens, the type scale and the brand font's
+          body rule — the front door has to land on the same table as the app. */}
+      <style dangerouslySetInnerHTML={{ __html: CHROME_CSS }} />
+    </head>
+    <body style={{ '--accent': '#16a34a', '--accent-ink': '#166534' }}
+      class="min-h-screen flex flex-col items-center justify-center p-4">
+      <main class="w-full max-w-[21rem] sm:max-w-sm">
+        <div class="flex flex-col items-center text-center mb-6">
+          {/* 192px mark, not the 982KB logo-1024.png the old page shipped for
+              an 80px avatar — the first screen of the app was its slowest. */}
+          <img src="/icons/icon-192.png" alt="" width={88} height={88}
+            class="w-[88px] h-[88px] rounded-[22px] ring-1 ring-black/5 dark:ring-white/10" />
+          <h1 class="mt-3 text-[30px] font-extrabold tracking-[-.04em] text-green-600 dark:text-green-400">{heading}</h1>
+          <p class="t-micro mt-1 max-w-[18rem]">{blurb}</p>
+        </div>
+
+        <div class="card card-lg rise p-5">{children}</div>
+
+        {/* What is behind this door, in the modules' own colours. */}
+        <div class="mt-6 flex items-center justify-center gap-4 flex-wrap">
+          {ROOMS.map(room => (
+            <span key={room.label} class="flex items-center gap-1.5" style={{ color: room.color }}>
+              <Icon name={room.icon} className="w-[15px] h-[15px]" />
+              <span class="text-[11.5px] font-semibold">{room.label}</span>
+            </span>
+          ))}
+        </div>
+        <p class="t-micro text-center mt-3">Home v2.0</p>
+      </main>
+      <PressFeedbackScript />
+    </body>
+  </html>
+)
+
+/** The one filled control on the door: the app's own green, and it says what
+    happens when you press it (“Login →” named the mechanism, not the outcome). */
+const AuthButton: FC<{ children?: any }> = ({ children }) => (
+  <button type="submit"
+    class="w-full py-3 rounded-xl text-[15px] font-semibold text-white transition-colors"
+    style={{ backgroundColor: 'var(--accent-ink)' }}>
+    {children}
+  </button>
+)
+
 // ─── GET /login ──────────────────────────────────────────────
 auth.get('/login', (c) => {
   const err = c.req.query('err')
   return c.html(
-    <html lang="en" class="h-full">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Login – Home</title>
-        {/* The sign-in screen is the app's first impression; it loads the same
-            brand typeface as everything behind it. */}
-        <BrandFontLinks />
-        <script src="https://cdn.tailwindcss.com" />
-        <script dangerouslySetInnerHTML={{ __html: `
-          if (localStorage.getItem('theme') === 'dark' ||
-              (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            document.documentElement.classList.add('dark')
-          }
-        `}} />
-        <PressFeedbackStyle />
-      </head>
-      <body class="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
-        <div class="w-full max-w-sm">
-          {/* Logo */}
-          <div class="text-center mb-8">
-            <img src="/logo-1024.png" alt="" class="w-20 h-20 mx-auto mb-3 rounded-2xl" />
-            <h1 class="text-3xl font-bold text-white">Home</h1>
-            <p class="text-gray-400 text-sm mt-1">One app for the whole household</p>
-          </div>
-
-          {/* Login card */}
-          <div class="bg-gray-800 rounded-2xl shadow-xl p-6 border border-gray-700">
-            <h2 class="text-lg font-semibold text-white mb-5 text-center">Sign in</h2>
-
-            {err && (
-              <div class="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm text-center">
-                {err === 'bad_credentials' ? '❌ Wrong username or password.'
-                  : err === 'locked' ? '⏳ Too many attempts. Wait a bit and try again.'
-                  : err === 'inactive' ? '🚫 This account has been deactivated.'
-                  : err === 'no_pepper' ? '⚠️ Server is not configured for sign-in yet.'
-                  : '❌ Something went wrong.'}
-              </div>
-            )}
-
-            <form method="post" action="/login" class="space-y-4">
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Username</label>
-                <input
-                  type="text"
-                  name="username"
-                  autocomplete="username"
-                  autocapitalize="none"
-                  spellcheck={false}
-                  maxlength={24}
-                  placeholder="e.g. maxx"
-                  required
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500"
-                />
-              </div>
-
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Password</label>
-                <input
-                  type="password"
-                  name="password"
-                  autocomplete="current-password"
-                  placeholder="••••••••"
-                  required
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500"
-                />
-              </div>
-
-              <button type="submit"
-                class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors">
-                Login →
-              </button>
-            </form>
-          </div>
-
-          <p class="text-center text-xs text-gray-600 mt-4">Home v2.0 · Sompitra & W.A.Y & Laoka</p>
-        </div>
-        <PressFeedbackScript />
-      </body>
-    </html>
+    <AuthShell title="Sign in" heading="Home"
+      blurb="One sign-in for the whole household: the money, the map, the meals and the family room.">
+      <form method="post" action="/login" class="space-y-4">
+        {err && <AuthAlert tone="bad" message={authMessage(err)} />}
+        <Field label="Username" name="username" autocomplete="username" autocapitalize="none"
+          maxlength={24} placeholder="e.g. maxx" required />
+        <Field label="Password" name="password" type="password" autocomplete="current-password" required />
+        <AuthButton>Sign in</AuthButton>
+      </form>
+    </AuthShell>
   )
 })
 
@@ -163,58 +221,17 @@ auth.get('/bootstrap', async (c) => {
   const setupTokenRequired = String(c.env.SETUP_TOKEN || '').length > 0
   const err = c.req.query('err')
   return c.html(
-    <html lang="en" class="h-full">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Claim Home</title>
-        <BrandFontLinks />
-        <script src="https://cdn.tailwindcss.com" />
-        <PressFeedbackStyle />
-      </head>
-      <body class="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
-        <div class="w-full max-w-sm">
-          <div class="text-center mb-8">
-            <img src="/logo-1024.png" alt="" class="w-20 h-20 mx-auto mb-3 rounded-2xl" />
-            <h1 class="text-2xl font-bold text-white">Claim this Home</h1>
-            <p class="text-gray-400 text-sm mt-1">Nobody has signed up yet — this account becomes the admin.</p>
-          </div>
-          <div class="bg-gray-800 rounded-2xl shadow-xl p-6 border border-gray-700">
-            {err && <div class="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm text-center">
-              {err === 'taken' ? '❌ Already claimed.' : err === 'bad_token' ? '❌ Wrong setup token.' : '❌ Something went wrong.'}
-            </div>}
-            <form method="post" action="/bootstrap" class="space-y-4">
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Username</label>
-                <input type="text" name="username" required maxlength={24} autocapitalize="none" spellcheck={false} placeholder="e.g. maxx"
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-              </div>
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Display name</label>
-                <input type="text" name="display_name" maxlength={40} placeholder="e.g. MaxX"
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-              </div>
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Password (min 8)</label>
-                <input type="password" name="password" required minlength={8} autocomplete="new-password"
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-              </div>
-              {setupTokenRequired && (
-                <div>
-                  <label class="block text-sm text-gray-400 mb-1">Setup token</label>
-                  <input type="password" name="setup_token" required
-                    class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-                </div>
-              )}
-              <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors">
-                Claim Home →
-              </button>
-            </form>
-          </div>
-        </div>
-        <PressFeedbackScript />
-      </body>
-    </html>
+    <AuthShell title="Claim Home" heading="Claim this Home"
+      blurb="Nobody has signed up yet. The account you create now becomes the admin.">
+      <form method="post" action="/bootstrap" class="space-y-4">
+        {err && <AuthAlert tone="bad" message={authMessage(err)} />}
+        <Field label="Username" name="username" autocapitalize="none" maxlength={24} placeholder="e.g. maxx" required />
+        <Field label="Display name" name="display_name" maxlength={40} placeholder="e.g. MaxX" />
+        <Field label="Password (min 8)" name="password" type="password" autocomplete="new-password" minlength={8} required />
+        {setupTokenRequired && <Field label="Setup token" name="setup_token" type="password" required />}
+        <AuthButton>Claim Home</AuthButton>
+      </form>
+    </AuthShell>
   )
 })
 
@@ -278,59 +295,25 @@ auth.get('/change-password', (c) => {
   const err = c.req.query('err')
   const ok = c.req.query('ok')
   return c.html(
-    <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Change Password – Home</title>
-        <BrandFontLinks />
-        <script src="https://cdn.tailwindcss.com" />
-        <PressFeedbackStyle />
-      </head>
-      <body class="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
-        <div class="w-full max-w-sm">
-          <div class="text-center mb-8">
-            <div class="text-5xl mb-2">🔐</div>
-            <h1 class="text-2xl font-bold text-white">Change Password</h1>
-            <p class="text-gray-400 text-sm mt-1">Applies to the whole Home app</p>
-          </div>
-          <div class="bg-gray-800 rounded-2xl shadow-xl p-6 border border-gray-700">
-            {ok && <div class="mb-4 p-3 bg-green-900/50 border border-green-700 rounded-lg text-green-300 text-sm text-center">✅ Password changed.</div>}
-            {err && <div class="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm text-center">
-              {err === 'bad_current' ? '❌ Current password is wrong.' : err === 'weak' ? '❌ New password must be at least 8 characters.' : '❌ Something went wrong.'}
-            </div>}
-            <form method="post" action="/change-password" class="space-y-4">
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Current password</label>
-                <input type="password" name="current" autocomplete="current-password" required
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-              </div>
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">New password (min 8)</label>
-                <input type="password" name="next" autocomplete="new-password" minlength={8} required
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-              </div>
-              <div>
-                <label class="block text-sm text-gray-400 mb-1">Confirm new password</label>
-                <input type="password" name="confirm" autocomplete="new-password" minlength={8} required
-                  class="w-full bg-gray-700 border border-gray-600 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-green-500" />
-              </div>
-              <button type="submit"
-                class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors">
-                Save Password →
-              </button>
-            </form>
-          </div>
-          <p class="text-center mt-4"><a href="/" class="text-sm text-gray-400 hover:text-white">← Back to Home</a></p>
-        </div>
-        <script dangerouslySetInnerHTML={{ __html: `
-          document.querySelector('form').addEventListener('submit', function(e) {
-            if (this.next.value !== this.confirm.value) { e.preventDefault(); alert('New passwords do not match!'); }
-          });
-        `}} />
-        <PressFeedbackScript />
-      </body>
-    </html>
+    <AuthShell title="Change password" heading="Change password"
+      blurb="Applies to the whole Home app: every module signs in with it.">
+      {/* The mismatch guard rides on the form's own submit handler instead of a
+          script that hunts for `document.querySelector('form')` — the tap
+          feedback in feedback.tsx runs in the bubble phase, i.e. AFTER this, so
+          a cancelled submit still leaves no pending state behind it. */}
+      <form method="post" action="/change-password" class="space-y-4"
+        onsubmit="if (this.next.value !== this.confirm.value) { alert('The two new passwords do not match.'); return false } return true">
+        {ok && <AuthAlert tone="good" message="Password changed." />}
+        {err && <AuthAlert tone="bad" message={authMessage(err)} />}
+        <Field label="Current password" name="current" type="password" autocomplete="current-password" required />
+        <Field label="New password (min 8)" name="next" type="password" autocomplete="new-password" minlength={8} required />
+        <Field label="Confirm new password" name="confirm" type="password" autocomplete="new-password" minlength={8} required />
+        <AuthButton>Save password</AuthButton>
+      </form>
+      <p class="mt-4 text-center">
+        <a href="/" class="t-micro underline decoration-dotted">Back to Home</a>
+      </p>
+    </AuthShell>
   )
 })
 

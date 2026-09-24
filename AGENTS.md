@@ -190,10 +190,60 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     What is NOT module style is the **meaning of a money colour**: green in,
     red out, teal a period's net result, orange we owe, purple owed to us —
     plus the two stated exceptions (Sompitra's graded balance scale for cash on
-    hand, and Kiné's session tiles). A money screen that prints "Net" or
+    hand, and Kiné's session COUNTS, whose "paid" figure is money in and is
+    therefore green like every other franc arriving). A money screen that prints "Net" or
     "owed to us" in a colour the legend does not own is a bug, not a style
     choice; smoke section 18 reads the SERVED pages and fails on exactly that
     (it caught `/budget/reports`, Sales and the Debts page).
+
+    **One surface system, in the same file.** `CHROME_CSS` defines the only
+    surfaces the app has — `--paper` (the table), `--sheet` (anything sitting on
+    it) and `--rule` (the hairline between two facts) — plus the type scale
+    (`.t-anchor` / `.t-value` / `.t-label` / `.t-micro`). A panel is `.card`;
+    only the panel that LEADS a screen may also be `.card-lg`, and there is
+    exactly ONE anchor figure per screen (home's cash on hand). So: never give a
+    page its own `bg-white dark:bg-gray-800 … shadow-sm` card, never set the
+    page background outside `--paper` (that is the one place the dark/late
+    theme switch could disagree with itself), and never print a caption in
+    `gray-400` — 2.5:1 on white. **Labels are sentence case**: the
+    `text-[10px] … uppercase` micro-label this app used on every card, tile and
+    sub-nav is retired, and smoke **section 26** fails if one comes back on any
+    screen. Section 26 also *measures* the token contrast floors (6:1 for
+    `--ink-2`, 4.5:1 for `--ink-3`, light and dark) rather than trusting a hex.
+
+    **Dark mode has ONE signal: the `html.dark` class — never the OS.** The
+    tokens are emitted once, under `html.dark`. This was written the other way
+    round first (a second copy inside `@media (prefers-color-scheme: dark)`),
+    on the premise that the Tailwind CDN ignores `tailwind.config`. **Probed in
+    the browser, that premise is false here:** an element carrying only
+    `dark:bg-gray-700` computes transparent with no `.dark` ancestor and
+    `rgb(55,65,81)` with one — the emitted rule is
+    `.dark\:bg-gray-700:is(.dark *)`. So every `dark:` utility in every page
+    follows the class, and an OS-driven token copy is a *split*, not
+    belt-and-braces: with an explicit "light" choice stored on a dark-OS phone
+    the tokens went dark while `bg-gray-100` stayed light, so a box whose text
+    colour is inherited `--ink` rendered light-on-light — invisible. It was
+    found that way on `/settings` (both action links to Account). Section 26
+    now **forbids** the media copy, and fails if a document ships the tokens
+    without the bootstrap that sets the class they wait for.
+
+    `html.dark` already means "the effective theme is dark": the bootstrap in
+    the head of every document that loads `CHROME_CSS` (`views/layout.tsx`,
+    `views/shell.tsx`, `routes/auth.tsx`) sets it from the switch's stored
+    choice, or from the OS when nothing is stored. An explicit choice therefore
+    contradicts nothing — the whole app moves with it. Both guards are falsified
+    by `scripts/one-off/2026-09-23-theme-signal/mutate.mjs` (needs the dev
+    server).
+
+    **The front door is part of the app.** The three screens in
+    `routes/auth.tsx` render through `AuthShell`, which loads `CHROME_CSS` as
+    well as `<BrandFontLinks />` — the `body` font rule lives in `CHROME_CSS`,
+    so a document that loads only the font request renders in the SYSTEM face.
+    That was true of sign-in, claim and change-password until the design pass,
+    which also had them loading `logo-1024.png` (982KB) for an 88px mark. Use
+    `/icons/icon-192.png`, keep the failure copy a plain sentence (what
+    happened, then what to do) and keep the messages emoji-free: section 26
+    pins all three.
     Card headings take an `icon` from `ICONS`, never an emoji: an emoji is a
     colour picture the OS picks, so it cannot take the accent and it renders at
     a different size on every platform (emoji that ENCODE data — the Kiné
@@ -207,13 +257,16 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     that IS the grid item, or one long string gives the whole page a horizontal
     scrollbar on a phone (smoke section 18 fails on it).
 
-    **The Chat tab's unread dot** is chrome too, so it lives here: the markup is
+    **The Chat tab's unread cue** is chrome too, so it lives here: the markup is
     `ChatIconWithDot` in BOTH bars (`data-chat-unread`; the bar is hidden from
     `md` up, so a hook in one shape only would never be seen), the CSS is
     `.chat-unread-dot` in `CHROME_CSS`, and the state is `CHAT_UNREAD_SCRIPT`,
-    loaded by `layout.tsx` AND `shell.tsx`. It is a DOT and not a counter on
-    purpose: a count has to be owned by whoever last saw the room, and a wrong
-    number is worse than a vague dot. See rule 24.
+    loaded by `layout.tsx` AND `shell.tsx`. The TAB is a dot and not a counter on
+    purpose — a number in a tab bar has to be owned by whoever last saw the room,
+    and a wrong number is worse than a vague dot. Where there IS room for a
+    number, Home prints one: the unread card under the month's figure, same
+    watermark, same fetch (see rule 24). Both live in `app-chrome.tsx` so the
+    card and the dot cannot drift into two ideas of "unread".
 15. **TWO ntfy channels per PERSON, both owned by home-db** (migrations-home
     0002 + 0004) — not one topic per app, and no longer one topic doing two
     jobs:
@@ -471,21 +524,53 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     CUTOVER.md's post-deploy step names the value and smoke §12 keeps the two
     equal).
 
-24. **Unread is a WATERMARK, not a count.** `chat_last_seen`
-    (`localStorage`, per device, an ISO instant) is compared against the newest
-    `chat_messages.created_at` the DO reports at `GET /way/api/chat/latest`
-    (reached through the Worker, session-gated; D1 cannot answer this — the
-    flush is nightly). `CHAT_UNREAD_SCRIPT` polls it on EVERY page, and:
+24. **Unread is a WATERMARK in the browser; the COUNT and the LINES are the
+    server's answer to it.** `chat_last_seen` (`localStorage`, per device, an ISO
+    instant) is the only state this app keeps about what has been read. It is
+    sent to `GET /way/api/chat/latest?since=<watermark>` (through the Worker,
+    session-gated; D1 cannot answer this — the flush is nightly), and the DO
+    replies with `count` (how many arrived after that instant) plus `messages`:
+    that many lines, NEWEST FIRST, bounded by `CHAT_UNREAD_LINES` and clipped by
+    `CHAT_UNREAD_CHARS`. One example line is not the same answer as the lines —
+    a card reading "3 new messages" over the newest one names the wrong thing,
+    two of the three being invisible — and the bound is what keeps a 25 s poll on
+    every page small. That one watermark drives both cues — the nav dot and
+    Home's unread card — from one fetch, so they cannot disagree: the card is not
+    a second counter to keep in sync, and when the DO left lines out, its last
+    row says so (`+N earlier in the room`) rather than the count and the lines
+    quietly differing. `CHAT_UNREAD_SCRIPT` polls it on EVERY page, and:
     * on `/chat` nothing is ever "unread": that same poll advances the
-      watermark instead (so the dot is off the moment you are in the room);
+      watermark instead (so the dot and the card are off the moment you are in
+      the room);
     * the FIRST poll on a device adopts the existing backlog as seen — without
       that, a fresh install badges yesterday's messages with no way to clear
       them short of opening the chat;
-    * a failed fetch paints nothing. An unread dot that appears because the
-      network blipped teaches people to ignore the dot.
+    * a failed fetch paints nothing and leaves the card exactly as it was. An
+      unread cue that appears because the network blipped teaches people to
+      ignore it.
     The comparison is a plain string compare, so `created_at` must stay an ISO
-    instant. The dot is asserted for BOTH bars and for a real watermark answer
-    in smoke section 5.
+    instant — fixed width, always UTC, which is also what makes the DO's
+    `created_at > ?` count mean the same thing the browser means.
+    **Per DEVICE, not per person:** reading the room on a phone does not clear a
+    desktop, because nothing is written server-side to mark a message read —
+    that is what lets a new phone start clean instead of inheriting someone
+    else's flags. Making it per-account is a bigger change than it looks (read
+    state in the DO, written on open) and is deliberately not done.
+    **The card is a GRID ITEM holding nowrap rows, so it needs `min-width: 0`**
+    (the same trap as the `truncate`-in-a-grid-item lesson at rule 14). A grid
+    item's automatic minimum size is its min-content width — for a row of nowrap
+    text, the whole sentence — so without it the card does not clip, it widens
+    its own track: on a 390 px phone the home page measured **498 px** with the
+    figure beside it pushed off the screen, found exactly that way.
+    Smoke section 5 asserts the dot for BOTH bars, the readout for its count and
+    that it carries ONE LINE PER unread message, NEWEST FIRST and clipped, that
+    `since` actually narrows the answer, and the card for its POSITION (second
+    box, between the month's figure and the rooms), for being painted as TEXT
+    (rows built as elements, `textContent` only), and for that `min-width: 0`.
+    `scripts/one-off/2026-09-23-unread-card/mutate.mjs` falsifies those one at a
+    time — M1 position, M2 markup, M3 the dropped watermark, M4 the pre-shown
+    card, M5 one-line-regardless-of-count, M6 oldest-first, M7 the dropped
+    clip, M8 the lost `min-width`.
 
 25. **Anything above 120 km/h is GPS jitter — in BOTH directions the number can
     arrive.** `PRE_FILTER_SPEED_LIMIT` (`src/way/config.ts`) is the single
@@ -1234,6 +1319,13 @@ have their own separate repositories and their own history.
 | The Sompitra tab icon looks like a blank card | its receipt path relies on winding: body clockwise, the three rule lines counter-clockwise (nonzero rule). Reversed lines fill instead of punching through |
 | An inactive tab looks greyed/dead | the colour must come from `--tab` on `.tab-tint` (`CHROME_CSS`); a literal `color:` or a `text-gray-*` utility on a tab is the bug |
 | An inactive tab is unreadable in dark mode | `html.dark .tab-tint`'s `color-mix()` lift is missing — without it slate/violet measure 1.9–2.6:1 on the dark bar. It only works if the tint is `--tab` (see the rule above) |
+| A card, tile or whole page looks like it belongs to a different app | it is not using `.card` and the surfaces in `CHROME_CSS` — a page's own `bg-white dark:bg-gray-800 … shadow-sm` panel is the bug, not a variation |
+| A card title or a caption is hard to read | a token was edited below its floor: `--ink-2` ≥ 6:1 and `--ink-3` ≥ 4.5:1 on `--sheet`, in BOTH themes. Smoke section 26 measures it out of the served values (the retired `gray-400` caption was 2.5:1) |
+| A label is back in ALL CAPS | the retired micro-label treatment — `.section-title` is sentence case now, so `uppercase` on any label in a served page fails smoke section 26 |
+| Text renders in a system face on one document (the "Home" wordmark is the tell) | that document does not include `CHROME_CSS`: the brand `body { font-family }` rule lives there, not in `<BrandFontLinks />` — which is exactly how the sign-in, claim and change-password screens shipped in Segoe UI while the font request was sitting in their `<head>` |
+| The sign-in page is slow to show its mark | `/logo-1024.png` (982KB) is back on the front door; it is `/icons/icon-192.png` (smoke section 26) |
+| Nothing on the home screen looks more important than anything else | the anchor/ledger structure was flattened: two `t-anchor`s, or a second `card-lg`, or a row of equal tiles added back beside the anchor (section 26 counts them) |
+| Half a screen is dark and half is light (a `bg-gray-100` box whose text is invisible) | the tokens are answering a different signal than the `dark:` utilities. They must answer the **`html.dark` class only** — a `@media (prefers-color-scheme: dark)` copy of the tokens is the bug, not the fix (probe it: an element with only `dark:bg-gray-700` is transparent without a `.dark` ancestor, grey-700 with one). Section 26 fails if the media copy comes back, or if a document loads `CHROME_CSS` without the bootstrap that sets the class |
 | A tab exists in one shape but not the other | `HOME_TABS` in `views/app-chrome.tsx` is the single list; the bottom bar and `HomeNav` both map over it |
 | A person who IS an admin cannot see the admin links on `/settings` (or an admin POST bounces back to `/settings`) | they are a Home admin whose Sompitra row predates the merge, so `users.is_admin` is 0 there. The card and the handlers must judge with `isSettingsAdmin()` — central role first, module flag as a fallback (rule 13, `CUTOVER.md` §1c) |
 | The bottom bar shows on a desktop window | the `md:hidden` (bar) / `hidden md:flex` (header nav) split in `app-chrome.tsx` |

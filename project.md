@@ -197,6 +197,63 @@ offline PWA still renders in a real face instead of a serif default. Money uses
 `Ar 7,500` and `Ar 12,300` different widths, which is exactly what makes a
 column of amounts look hand-scattered.
 
+**One surface system, and a type scale to go with it.** `CHROME_CSS` owns the
+only surfaces the app has (app-chrome.tsx), so a panel cannot invent its own
+grey:
+
+| Token | Light | Dark | What it is |
+| --- | --- | --- | --- |
+| `--paper` | `#f7f8fa` | `#111827` | the table everything is laid out on (the `<body>`) |
+| `--sheet` | `#ffffff` | `#1f2937` | a surface that sits on it: cards, rows, panels |
+| `--rule` | `#e7e9ee` | `#374151` | the hairline between two facts |
+| `--ink` | `#111827` | `#f3f4f6` | body text and every figure |
+| `--ink-2` | `#4b5563` | `#a5aebc` | labels and card titles (≥6:1 on the sheet) |
+| `--ink-3` | `#6b7280` | `#8b94a3` | captions and hints (≥4.5:1, never `gray-400`) |
+
+Those six tokens are emitted **once**, under `html.dark`. There is exactly one
+theme signal in this app, and it is that class — not the operating system.
+
+That is what the browser probe says, and it is the opposite of what this file
+claimed for a while: this page loads the Tailwind CDN with
+`darkMode: 'class'`, and it honours it. An element carrying only
+`dark:bg-gray-700` computes transparent with no `.dark` ancestor and
+`rgb(55,65,81)` with one (the emitted rule is `.dark\:bg-gray-700:is(.dark *)`).
+So every `dark:` utility in every page follows the class, and the second
+token copy that used to sit inside `@media (prefers-color-scheme: dark)` was
+following something else — a split, not a safety net. With an explicit "light"
+choice stored on a dark-OS phone the tokens went dark while `bg-gray-100`
+stayed light, and text inheriting `--ink` on such a box rendered invisible
+(found on `/settings`).
+
+`html.dark` already carries the effective theme: the bootstraps in
+`views/layout.tsx`, `views/shell.tsx` and `routes/auth.tsx` set it from the
+switch's stored choice, or from the OS when nothing is stored — so an explicit
+choice contradicts nothing. Section 26 fails if a prefers-color-scheme copy of
+the tokens returns, or if a document ships `CHROME_CSS` without the bootstrap.
+
+Surfaces are `.card` (plus `.card-lg` for the ONE panel that leads a screen),
+and `.ledger` rules a list of figures with those hairlines instead of boxing
+each row. The type scale is four classes — `.t-anchor` (the figure a screen
+leads with), `.t-value`, `.t-label`, `.t-micro` — and **labels are sentence
+case**. The `text-[10px] uppercase tracking-[.08em]` micro-label this app used
+on every card, tile and sub-nav is gone: it was the loudest "generated
+dashboard" tell in it, and at 10px it was small *and* shouting. Before the
+pass, every box on every page was a white `rounded-2xl` with the same
+`shadow-sm` and the same `border-gray-100`, so a ledger row, a stat tile and a
+page section all had identical weight, and captions were printed in `gray-400`
+(2.5:1 on white). Smoke **section 26** checks all of it, and it *measures* the
+contrast floors out of the served token values rather than trusting that nobody
+edits a hex.
+
+**Home's own screen leads with one figure.** Cash on hand is the anchor
+(`.t-anchor`, graded by `currentGradedColor`), with the month's two directions
+as a single income/expense bar under it and the totals on one line; the facts
+that are not the balance are `.ledger` rows (Balances, the Kiné week). It used
+to be six identical pastel tiles — the same size, the same saturation, the same
+radius and the same shadow — so "cash on hand" carried exactly as much weight
+as "Dues". **One anchor per screen** is the rule section 26 enforces; a second
+one means nothing on the page is ranked any more.
+
 **One accent per screen, taken from the tab you are in.** `HOME_TABS` carries
 two values per module (app-chrome.tsx):
 
@@ -251,11 +308,14 @@ printed the same money in purple, and a credit's amount on the dashboard
 printed in orange, the "we owe" colour. Smoke section 18 now reads the served
 pages and fails on any of them.
 Two deliberate exceptions, both stated so they do not look like drift: **cash
-on hand is graded** by `currentGradedTone` (red under zero, then yellow, blue,
+on hand is graded** by `currentGradedColor` (red under zero, then yellow, blue,
 green as the balance grows) because it answers "is this healthy?" rather than
-"which way did the money go"; and **Kiné's tiles keep Sompitra's original
-colours** (delivered blue, paid orange) because they count sessions and
-payments, not the direction of money.
+"which way did the money go" — and the grading is the 700 step in light mode,
+because this is a 30px figure and `yellow-500` on white is 2.3:1; and **Kiné
+counts sessions, not money** (a delivered count in ink, the payments in green
+like every other franc coming in, and the balance keeping the green/yellow/red
+session grading). Kiné's payments used to be orange — the colour of money going
+*out* — on the same screen that printed income in green.
 
 **The module stage.** WAY, Laoka and Chat run inside
 the `#home-module-stage` → `#home-module-frame` frame (shell.tsx): inset 8px
@@ -273,7 +333,20 @@ shopping 2026-09-12 – 2026-09-18" — therefore widens the whole page past a
 422px viewport and the phone gets a horizontal scrollbar. `min-w-0` has to be on
 the element that **is** the grid item, not only inside it. `npm run smoke`
 section 18 guards that, the one-typeface rule, the accent-equals-tab rule, the
-glyph-not-emoji rule and the stage.
+glyph-not-emoji rule and the stage; **section 26** guards the surfaces, the
+sentence-case labels, the measured contrast floors, the one-anchor home screen
+and the front door.
+
+**The front door wears the app.** `routes/auth.tsx` renders sign-in, first-run
+claim and change-password through one `AuthShell`, which loads `CHROME_CSS`
+next to `<BrandFontLinks />`. That is not cosmetic: before it, those three
+screens were the only documents in the app that loaded the brand font and never
+applied it (the `body` rule lives in `CHROME_CSS`), so "Home" rendered in the
+system face on a permanently dark gradient — a different app, in front of the
+one you were signing into. They also loaded `logo-1024.png` (982KB) for an 88px
+mark, so the first screen of the app was its slowest. Section 26 pins all three,
+and the failure copy is plain sentences in the interface's voice (what happened,
+then what to do) instead of a ❌/⏳/🚫 glyph.
 
 ## Installable (PWA)
 
@@ -1353,17 +1426,31 @@ the follow it had just started.
   `overflow-y: auto` scroll container, so a ring drawn inside it is clipped to a
   170 px column and the cue becomes invisible in practice (which is exactly how
   the first version shipped).
-* **Unread is a watermark, not a count.** `chat_last_seen` (per device, an ISO
-  instant) against the DO's newest message, polled from `/way/api/chat/latest`
-  on every page. `/chat` never shows the dot — being in the room advances the
-  watermark instead — and a device's first poll adopts the backlog as seen. Dead
-  simple on purpose: a counter would need every reader and writer of the room to
-  agree, and being wrong about unread is worse than being vague.
-* **The chat's unread state is a watermark in the browser, the chat's content is
-  the DO's.** Nothing is written to mark something as read: `/chat` advances
-  `chat_last_seen` instead of showing a dot. That keeps the server out of a
-  per-device preference and means a new phone starts clean rather than inheriting
-  someone else's "read" flags.
+* **Unread is a watermark in the browser; the count AND the lines are the
+  server's answer to it.** `chat_last_seen` (per device, an ISO instant) is sent
+  to `/way/api/chat/latest?since=…`, and the DO answers with how many messages
+  arrived after that instant and which ones — newest first, clipped, and bounded
+  so a 25 s poll on every page stays small — polled on every page. One watermark
+  drives both cues — the tab-bar dot and Home's unread card — from that one
+  fetch, so they cannot disagree, and when the DO leaves lines out the card says
+  so instead of quietly disagreeing with its own count. `/chat` shows neither:
+  being in the room advances the watermark instead, and a device's first poll
+  adopts the backlog as seen.
+* **The chat's unread state is per device, and the chat's content is the DO's.**
+  Nothing is written to mark a message read — reading advances a local instant —
+  which is why a new phone starts clean rather than inheriting someone else's
+  "read" flags. The cost, stated rather than hidden: reading the room on a phone
+  does not clear a desktop.
+* **Home's unread card is that same fact, printed bigger.** It sits second from
+  the top — the month's figure, then what needs a person, then the rooms — ships
+  hidden (so the figure keeps the top of the page when nothing is unread), and is
+  filled by `CHAT_UNREAD_SCRIPT` with **one clipped row per unread message**,
+  newest first, built as elements and written with `textContent` only (the room
+  carries whatever anyone typed). The rooms move to their own row while it is
+  showing and take back the slot beside the figure when it is not
+  (`.unread-card` / `.rooms-card` in `CHROME_CSS`); the card is a grid item
+  holding nowrap rows, so it carries `min-width: 0` — without it its own
+  min-content widens the home page past a phone's viewport.
 
 ## Testing locally
 

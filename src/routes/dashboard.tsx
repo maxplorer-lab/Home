@@ -3,9 +3,9 @@ import { Hono } from 'hono'
 import { Layout, Card, KineClientStats, TintStat } from '../views/layout'
 // The module colours come from the SAME table the tab bar renders, so the
 // doorways below can never drift from the tabs they open.
-import { HOME_TABS, Icon } from '../views/app-chrome'
+import { HOME_TABS, Icon, ChatIconWithDot } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
-import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedTone } from '../lib/utils'
+import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedColor } from '../lib/utils'
 import { classifyTransaction } from '../lib/notify'
 // The pantry's OWN queries. Home shows a summary of the shelves, and it has to
 // be the same arithmetic the Pantry screen draws from -- see `pantrySummary`.
@@ -97,6 +97,15 @@ dashboard.get('/', async (c) => {
 
   const weekLabel = `${formatDate(week.start)} – ${formatDate(week.end)}`
 
+  // ── The one proportion this page leads with ──
+  // Cash on hand is the figure the household actually reads, and the month's two
+  // directions are shown once, as a single rule under it, instead of as two more
+  // equal boxes beside it. Guarded on a zero month: with nothing moved, the bar
+  // is a plain rule, never a full-red one claiming all spending.
+  const monthFlow = totalIncome + totalExpenses
+  const inShare = monthFlow > 0 ? Math.round((totalIncome / monthFlow) * 100) : 0
+  const netMonth = totalIncome - totalExpenses
+
   // ── Today's activity (derived, state-free: vanishes each day) ──
   // Same classifier that drives the ntfy push, so wording never diverges.
   const notifs = todayTxns.results.map(classifyTransaction)
@@ -145,102 +154,201 @@ dashboard.get('/', async (c) => {
   const laokaTab = HOME_TABS.find(t => t.tab === 'laoka')
   const laokaColor = laokaTab ? laokaTab.color : '#ea580c'
   const laokaInk = laokaTab ? laokaTab.ink : '#c2410c'
+  // The chat room's colour and mark, read from the same table for the same
+  // reason: the unread card below must wear the violet of the Chat tab and not
+  // a hue of its own, and its icon has to be the one the tab bar shows.
+  const chatTab = HOME_TABS.find(t => t.tab === 'chat')
+  const chatColor = chatTab ? chatTab.color : '#7c3aed'
 
   return c.html(
     <Layout title="Dashboard" user={user} activeTab="dashboard">
-      {/* The rest of the super app — one tap each, same shell, same session.
-          WAY and Laoka open as tabs of this app (chromeless embeds); Chat is
-          the family room (WAY's own chat engine). */}
-      <Card title="Around the house" icon="house" className="mb-4">
-        <div class="grid grid-cols-3 gap-2">
-          {doorways.map(item => (
-            <a
-              href={item.href}
-              style={{
-                '--tab': item.color,
-                // A whisper of the module's own colour as the card's surface:
-                // 8% fill / 20% edge. Derived from the tab colour rather than
-                // hand-picked pastels, so the three cards read as one family
-                // with the tab bar instead of three different apps.
-                backgroundColor: item.color + '14',
-                borderColor: item.color + '33',
-              }}
-              class="tab-tint flex flex-col sm:flex-row items-center sm:items-center gap-1.5 sm:gap-2.5 rounded-2xl px-2 py-2.5 sm:px-3 sm:py-3 border transition-transform active:scale-95"
-            >
-              {item.img
-                ? <img src={item.img} alt="" class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg shrink-0" />
-                : <span class="shrink-0"><Icon name={item.svg ?? ''} className="w-7 h-7 sm:w-8 sm:h-8" /></span>}
-              <span class="min-w-0 text-center sm:text-left">
-                <span class="block text-[13px] sm:text-sm font-bold">{item.label}</span>
-                <span class="block text-[10px] text-gray-400 truncate">{item.blurb}</span>
+      {/* ── The anchor ──
+          ONE figure leads this page: what is in hand. Everything about the
+          month hangs off it — the period, the proportion of money in against
+          money out, and the three totals — so the household reads one thing in
+          one second instead of comparing six equal boxes.
+
+          It used to be six identical pastel tiles, which is the reason "cash on
+          hand" carried exactly as much weight as "Dues": same size, same
+          saturation, same radius, same shadow. The palette's meaning survives
+          intact — green = money in, red = money out, teal = net, purple = owed
+          to us, orange = we owe — but it is now spent on the FIGURES, not on
+          the surface behind them. */}
+      <div class="grid gap-4 mb-4 lg:grid-cols-3">
+        <section class="card card-lg rise p-4 sm:p-5 lg:col-span-2 flex flex-col justify-between">
+          <div class="flex items-baseline justify-between gap-3">
+            <p class="t-label">Cash on hand</p>
+            {/* The period belongs to the figure it describes (it used to be an
+                icon centred on a line of its own, above nothing). Home has no
+                prev/next — that lives under Budget. */}
+            <p class="t-micro flex items-center gap-1">
+              <Icon name="calendar" className="w-[13px] h-[13px]" />{month.label}
+            </p>
+          </div>
+          <p class={`t-anchor mt-1.5 ${currentGradedColor(currentCash)}`}>{mga(currentCash)}</p>
+
+          {/* Money in against money out, as one bar. The colours are the money
+              vocabulary itself, so it needs no legend. */}
+          <div class="mt-3.5 h-1.5 rounded-full overflow-hidden draw" style={{ backgroundColor: 'var(--rule)' }}>
+            {monthFlow > 0 && (
+              <span class="flex h-full">
+                <span class="h-full bg-green-500" style={{ width: `${inShare}%` }} />
+                <span class="h-full bg-red-500" style={{ width: `${100 - inShare}%` }} />
               </span>
-            </a>
-          ))}
-        </div>
-      </Card>
+            )}
+          </div>
 
-      {/* Static period header — Home has no prev/next (that lives under Budget) */}
-      <div class="flex items-center justify-center gap-1.5 mb-4 text-gray-500 dark:text-gray-400">
-        <Icon name="calendar" className="w-[15px] h-[15px]" />
-        <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">{month.label}</span>
-      </div>
+          <div class="hairline mt-3.5 pt-3 grid grid-cols-3 gap-2">
+            <div>
+              <p class="t-micro">In</p>
+              <p class="t-value text-green-600 dark:text-green-400">{mga(totalIncome)}</p>
+            </div>
+            <div>
+              <p class="t-micro">Out</p>
+              <p class="t-value text-red-500">{mga(totalExpenses)}</p>
+            </div>
+            <div>
+              <p class="t-micro">Net</p>
+              <p class={`t-value ${netMonth >= 0 ? 'text-teal-600 dark:text-teal-400' : 'text-orange-600 dark:text-orange-400'}`}>{mga(netMonth)}</p>
+            </div>
+          </div>
+        </section>
 
-      <div class="grid grid-cols-2 gap-2 mb-4 sm:grid-cols-3">
-        <TintStat label="Current" value={mga(currentCash)} tone={currentGradedTone(currentCash)} sub="cash on hand" />
-        <TintStat label="Expenses" value={mga(totalExpenses)} tone="bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-100 dark:border-red-800" sub="this month" />
-        {/* Income is GREEN here, not blue: the transaction rows below print an
-            income as +green and the Budget page's Add Income button is green,
-            so a blue Income tile was the same fact in two colours on one screen.
-            The palette now means something: green = money in, red = money out,
-            amber = cash on hand, purple = owed to us, orange = we owe, teal =
-            net (Sompitra's own colour). */}
-        <TintStat label="Income" value={mga(totalIncome)} tone="bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-800" sub="this month" />
-        <TintStat label="Uncollected Dues" value={mga(uncollectedDues)} tone="bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400 border-purple-100 dark:border-purple-800" sub="Kiné + credits" />
-        <TintStat label="Dues" value={mga(totalDebt)} tone="bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400 border-orange-100 dark:border-orange-800" />
-        <TintStat label="Net Worth" value={mga(netWorth)} tone={netWorth >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400 border-teal-100 dark:border-teal-800' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-100 dark:border-red-800'} sub="cash + owed − dues" />
+        {/* ── Unread chat — the second box, and second on purpose ──
+            The home screen's job is to say what needs a person, and a message
+            from the household is the one thing here that is addressed to
+            someone rather than summed up. So it sits immediately after the
+            month's own figure, ahead of the rooms — read before anything that
+            only reports or only navigates.
+
+            It is the SAME watermark as the dot on the Chat tab, told at the
+            size this screen has room for: how many arrived since this device
+            last looked, and WHICH ones — one clipped line each, newest first,
+            so the card answers "what did I miss" instead of naming one of the
+            three messages underneath a count of three. Not a second counter to
+            keep in sync — see CHAT_UNREAD_SCRIPT.
+
+            Rendered hidden and revealed by that script, because the watermark
+            lives in the browser and the count comes from the DO. With nothing
+            unread the card is not empty, it is ABSENT: `display: none` takes it
+            out of the grid, so the rooms take back the slot beside the figure
+            (see `.rooms-grid` in CHROME_CSS) and the figure keeps the top of
+            the page. Text is filled by textContent only. */}
+        <a
+          href="/chat"
+          data-chat-unread-card
+          data-mine={user?.username ?? ''}
+          class="unread-card card tab-tint lg:col-span-1 px-3.5 py-3 items-center gap-3 transition-transform active:scale-[.99]"
+          style={{ '--tab': chatColor, backgroundColor: chatColor + '0f', borderColor: chatColor + '33' }}
+        >
+          <span class="shrink-0">
+            {chatTab ? <ChatIconWithDot item={chatTab} /> : <Icon name="chat" className="w-6 h-6" />}
+          </span>
+          <span class="min-w-0 flex-1">
+            {/* Filled at runtime: "3 new messages". The static text is what a
+                reader of the source sees — the card is hidden until the script
+                puts a real count in it. */}
+            <span class="block text-[13.5px] font-semibold" data-unread-count>New messages</span>
+            {/* The lines themselves, one row each, built by the script from the
+                server's answer: a row per unread message is a variable number
+                of them, so they are appended as elements rather than rendered
+                here. A module's system row has no sender and gets its text
+                alone, which is how the chat draws one too. */}
+            <span class="unread-rows" data-unread-rows></span>
+          </span>
+          <span class="shrink-0 opacity-70"><Icon name="chev-right" className="w-4 h-4" /></span>
+        </a>
+
+        {/* The rest of the super app — one tap each, same shell, same session.
+            WAY and Laoka open as tabs of this app (chromeless embeds); Chat is
+            the family room (WAY's own chat engine). Three rooms listed beside
+            the number on a desktop, three across on a phone — and moved to
+            their own row across the page while the unread card holds this
+            slot (`.rooms-card` / `.rooms-grid` in CHROME_CSS). */}
+        <Card title="Around the house" icon="house" className="rooms-card lg:col-span-1">
+          <div class="rooms-grid">
+            {doorways.map(item => (
+              <a
+                href={item.href}
+                style={{
+                  '--tab': item.color,
+                  // A whisper of the module's own colour as the card's surface:
+                  // 8% fill / 20% edge. Derived from the tab colour rather than
+                  // hand-picked pastels, so the three cards read as one family
+                  // with the tab bar instead of three different apps.
+                  backgroundColor: item.color + '14',
+                  borderColor: item.color + '33',
+                }}
+                class="tab-tint flex flex-col lg:flex-row items-center lg:items-center gap-1.5 lg:gap-2.5 rounded-2xl px-2 py-2.5 lg:px-3 lg:py-3 border transition-transform active:scale-[.97]"
+              >
+                {item.img
+                  ? <img src={item.img} alt="" class="w-7 h-7 lg:w-8 lg:h-8 rounded-lg shrink-0" />
+                  : <span class="shrink-0"><Icon name={item.svg ?? ''} className="w-7 h-7 lg:w-8 lg:h-8" /></span>}
+                <span class="min-w-0 text-center lg:text-left">
+                  <span class="block text-[13px] lg:text-sm font-bold">{item.label}</span>
+                  <span class="block t-micro truncate">{item.blurb}</span>
+                </span>
+              </a>
+            ))}
+          </div>
+        </Card>
       </div>
 
       {notifs.length > 0 && (
-        <Card title="Today's Activity" icon="bell" noUppercase className="mb-4">
-          <div class="space-y-1">
+        <Card title="Today's Activity" icon="bell" className="mb-4">
+          <div class="space-y-0.5">
             {notifs.map(n => (
-              <a href={n.href} class={`block py-2 px-2.5 rounded-lg border-l-2 ${accents[n.accent].border} hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors`}>
-                <p class={`text-xs font-bold ${accents[n.accent].text}`}>{n.line1}</p>
-                {n.line2 && <p class="text-[10px] text-gray-400 mt-0.5">{n.line2}</p>}
+              <a href={n.href} class={`block py-2 pl-3 border-l-2 ${accents[n.accent].border} hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors`}>
+                <p class={`text-[13.5px] font-semibold ${accents[n.accent].text}`}>{n.line1}</p>
+                {n.line2 && <p class="t-micro mt-0.5">{n.line2}</p>}
               </a>
             ))}
           </div>
         </Card>
       )}
 
-      <Card title="Kiné Summary" icon="pulse" className="mb-4">
-        {/* Weekly totals (current SAT–FRI week) */}
-        <p class="flex items-center gap-1 text-[10px] text-gray-400 mb-2">
+      {/* ── Two ledgers side by side on a desktop, stacked on a phone ──
+          Balances and the Kiné week are both "label left, figure right, a
+          hairline between rows" — the shape of the thing itself. The figures
+          keep the money palette (purple = owed to us, orange = we owe, teal =
+          net) and the labels say what they mean in words: "Uncollected Dues"
+          and a bare "Dues" sat two centimetres apart and meant opposite
+          directions. */}
+      <div class="grid gap-4 mb-4 md:grid-cols-2">
+        <Card title="Balances" icon="swap" className="min-w-0">
+          <div class="ledger">
+            <TintStat label="Owed to us" sub="Kiné sessions and credits we gave" value={mga(uncollectedDues)} tone="text-purple-600 dark:text-purple-400" />
+            <TintStat label="What we owe" sub="open debts" value={mga(totalDebt)} tone="text-orange-600 dark:text-orange-400" />
+            <TintStat label="Net worth" sub="cash + owed − what we owe" value={mga(netWorth)} tone={netWorth >= 0 ? 'text-teal-600 dark:text-teal-400' : 'text-red-600 dark:text-red-400'} />
+          </div>
+        </Card>
+
+        <Card title="Kiné Summary" icon="pulse" className="min-w-0">
+        {/* Weekly totals (current SAT–FRI week), as ledger rows: a session
+            count and the money it earned. The money is GREEN — it is money in,
+            and the same page prints every other franc coming in as green; it
+            was orange here, which is what the palette uses for money going
+            out. */}
+        <p class="t-micro flex items-center gap-1 mb-1">
           <Icon name="calendar" className="w-[13px] h-[13px]" />{weekLabel}
         </p>
-        <div class="grid grid-cols-2 gap-2 mb-4">
-          <div class="rounded-xl bg-blue-50 dark:bg-blue-900/20 p-3 text-center">
-            <p class="text-[10px] font-semibold uppercase text-blue-600 dark:text-blue-400">Sessions This Week</p>
-            <p class="text-xl font-bold text-blue-600 dark:text-blue-400">{kineWeekDelivered?.total || 0}</p>
-          </div>
-          <div class="rounded-xl bg-orange-50 dark:bg-orange-900/20 p-3 text-center">
-            <p class="text-[10px] font-semibold uppercase text-orange-600 dark:text-orange-400">Paid This Week</p>
-            <p class="text-xl font-bold text-orange-600 dark:text-orange-400">{mga(kineWeekPaid?.total || 0)}</p>
-          </div>
+        <div class="ledger mb-3">
+          <TintStat label="Sessions this week" sub="delivered" value={String(kineWeekDelivered?.total || 0)} tone="" />
+          <TintStat label="Paid this week" value={mga(kineWeekPaid?.total || 0)} tone="text-green-600 dark:text-green-400" />
         </div>
 
         {/* Per-client active summary */}
         {kineClients.results.length === 0
-          ? <p class="text-sm text-gray-400 text-center py-2">No active clients yet</p>
+          ? <p class="t-micro text-center py-2">No active clients yet</p>
           : (
-            <div class="space-y-4">
+            <div class="ledger">
               {kineClients.results.map(client => {
                 const delivered = client.delivered ?? 0
                 const paid      = client.paid ?? 0
                 const rate      = client.session_rate ?? client.default_rate ?? 0
                 return (
-                  <div>
-                    <p class="text-sm font-semibold mb-1.5">{client.customer_name}</p>
+                  <div class="py-2">
+                    <p class="text-[13.5px] font-semibold mb-1">{client.customer_name}</p>
                     <KineClientStats delivered={delivered} paid={paid} rate={rate} />
                   </div>
                 )
@@ -248,8 +356,9 @@ dashboard.get('/', async (c) => {
             </div>
           )
         }
-        <p class="text-[10px] text-gray-400 mt-3 text-center">🟢 balanced · 🟡 prepaid (we owe sessions) · 🔴 owes sessions</p>
-      </Card>
+        <p class="t-micro mt-3 text-center">🟢 balanced · 🟡 prepaid (we owe sessions) · 🔴 owes sessions</p>
+        </Card>
+      </div>
 
       <Card title="Cash Flow" icon="trend" className="mb-4">
         <div id="sankey-container" style="height:240px" class="w-full">
@@ -426,22 +535,25 @@ dashboard.get('/', async (c) => {
           removed on the item that IS the grid item, not only inside it. */}
       <div class="grid md:grid-cols-2 gap-4">
         <Card title="Recent Transactions" icon="list" className="min-w-0">
-          {recentTxns.results.length === 0 ? <p class="text-sm text-gray-400 text-center py-4">No transactions yet</p> : (
-            <div class="space-y-3">
+          {recentTxns.results.length === 0 ? <p class="t-micro text-center py-4">No transactions yet</p> : (
+            <div class="ledger">
               {recentTxns.results.map(t => (
-                <div class="flex items-start justify-between gap-2 pb-2 border-b border-gray-100 dark:border-gray-700 last:border-0 last:pb-0">
-                  <div class="min-w-0 flex gap-2">
-                    <span class={`mt-1 w-1 h-4 shrink-0 rounded-full ${userAccentColor(t.added_by_display_name)}`} />
+                <div class="flex items-center justify-between gap-3 py-2.5">
+                  <div class="min-w-0 flex items-center gap-2.5">
+                    {/* The person is the dot's own colour (see userAccentColor),
+                        so the row no longer spends a line on "Group · Name".
+                        The name is still there for a screen reader. */}
+                    <span class={`w-1 h-5 shrink-0 rounded-full ${userAccentColor(t.added_by_display_name)}`} title={t.added_by_display_name || ''} />
                     <div class="min-w-0">
-                      <p class="text-sm font-medium truncate">{t.description || t.category_name || t.income_account_name || '—'}</p>
-                      <p class="text-[11px] text-gray-400">{t.group_name ? `${t.group_name} · ` : ''}{t.added_by_display_name}</p>
+                      <p class="text-[13.5px] font-semibold truncate">{t.description || t.category_name || t.income_account_name || '—'}</p>
+                      <p class="t-micro truncate">{t.group_name || t.category_name || t.added_by_display_name}</p>
                     </div>
                   </div>
-                  <div class="text-right">
-                    <span class={`block text-sm font-bold whitespace-nowrap ${t.type === 'income' ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+                  <div class="text-right shrink-0">
+                    <span class={`block t-value whitespace-nowrap ${t.type === 'income' ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
                       {t.type === 'income' ? '+' : '-'}{mga(t.amount)}
                     </span>
-                    <a href={`/budget/edit/${t.id}`} class="text-[11px] text-blue-500 hover:underline">Edit</a>
+                    <a href={`/budget/edit/${t.id}`} class="t-micro underline decoration-dotted">Edit</a>
                   </div>
                 </div>
               ))}
@@ -454,27 +566,29 @@ dashboard.get('/', async (c) => {
         </Card>
 
         <Card title="Debts & Credits" icon="swap" className="min-w-0">
-          {debts.results.length === 0 ? <p class="text-sm text-gray-400 text-center py-4">No open debts</p> : (
-            <div class="space-y-3">
+          {debts.results.length === 0 ? <p class="t-micro text-center py-4">No open debts</p> : (
+            <div class="ledger">
               {debts.results.map(d => (
-                <div class="flex items-center justify-between gap-2 pb-2 border-b border-gray-100 dark:border-gray-700 last:border-0 last:pb-0">
-                  <div>
-                    <p class="text-sm font-medium">{d.person_name}</p>
+                <div class="flex items-center justify-between gap-3 py-2.5">
+                  <div class="min-w-0">
+                    <p class="text-[13.5px] font-semibold truncate">{d.person_name}</p>
                     {/* Orange = we owe, purple = owed to us — the same pair the
-                        Debts page and the Uncollected Dues tile use. */}
-                    <span class={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${d.type === 'debt' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'}`}>
+                        Debts page and the Balances rows use. */}
+                    <span class={`t-micro font-semibold ${d.type === 'debt' ? 'text-orange-600 dark:text-orange-400' : 'text-purple-600 dark:text-purple-400'}`}>
                       {d.type === 'debt' ? 'We owe' : 'They owe us'}
                     </span>
                   </div>
                   {/* The amount used to be orange whatever the direction, so a
                       credit we are owed printed in the "we owe" colour. */}
-                  <span class={`text-sm font-bold ${d.type === 'debt' ? 'text-orange-600 dark:text-orange-400' : 'text-purple-600 dark:text-purple-400'}`}>{mga(d.current_balance)}</span>
+                  <span class={`t-value shrink-0 ${d.type === 'debt' ? 'text-orange-600 dark:text-orange-400' : 'text-purple-600 dark:text-purple-400'}`}>{mga(d.current_balance)}</span>
                 </div>
               ))}
             </div>
           )}
           <div class="mt-4">
-            <a href="/debts" class="block text-center text-sm py-2 rounded-xl bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 font-medium">View All →</a>
+            <a href="/debts" class="flex items-center justify-center gap-1 text-[13px] py-2 rounded-xl bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 font-semibold" style={{ color: 'var(--ink-2)' }}>
+              View all <Icon name="chev-right" className="w-3.5 h-3.5" />
+            </a>
           </div>
         </Card>
       </div>
@@ -511,10 +625,12 @@ dashboard.get('/', async (c) => {
                 )}
               </>
             ) : (
-              <span class="text-[11px] text-gray-400">the shelves could not be read just now</span>
+              <span class="t-micro">the shelves could not be read just now</span>
             )}
           </span>
-          <Icon name="chev-right" className="w-4 h-4 text-gray-300 shrink-0" />
+          <span class="shrink-0 flex" style={{ color: 'var(--ink-3)' }}>
+            <Icon name="chev-right" className="w-4 h-4" />
+          </span>
         </a>
       </Card>
     </Layout>

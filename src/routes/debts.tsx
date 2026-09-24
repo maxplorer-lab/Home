@@ -49,7 +49,7 @@ debts.get('/', async (c) => {
       {/* Summary */}
       <div class="grid grid-cols-2 gap-3 mb-5">
         <div class="bg-orange-50 dark:bg-orange-900/20 rounded-2xl p-4 border border-orange-100 dark:border-orange-800">
-          <p class="text-xs text-orange-700 dark:text-orange-400 font-semibold uppercase tracking-wide">We Owe (Debt)</p>
+          <p class="text-[12px] text-orange-700 dark:text-orange-400 font-semibold">We Owe (Debt)</p>
           <p class="text-2xl font-bold text-orange-700 dark:text-orange-400">{mga(totalDebt)}</p>
           <p class="text-xs text-orange-600 dark:text-orange-500">{openDebts.results.length} open</p>
         </div>
@@ -57,7 +57,7 @@ debts.get('/', async (c) => {
             Uncollected Dues tile), so credit wears it here too. It was blue,
             which made the same money a different colour on this page. */}
         <div class="bg-purple-50 dark:bg-purple-900/20 rounded-2xl p-4 border border-purple-100 dark:border-purple-800">
-          <p class="text-xs text-purple-700 dark:text-purple-400 font-semibold uppercase tracking-wide">Owed to Us (Credit)</p>
+          <p class="text-[12px] text-purple-700 dark:text-purple-400 font-semibold">Owed to Us (Credit)</p>
           <p class="text-2xl font-bold text-purple-700 dark:text-purple-400">{mga(totalCredit)}</p>
           <p class="text-xs text-purple-600 dark:text-purple-500">{openCredits.results.length} open</p>
         </div>

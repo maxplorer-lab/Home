@@ -59,12 +59,39 @@ import { WAY_CONFIG } from "../config";
 const NTFY_SERVER_HOME_KEY = "ntfy_server";
 
 /**
+ * One chat line, shortened to what a card can print. The ellipsis is part of the
+ * claim: a preview that stops mid-sentence without saying so reads as the whole
+ * message.
+ */
+function clipChatLine(text: string): string {
+  if (text.length <= CHAT_UNREAD_CHARS) return text;
+  return text.slice(0, CHAT_UNREAD_CHARS).trimEnd() + "\u2026";
+}
+
+/**
  * This file's build marker. Bump it whenever the DO's own code changes — the
  * debug probe reports it, and `ensureSchema` uses it to decide whether the
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v16-one-spelling";
+const DO_BUILD = "notify-v17-unread-lines";
+
+/**
+ * How many unread chat lines the `chat-latest` readout hands back.
+ *
+ * The Home card prints what arrived, so the readout carries the lines and not
+ * only a count -- but every page of the app polls this endpoint every 25 s, so
+ * the list is bounded rather than the room: the newest six, with `count` still
+ * the true total so the card can say what it is not showing.
+ */
+const CHAT_UNREAD_LINES = 6;
+
+/**
+ * Longest preview of one line. A chat message is a sentence and a module's
+ * system row is a transaction note; neither is a paragraph, and the card clips
+ * to one line anyway. This is what keeps the 25 s poll small on mobile data.
+ */
+const CHAT_UNREAD_CHARS = 160;
 
 /** What the public live-share view is allowed to know about ONE device. Its
  *  narrowness is the feature: no chat, no other device, no totals. */
@@ -533,20 +560,68 @@ export class FleetDO extends DurableObject<Env> {
       return new Response(null, { status: 204 });
     }
 
-    // The Home nav's unread dot: WHEN the chat last received anything, and
-    // nothing else. Read from here rather than D1 because the flush is nightly
-    // -- today's messages exist only in this DO. One row, no conversation, so
-    // a poll on every page of the app stays cheap. The caller (the Worker's
+    // The Home nav's unread dot, and the Home page's unread card: WHEN the chat
+    // last received anything, and -- when the caller says what it has already
+    // seen -- HOW MANY arrived after that, and the lines themselves. Read from
+    // here rather than D1 because the flush is nightly; the DO holds the live
+    // scrollback, D1 holds the copy. The caller (the Worker's
     // /way/api/chat/latest) has already required a session.
+    //
+    // The LINES, not one example of them: the card's job is to say what the
+    // household missed, and "3 new messages" under a single line names the
+    // wrong thing -- two of the three are invisible. So `messages` is the
+    // newest-first window `count` describes, bounded by CHAT_UNREAD_LINES and
+    // clipped by CHAT_UNREAD_CHARS so a poll on every page stays small, and
+    // `count` remains the true total so the card can say what it is not
+    // showing.
+    //
+    // `created_at` is `new Date().toISOString()` on the way in: fixed width,
+    // always UTC, no locale. That is what makes both comparisons honest -- the
+    // `>` below, and the string compare the browser already does against its own
+    // stored watermark.
     if (url.pathname === "/chat-latest" && request.method === "GET") {
+      const since = url.searchParams.get("since");
       const rows = this.sql
-        .exec<{ id: string; created_at: string }>(
-          `SELECT id, created_at FROM chat_messages ORDER BY created_at DESC LIMIT 1`
+        .exec<{ id: string; created_at: string; sender: string | null; message: string; is_auto: number }>(
+          `SELECT id, created_at, sender, message, is_auto FROM chat_messages ORDER BY created_at DESC LIMIT 1`
         )
         .toArray();
       const newest = rows[0] ?? null;
+      // No `since` at all means "everything since the beginning of the room" is
+      // NOT the question this endpoint is asked, so the count stays 0: the
+      // browser sends its watermark on every poll after its first visit, and a
+      // first visit has nothing to compare against. The list is empty for the
+      // same reason -- with no watermark there is nothing to call unread.
+      const unread = since
+        ? this.sql
+            .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM chat_messages WHERE created_at > ?`, since)
+            .toArray()[0]?.n ?? 0
+        : 0;
+      const lines = since
+        ? this.sql
+            .exec<{ id: string; created_at: string; sender: string | null; message: string; is_auto: number }>(
+              `SELECT id, created_at, sender, message, is_auto FROM chat_messages WHERE created_at > ? ORDER BY created_at DESC LIMIT ?`,
+              since,
+              CHAT_UNREAD_LINES
+            )
+            .toArray()
+        : [];
       return new Response(
-        JSON.stringify({ id: newest?.id ?? null, at: newest?.created_at ?? null }),
+        JSON.stringify({
+          id: newest?.id ?? null,
+          at: newest?.created_at ?? null,
+          count: unread,
+          // Newest first, the order the card prints and the order a phone shows
+          // a notification stack in: the line under the count is the one that
+          // just happened. (SELECT took them DESC already; nothing to reverse.)
+          messages: lines.map((row) => ({
+            id: row.id,
+            at: row.created_at,
+            sender: row.sender,
+            message: clipChatLine(row.message),
+            isAuto: !!row.is_auto,
+          })),
+        }),
         { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
       );
     }

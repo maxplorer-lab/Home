@@ -206,15 +206,15 @@ budget.get('/', async (c) => {
           green = money in, red = money out, teal = net (Sompitra's own hue). */}
       <div class="grid grid-cols-3 gap-2 mb-4">
         <div class="bg-green-50 dark:bg-green-900/20 rounded-2xl p-3 text-center border border-green-100 dark:border-green-800">
-          <p class="text-[10px] text-green-700 dark:text-green-400 font-semibold uppercase tracking-[.07em]">Income</p>
+          <p class="text-[12px] text-green-700 dark:text-green-400 font-semibold">Income</p>
           <p class="num text-base sm:text-xl font-bold text-green-700 dark:text-green-400 truncate">{mga(totalIncome)}</p>
         </div>
         <div class="bg-red-50 dark:bg-red-900/20 rounded-2xl p-3 text-center border border-red-100 dark:border-red-800">
-          <p class="text-[10px] text-red-700 dark:text-red-400 font-semibold uppercase tracking-[.07em]">Expenses</p>
+          <p class="text-[12px] text-red-700 dark:text-red-400 font-semibold">Expenses</p>
           <p class="num text-base sm:text-xl font-bold text-red-700 dark:text-red-400 truncate">{mga(totalExpenses)}</p>
         </div>
         <div class={`rounded-2xl p-3 text-center border ${net >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 border-teal-100 dark:border-teal-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
-          <p class={`text-[10px] font-semibold uppercase tracking-[.07em] ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
+          <p class={`text-[12px] font-semibold ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
           <p class={`num text-base sm:text-xl font-bold truncate ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(net)}</p>
         </div>
       </div>
@@ -1820,11 +1820,11 @@ budget.get('/reports', async (c) => {
       {/* Summary */}
       <div class="grid grid-cols-3 gap-2 mb-4">
         <div class="bg-green-50 dark:bg-green-900/20 rounded-2xl p-3 text-center border border-green-100 dark:border-green-800">
-          <p class="text-[10px] text-green-700 dark:text-green-400 font-semibold uppercase">Income</p>
+          <p class="text-[12px] text-green-700 dark:text-green-400 font-semibold">Income</p>
           <p class="text-base sm:text-xl font-bold text-green-700 dark:text-green-400 truncate">{mga(income)}</p>
         </div>
         <div class="bg-red-50 dark:bg-red-900/20 rounded-2xl p-3 text-center border border-red-100 dark:border-red-800">
-          <p class="text-[10px] text-red-700 dark:text-red-400 font-semibold uppercase">Expenses</p>
+          <p class="text-[12px] text-red-700 dark:text-red-400 font-semibold">Expenses</p>
           <p class="text-base sm:text-xl font-bold text-red-700 dark:text-red-400 truncate">{mga(expense)}</p>
         </div>
         {/* Teal is the app's "net" colour (the main budget summary, the dashboard's
@@ -1832,7 +1832,7 @@ budget.get('/reports', async (c) => {
             fact in two colours, which is the thing the money palette exists to
             stop. Negative keeps orange ("we owe"), as everywhere. */}
         <div class={`rounded-2xl p-3 text-center border ${net >= 0 ? 'bg-teal-50 dark:bg-teal-900/20 border-teal-100 dark:border-teal-800' : 'bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800'}`}>
-          <p class={`text-[10px] font-semibold uppercase ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
+          <p class={`text-[12px] font-semibold ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>Net</p>
           <p class={`text-base sm:text-xl font-bold truncate ${net >= 0 ? 'text-teal-700 dark:text-teal-400' : 'text-orange-700 dark:text-orange-400'}`}>{mga(net)}</p>
         </div>
       </div>
@@ -1926,7 +1926,7 @@ budget.get('/reports', async (c) => {
         )}
 
         {/* Header */}
-        <div class="grid grid-cols-[1fr_4.75rem_4.75rem_4rem] gap-1 items-center pb-2 border-b border-gray-100 dark:border-gray-700 text-[10px] uppercase text-gray-400 font-semibold">
+        <div class="grid grid-cols-[1fr_4.75rem_4.75rem_4rem] gap-1 items-center pb-2 hairline t-micro font-semibold">
           <span>Category</span>
           <span class="text-right">{cmpA.label}</span>
           <span class="text-right">{cmpB.label}</span>

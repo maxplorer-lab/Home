@@ -35,6 +35,7 @@
 //  11. two channels per person           22. two shopping lists
 //  23. a number is typed, never nudged   24. no request data in module scope
 //  25. no request data on a DO's `this`
+//  26. one design language (tokens, labels, the front door)
 // Exit code 0 = all green, 1 = something regressed.
 
 import { readFileSync } from 'node:fs'
@@ -245,6 +246,63 @@ for (const p of ['/', '/chat', '/way/', '/laoka/']) {
     'the dot has no state script — it could never light up')
 }
 
+// The Home page's unread card. It is the same watermark as the dot, told at the
+// size the home screen has room for, so what is checked here is the two things
+// that make it a CARD: where it sits, and the fact that it is filled from the
+// server's answer rather than from anything this browser has rendered.
+{
+  const homeDoc = await body(await req('/'))
+  // Scoped past </head> on purpose: `rooms-card` and `unread-card` are CSS rules
+  // in the head, and an index taken from there would sit "before" the card
+  // however the markup is ordered — a vacuous green. (Slicing on '<body' is not
+  // enough, and that is not hypothetical: CHROME_CSS explains itself with the
+  // words "not as Tailwind utilities on <body>", so the first '<body' in the
+  // document is a COMMENT in the stylesheet. It was written that way first, and
+  // the check reported rooms@9294 — before the figure it is meant to follow.)
+  // The script at the end of the body carries the same [data-chat-unread-card]
+  // string, and the markup comes first, so indexOf finds the card itself.
+  const doc = homeDoc.slice(homeDoc.indexOf('</head>'))
+  const anchorAt = doc.indexOf('Cash on hand')
+  const cardAt = doc.indexOf('data-chat-unread-card')
+  const roomsAt = doc.indexOf('rooms-card')
+  check('Home can show unread chat as the SECOND box, under the month\u2019s own figure',
+    anchorAt > -1 && cardAt > anchorAt && roomsAt > cardAt,
+    `figure@${anchorAt} card@${cardAt} rooms@${roomsAt} — the card does not sit between the figure and the rooms`)
+  check('…and it ships hidden, with the slots the script fills',
+    /class="unread-card[^"]*"/.test(doc) && !/class="unread-card[^"]*\bon\b/.test(doc) &&
+      doc.includes('data-unread-count') && doc.includes('data-unread-rows') && doc.includes('data-mine='),
+    'the card is missing, already shown without a count in it, or one of its fill slots (or the "is this mine" name) is gone')
+  // The card is a GRID ITEM whose content is a list of nowrap lines, and a grid
+  // item's automatic minimum size is its min-content width -- which for a row of
+  // nowrap text is the whole sentence. Without min-width: 0 the card does not
+  // clip: it widens its own track, and on a 390px phone the home page measured
+  // 498px with everything in the figure beside it pushed off the screen. (Found
+  // exactly that way, after the single preview line became a list.)
+  check('…and it cannot widen its own grid track',
+    /\.unread-card \{[^}]*min-width:\s*0/.test(homeDoc),
+    'the card lost min-width: 0 — its nowrap rows will widen the home page past the viewport on a phone')
+  // The card says not just HOW MANY arrived but WHICH ones, so it prints one row
+  // per unread message and the number of rows is not known when the page is
+  // rendered: the script builds them as elements. That is also the one line that
+  // makes the card safe -- the room carries whatever anyone typed and a module
+  // notification carries a transaction note -- so what is checked is that the
+  // rows are ELEMENTS filled with textContent, never a string of markup.
+  const cardScript = (homeDoc.match(/var KEY = 'chat_last_seen';[\s\S]*?\}\)\(\);/) || [''])[0]
+  // "paints a row" = creates an element AND writes the message into it through
+  // textContent. Only textContent is required, not `data-unread-rows`, because a
+  // script that appended to the wrong node would still be painting as text --
+  // what is at stake in this check is injection, not placement.
+  check('…and the script builds one text row per unread line, never markup',
+    cardScript.length > 0 &&
+      cardScript.includes('data-unread-rows') &&
+      /paintCardRow[\s\S]*?createElement/.test(cardScript) &&
+      /\.textContent\s*=/.test(cardScript) &&
+      !/\.innerHTML\s*=/.test(cardScript),
+    cardScript.length === 0
+      ? 'the unread script is not on the page'
+      : 'the card script does not build rows from the server\u2019s lines as text, or it builds markup')
+}
+
 // The watermark that dot polls. One row from the Durable Object, not D1: the
 // flush is nightly, so today's messages exist only in the DO, and "has anything
 // arrived since I last looked" is exactly the question D1 cannot answer.
@@ -255,6 +313,57 @@ for (const p of ['/', '/chat', '/way/', '/laoka/']) {
   check('the chat watermark answers with a timestamp and an id (the nav dot polls this)',
     r.status === 200 && !!d && 'at' in d && 'id' in d,
     `status ${r.status} body=${JSON.stringify(d).slice(0, 80)}`)
+  // The card needs more than a timestamp: a number to print, and the LINES to
+  // print under it. One example of them is not the same answer (see below).
+  check('…and enough to describe what arrived, not just when it did',
+    !!d && 'count' in d && Array.isArray(d.messages),
+    `keys: ${Object.keys(d || {}).join(',')}`)
+  // `since` is the browser's own watermark, so the count means "since I last
+  // looked" and not "the room's total". Two watermarks, same endpoint: an
+  // endpoint that ignored `since` would answer both identically, which is the
+  // shape this catches. "Everything" is only required to be non-zero when the
+  // room is not empty, so a fresh database does not fail the suite.
+  let allTime = null; let future = null
+  try { allTime = JSON.parse(await body(await req('/way/api/chat/latest?since=1970-01-01T00:00:00.000Z'))) } catch (e) {}
+  try { future = JSON.parse(await body(await req('/way/api/chat/latest?since=2999-01-01T00:00:00.000Z'))) } catch (e) {}
+  check('the readout narrows to what arrived after the caller\u2019s own watermark',
+    !!allTime && !!future && future.count === 0 && allTime.count >= future.count &&
+      (allTime.at === null || allTime.count > 0),
+    `since 1970 → ${allTime && allTime.count}, since 2999 → ${future && future.count} (an endpoint ignoring 'since' answers both alike)`)
+  // The lines, and the two things about them the card depends on: there is one
+  // per unread message (as many as the server is willing to send -- it bounds
+  // them, hence min), and they arrive NEWEST FIRST. Two checks rather than one
+  // because they are two faults: a readout that answered with ONE line
+  // regardless of the count, and a readout that sent them oldest-first (under
+  // which the card's own "+N earlier in the room" row would be a lie).
+  const lines = (allTime && allTime.messages) || []
+  check('…and one line per unread message, bounded',
+    !!allTime && Array.isArray(allTime.messages) &&
+      lines.length === Math.min(allTime.count, 6) &&
+      lines.every((m) => 'id' in m && 'at' in m && 'sender' in m && 'message' in m && 'isAuto' in m),
+    `count=${allTime && allTime.count} lines=${lines.length} (expected min(count, 6), each with id/at/sender/message/isAuto)`)
+  check('…and they arrive newest first',
+    lines.every((m, i) => i === 0 || lines[i - 1].at >= m.at),
+    `order: ${lines.map((m) => m.at).join(' , ')} — the row under the count is meant to be the one that just happened, and the card's "+N earlier" row is only true if the omitted ones are the older ones`)
+  check('…and nothing at all after a watermark in the future',
+    !!future && Array.isArray(future.messages) && future.messages.length === 0,
+    `since 2999 → ${future && JSON.stringify(future.messages)}`)
+  // The clip is a claim about the PAYLOAD, not decoration: every page polls this
+  // every 25 s, so one runaway message must not become a kilobyte poll. Asserted
+  // two ways because either alone is weak -- the DO must actually clip (static,
+  // and the only half that can bite in a room whose messages are all short), and
+  // nothing returned may exceed the bound it declares (behavioural: that is what
+  // a wrong cap breaks). Comments stripped first, since the constant's own
+  // doc-comment names it.
+  let doSrc = ''
+  try { doSrc = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8') } catch (e) {}
+  const doClip = doSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const clipApplied = /message:\s*clipChatLine\(/.test(doClip)
+  const clipCap = Number((doClip.match(/CHAT_UNREAD_CHARS = (\d+)/) || [])[1] || 0)
+  check('…and each line is clipped before it leaves the DO, so one long message cannot bloat every poll',
+    clipApplied && clipCap > 0 &&
+      lines.every((m) => typeof m.message === 'string' && m.message.length <= clipCap + 1),
+    `clip applied: ${clipApplied}, cap=${clipCap}, longest line: ${Math.max(0, ...lines.map((m) => (m.message || '').length))} chars`)
   const savedJar = new Map(jar)
   jar.clear()
   const anon = await req('/way/api/chat/latest')
@@ -4675,6 +4784,145 @@ log('\n25. a Durable Object field is not per-request scratch space')
   check('the jsonc reader keeps a URL value intact',
     urlIntact,
     'wrangler.jsonc no longer parses with its https:// values whole, so the Durable Object list above could be silently empty')
+}
+
+// ─── 26. one design language, from the front door to the last card
+log('\n26. one design language: the tokens, the labels, and the front door')
+{
+  // The design pass this section guards made three claims that nothing else can
+  // check, because all three are invisible from outside and obvious to a person:
+  //
+  //   • The app has ONE set of surfaces — paper / sheet / a hairline — and one
+  //     type scale to go with them. Every panel is `.card` now. Before, every
+  //     box on every page carried its own white or gray-800 plus rounded-2xl
+  //     plus shadow-sm plus border-gray-100, so a ledger row, a stat tile and a
+  //     page section all had identical weight — and the caption grey (gray-400,
+  //     2.5:1 on white) is what made 10px text unreadable.
+  //   • No label is all-caps micro-type any more: the loudest "generated
+  //     dashboard" tell in the app, and one no functional test can see.
+  //   • The sign-in screen is the app's front door — the same typeface, the same
+  //     tokens, the same theme switch, and the small mark. It used to ship the
+  //     982KB logo-1024.png for an 80px avatar, and it was the ONE document that
+  //     loaded the brand font without ever applying it, so "Home" rendered in
+  //     the system face on a page no other screen's colours appear on.
+  //
+  // Contrast is measured, not asserted: the floors below are what the token
+  // values have to MEET, so a future palette edit that quietly drops a caption
+  // back under the line fails here instead of in someone's eyes.
+  const home = await body(await req('/'))
+  const login = await body(await req('/login'))
+
+  const cssOf = (html) => (html.match(/<style[^>]*>[\s\S]*?<\/style>/g) || []).join('\n')
+  const hex = (chunk, name) => ((chunk.match(new RegExp('--' + name + ':[\\s]*(#[0-9a-fA-F]{6})')) || [])[1] || '')
+  const homeCss = cssOf(home)
+  // The light palette ends where the one dark block begins: the tokens carry a
+  // single theme signal, the `html.dark` class (see the note in
+  // views/app-chrome.tsx, and the check that keeps it single, below).
+  const darkAt = homeCss.indexOf('html.dark {')
+  const lightEnd = darkAt > 0 ? darkAt : homeCss.length
+  const lightCss = homeCss.slice(0, lightEnd)
+  const darkCss = darkAt > 0 ? homeCss.slice(darkAt) : ''
+
+  // WCAG relative luminance / contrast ratio, straight from the token values.
+  const chan = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4) }
+  const lum = (h) => {
+    const n = parseInt(h.replace('#', ''), 16)
+    return 0.2126 * chan((n >> 16) & 255) + 0.7152 * chan((n >> 8) & 255) + 0.0722 * chan(n & 255)
+  }
+  const contrast = (a, b) => { const s = [lum(a), lum(b)].sort((x, y) => y - x); return (s[0] + 0.05) / (s[1] + 0.05) }
+
+  check('the surfaces come from one token set, defined for both themes',
+    ['paper', 'sheet', 'rule', 'ink', 'ink-2', 'ink-3'].every((t) => hex(lightCss, t) && hex(darkCss, t)),
+    'a surface token is missing from :root or from html.dark, so a page would fall back to a grey of its own')
+
+  // ONE theme signal, and it is the class. Probed in the browser: this page's
+  // Tailwind build emits its `dark:` utilities as `.dark\:x:is(.dark *)`, so
+  // they follow the CLASS and not the OS (the opposite was believed here for a
+  // while, and a second token copy was added to match it). A second copy driven
+  // by prefers-color-scheme is therefore not belt-and-braces, it is a split:
+  // with an explicit "light" choice stored on a dark-OS phone the tokens went
+  // dark while `bg-gray-100` stayed light, and the text on such a box — whose
+  // colour comes from the inherited --ink — rendered invisible (/settings, both
+  // action links to Account). So the copy is now forbidden, not required.
+  check('the dark palette answers the class only — no second, OS-driven copy',
+    darkAt > 0 &&
+      !/@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{/.test(homeCss) &&
+      ['paper', 'sheet', 'ink-3'].every((t) => hex(darkCss, t)),
+    'the tokens and the dark: utilities are following different signals again (a prefers-color-scheme :root copy is present, or html.dark has lost its values), so part of the screen inverts with the switch')
+
+  // ...and the class those tokens wait for has to be set by every document that
+  // carries the stylesheet, or a dark-OS phone is stuck in the light palette.
+  const wayDoc = await body(await req('/way/'))
+  const themedDocs = [['/', home], ['/login', login], ['/way/', wayDoc]]
+  const unseeded = themedDocs.filter(([, h]) => !/classList\.add\('dark'\)/.test(h))
+  check('every document that carries the tokens also sets the class they wait for',
+    unseeded.filter(([, h]) => /html\.dark/.test(h)).length === 0 && unseeded.length === 0,
+    'a document ships the dark palette without the bootstrap that sets html.dark: ' + unseeded.map(([p]) => p).join(', '))
+
+  const floors = [
+    ['light labels', hex(lightCss, 'ink-2'), hex(lightCss, 'sheet'), 6],
+    ['light captions', hex(lightCss, 'ink-3'), hex(lightCss, 'sheet'), 4.5],
+    ['dark labels', hex(darkCss, 'ink-2'), hex(darkCss, 'sheet'), 6],
+    ['dark captions', hex(darkCss, 'ink-3'), hex(darkCss, 'sheet'), 4.5],
+  ]
+  const under = floors.filter(([, fg, bg, min]) => !(fg && bg) || contrast(fg, bg) < min)
+  check('every label and caption clears its contrast floor, in both themes',
+    under.length === 0,
+    under.map(([n, fg, bg, min]) => `${n}: ${fg || '?'} on ${bg || '?'} is ${fg && bg ? contrast(fg, bg).toFixed(2) : '?'}:1, floor ${min}`).join('; '))
+
+  // ── one label treatment, and nothing in caps ──
+  // Comments are stripped first: a comment may TALK about the old treatment,
+  // and a check that reads prose reports on prose.
+  const bare = (html) => html.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '').replace(/^\s*\/\/.*$/gm, '')
+  const CAPS = /uppercase|text-transform:\s*uppercase/
+  const capped = []
+  for (const p of ['/', '/budget', '/settings', '/kine', '/debts', '/sales', '/chat', '/way/', '/laoka/']) {
+    const html = p === '/' ? home : await body(await req(p))
+    if (CAPS.test(bare(html))) capped.push(p)
+  }
+  check('no screen sets a label in all-caps micro-type',
+    capped.length === 0,
+    `${capped.join(', ')} still carries an uppercase label — the card titles and the money labels are sentence case everywhere else`)
+
+  // Both halves of that check have to be able to fail: the pattern it forbids,
+  // and the contrast maths it uses for the tokens above.
+  check('…and the label and contrast checks catch what they replaced',
+    CAPS.test('<p class="text-[10px] font-semibold uppercase tracking-[.07em]">Income</p>') &&
+      contrast('#9ca3af', '#ffffff') < 4.5,
+    'the caps pattern or the contrast helper cannot fail, which would make the checks above decorative')
+
+  // ── the front door ──
+  check('/login loads the one brand typeface',
+    /fonts\.googleapis\.com\/css2\?family=Plus\+Jakarta\+Sans/.test(login),
+    'the sign-in screen requests no brand font')
+  check('/login renders in the brand face, on the app\'s own paper',
+    /body\s*\{[^}]*font-family:\s*'Plus Jakarta Sans'/.test(login) &&
+      /body\s*\{[^}]*background:\s*var\(--paper\)/.test(login),
+    'the front door loads the font and the tokens without applying them — it renders in the system face on a grey of its own')
+  check('…and the old sign-in head would fail that',
+    !/body\s*\{[^}]*font-family:\s*'Plus Jakarta Sans'/.test('<body class="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800">'),
+    'the expression matches anything, so the check above cannot fail')
+  check('/login ships the small mark, not the 1MB logo',
+    /\/icons\/icon-192\.png/.test(login) && !/logo-1024\.png/.test(login),
+    'the first screen of the app is loading logo-1024.png (982KB) again')
+  check('/login names every room behind it',
+    ['Sompitra', 'WAY', 'Laoka', 'Chat'].every((m) => login.includes(m)),
+    'the door no longer says what is behind it')
+  check('no sign-in message is an emoji',
+    !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(login),
+    'an emoji is back in a sign-in message: a colour picture the OS picks, and no help with what to do next')
+
+  // ── one anchor per screen ──
+  // Counted in the MARKUP: the stylesheet also contains `.t-anchor` and
+  // `.card-lg`, so a whole-document grep counts the design system instead of
+  // the page that uses it (which is how this check first failed).
+  const markup = home.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<script[\s\S]*?<\/script>/g, '')
+  const anchors = (markup.match(/t-anchor/g) || []).length
+  const panels = (markup.match(/card-lg/g) || []).length
+  check('the home page leads with exactly one anchor and a ruled ledger',
+    anchors === 1 && panels === 1 && /class="ledger"/.test(markup),
+    `t-anchor x${anchors}, card-lg x${panels} — the home page has drifted from one anchor figure plus a ledger, ` +
+      'so nothing on it is ranked any more')
 }
 
 // ─── summary ─────────────────────────────────────────────────────

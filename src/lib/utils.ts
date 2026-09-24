@@ -98,11 +98,17 @@ export function userAccentColor(displayName: string | null | undefined): string 
 
 // ─── Current balance grading ─────────────────────────────────
 // red < 0 · yellow < 200k · blue < 500k · green ≥ 500k
+//
+// The light-mode weights are the 700 step, not the 500 one: this is the colour
+// the home page prints CASH ON HAND in, and yellow-500 on a white sheet
+// measures 2.3:1 — under the 3:1 floor even for a 30px figure. The 700 step
+// clears 4.5:1 on every one of the four, and dark mode keeps the 400 (4.6-8:1
+// on #1f2937).
 export function currentGradedColor(v: number): string {
-  if (v < 0) return 'text-red-500 dark:text-red-400'
-  if (v < 200000) return 'text-yellow-500 dark:text-yellow-400'
-  if (v < 500000) return 'text-blue-500 dark:text-blue-400'
-  return 'text-green-600 dark:text-green-400'
+  if (v < 0) return 'text-red-700 dark:text-red-400'
+  if (v < 200000) return 'text-yellow-700 dark:text-yellow-400'
+  if (v < 500000) return 'text-blue-700 dark:text-blue-400'
+  return 'text-green-700 dark:text-green-400'
 }
 
 export function currentGradedFill(v: number): string {

@@ -1,6 +1,10 @@
 /** @jsxImportSource hono/jsx */
 import type { FC } from 'hono/jsx'
 import { PressFeedbackStyle, PressFeedbackScript } from './feedback'
+// One money formatter for the whole app: a client's balance and the amount they
+// paid are francs, and they read as francs ("Ar 45,000"), not as a bare number
+// with "MGA" stuck on the end.
+import { mga } from '../lib/utils'
 // The one app chrome (header + tab bar) — shared with the module shells.
 import { CHROME_CSS, TAILWIND_CONFIG, CHAT_UNREAD_SCRIPT, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, BrandFontLinks, Icon, tabColorFor, tabInkFor } from './app-chrome'
 
@@ -72,7 +76,7 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
           in always agrees with the tab you tapped. */}
       <body
         style={{ '--accent': tabColorFor(activeTab), '--accent-ink': tabInkFor(activeTab) }}
-        class="min-h-full flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors"
+        class="min-h-full flex flex-col transition-colors"
       >
 
         {/* ── App Header — THE one chrome (app-chrome.tsx) ── */}
@@ -86,8 +90,11 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
             the strip scrolls sideways if one cannot (`shrink-0` on the items,
             so a label is never squashed or clipped instead). */}
         {user && moneyTabs.includes(activeTab as string) && (
-          <nav class="sticky top-12 z-40 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
-            <div class={`${SHELL_WIDTH} mx-auto px-2 flex gap-1 py-1 overflow-x-auto`}>
+          <nav
+            class="sticky top-12 sm:top-14 z-40 border-b"
+            style={{ backgroundColor: 'var(--sheet)', borderColor: 'var(--rule)' }}
+          >
+            <div class={`${SHELL_WIDTH} mx-auto px-2 flex gap-1 py-1.5 overflow-x-auto`}>
               {[
                 { href: '/budget', label: 'Budget', tab: 'budget' },
                 { href: '/kine',   label: 'Kiné',   tab: 'kine'   },
@@ -96,8 +103,10 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
               ].map(item => (
                 <a
                   href={item.href}
-                  style={activeTab === item.tab ? { backgroundColor: 'var(--accent-ink)' } : undefined}
-                  class={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${activeTab === item.tab ? 'text-white font-semibold shadow-sm' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                  style={activeTab === item.tab
+                    ? { backgroundColor: 'var(--accent-ink)' }
+                    : { color: 'var(--ink-2)' }}
+                  class={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-[13px] transition-colors ${activeTab === item.tab ? 'text-white font-semibold shadow-sm' : 'font-medium hover:bg-gray-100 dark:hover:bg-gray-700'}`}
                 >
                   {item.label}
                 </a>
@@ -148,15 +157,16 @@ export const Layout: FC<LayoutProps> = ({ title = 'Home', user, activeTab, fullB
 // colour. It replaces the emoji that used to be glued onto the title text: an
 // emoji is a fixed colour picture, so "🔔 Today's Activity" looked identical on
 // the green Home tab and the teal Sompitra tab, and it changed shape and weight
-// on every OS. The label itself stays grey on purpose — tinting 11-12px text is
+// on every OS. The label itself stays ink-2 on purpose — tinting 12px text is
 // how a heading becomes unreadable in dark mode (the tab tints needed a
 // color-mix lift for exactly this reason).
-export const Card: FC<{ title?: string; icon?: string; className?: string; noUppercase?: boolean; children?: any }> = ({ title, icon, className = '', noUppercase, children }) => (
-  <div class={`bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-4 sm:p-5 ${className}`}>
+//
+// The panel is `.card` — one token surface (see CHROME_CSS), instead of every
+// card carrying its own white/gray-800/rounded-2xl/shadow-sm class list.
+export const Card: FC<{ title?: string; icon?: string; className?: string; children?: any }> = ({ title, icon, className = '', children }) => (
+  <div class={`card p-4 sm:p-5 ${className}`}>
     {title && (
-      <h3 class={`flex items-center gap-2 mb-3 ${noUppercase
-        ? 'text-sm sm:text-[15px] font-bold text-gray-700 dark:text-gray-200'
-        : 'section-title text-gray-500 dark:text-gray-400'}`}>
+      <h3 class="flex items-center gap-2 mb-3.5 section-title">
         {icon && <span class="accent-mark flex shrink-0"><Icon name={icon} className="w-[15px] h-[15px]" /></span>}
         {title}
       </h3>
@@ -165,11 +175,11 @@ export const Card: FC<{ title?: string; icon?: string; className?: string; noUpp
   </div>
 )
 
-export const StatCard: FC<{ label: string; value: string; sub?: string; color?: string; children?: any }> = ({ label, value, sub, color = 'text-gray-900 dark:text-white' }) => (
-  <div class="bg-white dark:bg-gray-800 rounded-xl sm:rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-3 sm:p-5 flex flex-col justify-center">
-    <p class="section-title text-gray-500 dark:text-gray-400">{label}</p>
-    <p class={`num text-lg sm:text-2xl font-bold mt-0.5 sm:mt-1 truncate ${color}`}>{value}</p>
-    {sub && <p class="text-[10px] sm:text-xs text-gray-400 mt-1 truncate">{sub}</p>}
+export const StatCard: FC<{ label: string; value: string; sub?: string; color?: string; children?: any }> = ({ label, value, sub, color = '' }) => (
+  <div class="card p-3 sm:p-5 flex flex-col justify-center">
+    <p class="t-label">{label}</p>
+    <p class={`t-value text-lg sm:text-2xl mt-0.5 sm:mt-1 truncate ${color}`}>{value}</p>
+    {sub && <p class="t-micro mt-1 truncate">{sub}</p>}
   </div>
 )
 
@@ -177,45 +187,51 @@ export const Badge: FC<{ text: string; color?: string; children?: any }> = ({ te
   <span class={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${color}`}>{text}</span>
 )
 
-// Tinted summary card (same look as the Budget summary cards).
+// A comparison bar for a ledger row (and the home anchor): label left, figure
+// right, a hairline between rows. This used to be six equal pastel TILES on the
+// dashboard — six boxes of identical size and saturation, so the one figure the
+// household actually reads (cash on hand) carried exactly as much weight as the
+// smallest fact on the screen. A row says the same thing and ranks it.
+//
+// `tone` is the FIGURE's colour, and it means what the money palette says it
+// means: green = money in, red = money out, teal = a period's net result,
+// orange = we owe, purple = owed to us.
 export const TintStat: FC<{ label: string; value: string; tone: string; sub?: string }> = ({ label, value, tone, sub }) => (
-  <div class={`rounded-2xl p-3 text-center border ${tone}`}>
-    <p class="text-[10px] font-semibold uppercase tracking-[.07em] opacity-80">{label}</p>
-    <p class="num text-base sm:text-xl font-bold truncate">{value}</p>
-    {sub && <p class="text-[10px] opacity-70 mt-0.5 truncate">{sub}</p>}
+  <div class="flex items-baseline justify-between gap-3 py-2.5">
+    <span class="min-w-0">
+      <span class="t-label block">{label}</span>
+      {sub && <span class="t-micro block">{sub}</span>}
+    </span>
+    <span class={`t-value shrink-0 ${tone}`}>{value}</span>
   </div>
 )
 
-// Per-client Kiné summary: delivered (blue), paid (orange), due sessions (green/yellow/red)
 export const KineClientStats: FC<{ delivered: number; paid: number; rate: number }> = ({ delivered, paid, rate }) => {
   const balance = rate > 0 ? Math.round(paid / rate) - delivered : 0
-  let dueCls = 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400'
-  let dueState = 'Balanced'
+  let dueCls = 'text-green-600 dark:text-green-400'
+  let dueState = 'balanced'
   let dueVal = '0'
   if (balance > 0) {
-    dueCls = 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400'
-    dueState = 'Prepaid · ' + (balance * rate).toLocaleString('en-US') + ' MGA'
+    dueCls = 'text-yellow-700 dark:text-yellow-400'
+    dueState = 'prepaid · ' + mga(balance * rate)
     dueVal = '+' + balance
   } else if (balance < 0) {
-    dueCls = 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
-    dueState = 'Owes · ' + (Math.abs(balance) * rate).toLocaleString('en-US') + ' MGA'
+    dueCls = 'text-red-600 dark:text-red-400'
+    dueState = 'owes · ' + mga(Math.abs(balance) * rate)
     dueVal = '-' + Math.abs(balance)
   }
+  // Three facts about one client, set as one line of a ledger: sessions in,
+  // money in, and where that leaves them. It used to be three pastel boxes,
+  // which made the payment figure as loud as the balance. The balance is the
+  // one that decides something, so it is the one that carries colour.
   return (
-    <div class="grid grid-cols-3 gap-2">
-      <div class="rounded-xl bg-blue-50 dark:bg-blue-900/20 p-2 text-center">
-        <p class="text-[10px] font-semibold uppercase text-blue-600 dark:text-blue-400">Delivered</p>
-        <p class="text-lg font-bold text-blue-600 dark:text-blue-400">{delivered}</p>
-      </div>
-      <div class="rounded-xl bg-orange-50 dark:bg-orange-900/20 p-2 text-center">
-        <p class="text-[10px] font-semibold uppercase text-orange-600 dark:text-orange-400">Paid</p>
-        <p class="text-sm sm:text-base font-bold text-orange-600 dark:text-orange-400">{paid.toLocaleString('en-US')} MGA</p>
-      </div>
-      <div class={`rounded-xl p-2 text-center ${dueCls}`}>
-        <p class="text-[10px] font-semibold uppercase">Due</p>
-        <p class="text-lg font-bold">{dueVal}</p>
-        <p class="text-[9px] opacity-70 leading-tight">{dueState}</p>
-      </div>
+    <div class="flex items-baseline gap-3 t-micro">
+      <span><span class="t-value text-[13px]">{delivered}</span> sessions</span>
+      <span><span class="t-value text-[13px]">{mga(paid)}</span> paid</span>
+      {/* The one fact that decides something sits at the far end of the line. */}
+      <span class={`ml-auto text-right font-semibold ${dueCls}`}>
+        {dueVal} <span class="font-normal">{dueState}</span>
+      </span>
     </div>
   )
 }

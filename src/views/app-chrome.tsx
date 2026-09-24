@@ -37,6 +37,19 @@ export interface Badge {
 // fallback, so a cold cache offline still renders in a real font.
 export const BRAND_FONT_STACK = "'Plus Jakarta Sans', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif"
 
+/** The dark palette: written ONCE, applied by ONE signal — the html.dark class
+    the bootstraps set (see the note inside `CHROME_CSS` for why the OS media
+    query must NOT carry a second copy of these values). */
+const DARK_TOKENS = `
+    color-scheme: dark;
+    --paper:  #111827;
+    --sheet:  #1f2937;
+    --rule:   #374151;
+    --ink:    #f3f4f6;
+    --ink-2:  #a5aebc;
+    --ink-3:  #8b94a3;
+`
+
 /** The one `@font-face` request, shared by every document we serve. */
 export const BrandFontLinks = () => (
   <>
@@ -272,14 +285,14 @@ export const ChatIconWithDot: FC<{ item: { img?: string; svg?: string; color: st
 export const HomeNav: FC<{ active?: string }> = ({ active }) => {
   const activeSompitra = SOMPITRA_SECTIONS.includes(active as string)
   return (
-    <nav id="home-nav" class="hidden md:flex items-center gap-1 lg:gap-1.5">
+    <nav id="home-nav" class="hidden md:flex items-center gap-0.5 lg:gap-1.5">
       {HOME_TABS.map(item => {
         const isActive = active === item.tab || (item.tab === 'money' && activeSompitra)
         return (
           <a
             href={item.href}
             aria-current={isActive ? 'page' : undefined}
-            class={`tab-tint flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 rounded-xl text-sm transition-all ${
+            class={`tab-tint flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 rounded-xl text-[13px] transition-all ${
               isActive ? 'is-active font-semibold' : 'font-medium hover:bg-gray-100 dark:hover:bg-gray-700'
             }`}
             // The colour comes from `--tab`, not a literal, so dark mode can
@@ -305,12 +318,16 @@ export const HomeHeader: FC<{
   badge?: Badge
   active?: string
 }> = ({ displayName, badge, active }) => (
-  <header id="home-header" class="sticky top-0 z-50 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm flex-shrink-0 relative">
-    <div class={`${SHELL_WIDTH} mx-auto w-full px-3 sm:px-4 flex items-center justify-between gap-3 h-12`}>
-      <a href="/" class="flex items-center gap-2 shrink-0">
-        <img src="/icon-128.png" alt="Home" width={26} height={26}
+  <header
+    id="home-header"
+    class="sticky top-0 z-50 flex-shrink-0 relative border-b"
+    style={{ backgroundColor: 'var(--sheet)', borderColor: 'var(--rule)' }}
+  >
+    <div class={`${SHELL_WIDTH} mx-auto w-full px-3 sm:px-4 flex items-center justify-between gap-3 h-12 sm:h-14`}>
+      <a href="/" class="flex items-center gap-2 shrink-0" aria-label="Home">
+        <img src="/icon-128.png" alt="" width={26} height={26}
           class="w-[26px] h-[26px] rounded-lg ring-1 ring-black/5 dark:ring-white/10" />
-        <span class="text-[19px] font-extrabold tracking-[-0.02em] text-green-600 dark:text-green-400">Home</span>
+        <span class="text-[20px] font-extrabold tracking-[-0.035em] text-green-600 dark:text-green-400">Home</span>
       </a>
 
       {/* Desktop nav (md+): the same six tabs as the bottom bar, which is
@@ -320,17 +337,20 @@ export const HomeHeader: FC<{
 
       <div class="flex items-center gap-2 sm:gap-3 shrink-0">
         {badge && (
-          <span class="hidden md:flex items-center gap-1.5 text-sm font-semibold text-gray-600 dark:text-gray-300">
+          <span class="hidden md:flex items-center gap-1.5 text-[13px] font-semibold" style={{ color: 'var(--ink-2)' }}>
+            {/* The module's own mark, tinted by the module's own colour — the
+                label stays ink-2 so a 13px word is never painted in a colour
+                that only clears 3:1 on a sheet. */}
             {badge.img
               ? <img src={badge.img} alt="" width={20} height={20} class="w-5 h-5" />
-              : <TabSvg name={badge.svg ?? ''} />}
+              : <span class="accent-mark flex"><TabSvg name={badge.svg ?? ''} /></span>}
             {badge.label}
           </span>
         )}
         {displayName && (
-          <span class="flex items-center gap-1.5 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+          <span class="flex items-center gap-1.5 text-xs sm:text-[13px]" style={{ color: 'var(--ink-2)' }}>
             <span class={`w-2 h-2 rounded-full ${userAccentColor(displayName)}`} />
-            <strong>{displayName}</strong>
+            <strong class="font-semibold">{displayName}</strong>
           </span>
         )}
         {/* The theme switch wears the glyph of the theme you would GET, so its
@@ -339,7 +359,8 @@ export const HomeHeader: FC<{
             glyphs are brand SVGs now, so it matches the headings' icon set. */}
         <button
           onclick="document.documentElement.classList.toggle('dark'); localStorage.setItem('theme', document.documentElement.classList.contains('dark') ? 'dark' : 'light')"
-          class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-300 transition-colors"
+          class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          style={{ color: 'var(--ink-2)' }}
           title="Toggle dark mode"
           aria-label="Toggle dark mode"
         >
@@ -353,7 +374,7 @@ export const HomeHeader: FC<{
         `<meta name="theme-color">` already advertises to Android). It is the
         one brand cue that is present at every width, including phones, where
         the header has no room for the module's name badge. */}
-    <span class="absolute inset-x-0 -bottom-[1px] h-[2px]" style={{ backgroundColor: tabColorFor(active) }} />
+    <span class="absolute inset-x-0 -bottom-px h-[2px]" style={{ backgroundColor: tabColorFor(active) }} />
   </header>
 )
 
@@ -368,7 +389,11 @@ export const HomeHeader: FC<{
 export const HomeTabBar: FC<{ active?: string; className?: string }> = ({ active, className = '' }) => {
   const activeSompitra = SOMPITRA_SECTIONS.includes(active as string)
   return (
-    <nav id="home-tabbar" class={`md:hidden sticky bottom-0 z-50 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 pb-safe shadow-[0_-2px_10px_rgba(0,0,0,0.05)] flex-shrink-0 ${className}`}>
+    <nav
+      id="home-tabbar"
+      class={`md:hidden sticky bottom-0 z-50 border-t pb-safe flex-shrink-0 ${className}`}
+      style={{ backgroundColor: 'var(--sheet)', borderColor: 'var(--rule)' }}
+    >
       <div class={`${SHELL_WIDTH} mx-auto grid grid-cols-6`}>
         {HOME_TABS.map(item => {
           const isActive = active === item.tab || (item.tab === 'money' && activeSompitra)
@@ -376,7 +401,7 @@ export const HomeTabBar: FC<{ active?: string; className?: string }> = ({ active
             <a
               href={item.href}
               aria-current={isActive ? 'page' : undefined}
-              class={`relative flex flex-col items-center pt-2 pb-1.5 text-[10px] leading-tight transition-colors ${
+              class={`relative flex flex-col items-center pt-2 pb-1 text-[10px] leading-tight transition-colors ${
                 isActive ? 'font-semibold' : 'font-medium active:bg-gray-100 dark:active:bg-gray-700/60'
               }`}
             >
@@ -387,7 +412,7 @@ export const HomeTabBar: FC<{ active?: string; className?: string }> = ({ active
                 style={{ width: isActive ? 26 : 0, backgroundColor: item.color }}
               />
               <span
-                class={`tab-tint rounded-xl px-2.5 py-0.5 transition-colors ${isActive ? 'is-active' : ''}`}
+                class={`tab-tint rounded-xl px-3 py-1 transition-colors ${isActive ? 'is-active' : ''}`}
                 style={{ '--tab': item.color, backgroundColor: isActive ? item.color + '1a' : 'transparent' }}
               >
                 {item.tab === 'chat' ? <ChatIconWithDot item={item} /> : <TabIcon item={item} />}
@@ -416,11 +441,138 @@ export const HomeTabBar: FC<{ active?: string; className?: string }> = ({ active
 // the module shells previously shipped without `.pb-safe`, so the tab bar
 // sat under the home bar on iOS.
 export const CHROME_CSS = `
+  /* ── The surface system ────────────────────────────────────────────
+     Five named values decide every screen's colour, and they are the values
+     the app already wore (Tailwind gray-900/gray-800 in dark, white sheets on
+     a near-white table in light) — pinned down so a screen can ask for
+     "paper", "sheet" or "a rule" instead of picking a grey off the shelf.
+
+     Why: before this, every box on every page was the same white rounded-2xl
+     with the same soft shadow and the same border-gray-100, so a ledger row,
+     a stat tile and a page section all carried identical weight — and a
+     caption in gray-400 (2.5:1 on white) was how "10px" became unreadable.
+
+       --paper  the table the app is laid out on
+       --sheet  a surface that sits on it (cards, rows, panels)
+       --rule   the hairline between two pieces of information
+       --ink    body text and every figure
+       --ink-2  labels and titles        (>= 7:1 on the sheet)
+       --ink-3  captions and hints       (>= 4.8:1 on the sheet, never gray-400)
+
+     Radii are a scale too: rows are barely rounded, cards are softer, and
+     only the one panel that leads a page gets the big radius. */
+  :root {
+    --paper:  #f7f8fa;
+    --sheet:  #ffffff;
+    --rule:   #e7e9ee;
+    --ink:    #111827;
+    --ink-2:  #4b5563;
+    --ink-3:  #6b7280;
+    --r-row:  10px;
+    --r-card: 16px;
+    --r-panel: 22px;
+    color-scheme: light;
+  }
+  /* The dark palette, ONE signal: the html.dark class — never the OS.
+
+     This was written the other way round first (a prefers-color-scheme copy
+     alongside the class), on the premise that the Tailwind CDN ignores
+     darkMode: 'class'. Probed in the browser, that premise is false HERE: an
+     element carrying only the utility dark:bg-gray-700 computes transparent with no
+     .dark ancestor and rgb(55,65,81) with one (the rule emitted is
+     .dark\:bg-gray-700:is(.dark *)). So every dark: utility in every page
+     follows the CLASS, and a second token copy following the OS is what split
+     the app in half: with an explicit "light" choice stored on a dark-OS
+     phone, the tokens went dark while the utilities stayed light — a
+     bg-gray-100 box whose text colour is inherited --ink rendered
+     light-on-light, i.e. invisible (found on /settings, both action links to
+     Account). One signal is not a simplification here, it is the fix.
+
+     html.dark already means "the effective theme is dark": the bootstrap in
+     the head of every document that includes this stylesheet
+     (views/layout.tsx, views/shell.tsx, routes/auth.tsx) sets it from the
+     switch's stored choice, or from the OS when nothing is stored. So an
+     explicit choice now contradicts nothing — the whole app moves with it.
+
+     NOTE: no backticks in this file — it is one template literal. */
+  html.dark {${DARK_TOKENS}  }
+
   /* ── The brand typeface ────────────────────────────────────────────
      One family for the whole super app (see BRAND_FONT_STACK). The system
      stack behind it means a cold cache or an offline PWA still renders in a
-     real font instead of a serif default. */
-  body { font-family: ${BRAND_FONT_STACK}; -webkit-tap-highlight-color: transparent; }
+     real font instead of a serif default.
+
+     The background and the text colour live HERE, not as Tailwind utilities on
+     <body>: a class on the element would outrank this rule, and the sign-in
+     page — which renders its own shell and includes this stylesheet — has to
+     land on the same table as the app behind it. */
+  body {
+    font-family: ${BRAND_FONT_STACK};
+    -webkit-tap-highlight-color: transparent;
+    background: var(--paper);
+    color: var(--ink);
+  }
+
+  /* ── Surfaces ──────────────────────────────────────────────────────
+     .card is the one panel every page is built from; .card-lg is the panel
+     that LEADS a page (the home anchor), so "the most important thing on this
+     screen" is expressible in markup instead of in a one-off class list. */
+  .card {
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+    border-radius: var(--r-card);
+  }
+  .card-lg { border-radius: var(--r-panel); }
+  /* A hairline BETWEEN two pieces of information, not a box around one. */
+  .hairline { border-top: 1px solid var(--rule); }
+  /* A list of figures: every row but the first is separated by that hairline,
+     so the rows read as one ruled column instead of N boxes. */
+  .ledger > * + * { border-top: 1px solid var(--rule); }
+
+  /* ── The type scale ────────────────────────────────────────────────
+     Three jobs, three treatments, and money is the loudest of them:
+
+       .t-anchor  the one figure a screen leads with (cash on hand)
+       .t-value   any figure inside a row
+       .t-label   what a figure or a card is about
+       .t-micro   a caption or a hint
+
+     Titles and labels are SENTENCE CASE on purpose. They used to be
+     0.7rem/700/.08em/uppercase micro-type — the single loudest "generated
+     dashboard" tell in the app, and the reason every card read as a form
+     field rather than as a sentence about the household. */
+  .t-anchor { font-size: clamp(1.75rem, 7vw, 2.35rem); line-height: 1.02; font-weight: 800; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+  .t-value  { font-size: 1rem; line-height: 1.25; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .t-label  { font-size: .8rem; line-height: 1.25; font-weight: 650; letter-spacing: -.008em; color: var(--ink-2); }
+  .t-micro  { font-size: .72rem; line-height: 1.3; color: var(--ink-3); }
+
+  /* ── One deliberate arrival ───────────────────────────────────────
+     The anchor panel rises once, and the figure's proportion rule draws
+     itself in — the only non-user-triggered motion in the app now. It used
+     to be a 4px fade-and-slide-up on EVERY page load (and on every card on
+     it), which is the generic default and says nothing about what changed. */
+  .rise { animation: homeRise .5s cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes homeRise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+  .draw { transform-origin: left center; animation: homeDraw .8s cubic-bezier(.2,.7,.2,1) .12s both; }
+  @keyframes homeDraw { from { transform: scaleX(0) } to { transform: scaleX(1) } }
+
+  /* ── Keyboard focus is visible, on every control, without touching
+     fifty call sites. Inputs across the app carry Tailwind's
+     focus:outline-none (which paints a TRANSPARENT outline and outranks
+     this selector), so the ring rides on box-shadow instead — that
+     property is free on the elements it matters for.
+
+     NO BACKTICKS ANYWHERE IN THIS STYLESHEET: it is a template literal, so
+     one stray backtick ends the string early and the build fails somewhere
+     further down the file. */
+  :focus-visible {
+    box-shadow: 0 0 0 2px var(--sheet), 0 0 0 4px rgba(22,163,74,.55);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rise, .draw { animation: none !important; }
+    .fade-in { animation: none !important; }
+  }
 
   /* Money must line up in a column: proportional digits make "Ar 7,500" and
      "Ar 12,300" different widths, which is exactly what makes a column of
@@ -445,11 +597,15 @@ export const CHROME_CSS = `
   .accent-mark { color: var(--accent, #16a34a); }
   html.dark .accent-mark { color: color-mix(in srgb, var(--accent, #16a34a) 80%, #ffffff); }
 
-  /* Card titles: the same micro-label everywhere in the app. */
-  .section-title { font-size: .7rem; line-height: 1.1; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  /* Card titles. The class name is load-bearing (smoke reads it, and every
+     card in the app wears it), but the treatment is the type scale's .t-label:
+     sentence case, readable at 13px, no tracking games. */
+  .section-title { font-size: .8rem; line-height: 1.25; font-weight: 700; letter-spacing: -.008em; color: var(--ink-2); }
 
-  .fade-in { animation: fadeIn .2s ease-in; }
-  @keyframes fadeIn { from { opacity:0; transform:translateY(4px) } to { opacity:1; transform:none } }
+  /* Page arrival: opacity only, and fast. The 4px slide this used to carry
+     ran on every page and every card at once. */
+  .fade-in { animation: fadeIn .18s ease-out; }
+  @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
 
   /* Hide scrollbar for top nav */
   .hide-scroll::-webkit-scrollbar { display: none; }
@@ -486,6 +642,52 @@ export const CHROME_CSS = `
   html.dark .chat-unread-dot { box-shadow: 0 0 0 2px #1f2937; }
   .chat-unread-dot.on { display: block; }
 
+  /* ── The Home page's unread card ───────
+     Same watermark as the dot above, told at the size the home screen has room
+     for: a dot where there is room for a dot, and what actually arrived where
+     there is room for the lines. Hidden until there IS something to say -- an
+     empty card under the month's own figure would be furniture, and it would
+     push the three rooms down for nothing. Revealed by CHAT_UNREAD_SCRIPT, so
+     these two states are the whole of its contract.
+
+     One row per unread message, newest first: the sender at the label weight,
+     the message behind it clipped to a SINGLE line so six messages cost six
+     lines and not six paragraphs. The flex is what does the clipping -- a
+     truncating child needs a shrinkable parent -- and flex: none on the
+     sender is what stops the name itself being the thing that gets cut. The
+     overflow row is a caption: it only says what the count above it already
+     means, that not every line fits. */
+  /* min-width: 0 because this card is a GRID ITEM, and a grid item's automatic
+     minimum is its min-content width -- which for a row of nowrap text is the
+     whole sentence. Without it the card did not clip: it widened its own track,
+     and on a 390px phone the home page measured 498px wide with everything in
+     the figure beside it pushed off the screen. The rows clip inside the card
+     instead, which is what they are for. */
+  .unread-card { display: none; min-width: 0; }
+  .unread-card.on { display: flex; }
+  .unread-rows:not(:empty) { margin-top: .3rem; display: block; }
+  .unread-row { display: flex; align-items: baseline; gap: .3rem; font-size: .74rem; line-height: 1.45; min-width: 0; }
+  .unread-row-who { flex: none; font-weight: 650; color: var(--ink-2); }
+  .unread-row-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+  .unread-row-more { color: var(--ink-3); }
+  /* ── The rooms row, and the card that can take its place ──────────
+     The home page's first row is the month's figure and the three rooms side
+     by side. When there IS something unread the card takes the slot beside the
+     figure and the rooms become a row of three across the page; with nothing
+     unread the card is gone from the grid entirely -- display: none removes it
+     from auto-placement, not just from view -- and the rooms slide back into
+     that slot, which is the layout this page had before the card existed.
+
+     One sibling selector decides both, rather than two class lists that have to
+     be kept in agreement: the rooms cannot end up full-width with no card above
+     them, or narrow with one. */
+  .rooms-grid { display: grid; gap: .5rem; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  @media (min-width: 1024px) {
+    .rooms-grid { grid-template-columns: minmax(0, 1fr); }
+    .unread-card.on ~ .rooms-card { grid-column: span 3; }
+    .unread-card.on ~ .rooms-card .rooms-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
   /* iPhone safe-area */
   .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
@@ -500,11 +702,15 @@ export const CHROME_CSS = `
   #install-app-card.available { display: block; }
 `
 
-// ─── The chat unread dot's state ─────────────────────────────────
+// ─── The chat unread state: the nav dot, and Home's unread card ───
 // ONE watermark in localStorage (the newest createdAt this device has laid
-// eyes on) plus a poll of the DO's one-field watermark. It lives here so every
-// document the app serves -- the Sompitra pages and the module shells -- runs
-// the same code, and the dot cannot mean two different things on two tabs.
+// eyes on) plus a poll of the DO's readout. It lives here so every document the
+// app serves -- the Sompitra pages and the module shells -- runs the same code,
+// and unread cannot mean two different things on two tabs. It drives TWO
+// surfaces from that one fact, and deliberately not two facts: the dot in the
+// tab bars ("something happened") and the card under the month's figure on Home
+// ("this is what happened"). The card is not a second counter to keep in sync:
+// its count and its lines come from one answer, so they cannot disagree.
 //
 // Why a poll rather than the socket the chat already has: the chat document
 // only exists while you are IN the chat tab, which is precisely when the dot
@@ -520,7 +726,16 @@ export const CHROME_CSS = `
 //   * Both comparisons are plain string compares (createdAt is an ISO instant,
 //     so it sorts). Keep that column ISO or this stops working silently.
 //   * A failed fetch paints nothing: an unread dot that appears because the
-//     network blipped is worse than no dot.
+//     network blipped is worse than no dot. The card is left exactly as it was
+//     for the same reason.
+//   * The card is not a second counter to keep in sync: the count and the lines
+//     underneath it are the SAME answer from the same poll, so they cannot
+//     disagree — and when the server bounded the list, the last row says how
+//     many it left out instead of the count and the lines quietly differing.
+//   * This is per DEVICE, not per person -- reading the room on a phone does
+//     not clear a desktop. That is the dot's behaviour inherited, not a new
+//     choice; making it per-account needs server-side read state, which is a
+//     bigger change than a card (see AGENTS.md).
 export const CHAT_UNREAD_SCRIPT = `
 (function () {
   var KEY = 'chat_last_seen';
@@ -530,20 +745,83 @@ export const CHAT_UNREAD_SCRIPT = `
     var dots = document.querySelectorAll('[data-chat-unread]');
     for (var i = 0; i < dots.length; i++) dots[i].classList.toggle('on', !!on);
   }
+  // The home screen's unread card: the SAME watermark, told at the size the home
+  // screen has room for. Every page in the app runs this script and only one has
+  // a card on it, so the lookup is the first thing it does. One row per line the
+  // server sent, built as ELEMENTS and filled with textContent: the room carries
+  // whatever anyone typed and a module's system notification carries a
+  // transaction note, so this is the last place in the app where a string could
+  // be handed to innerHTML.
+  function paintCardRow(m, mine) {
+    var row = document.createElement('span');
+    row.className = 'unread-row';
+    // A message with no sender is a module's SYSTEM row -- Sompitra's expenses
+    // and WAY's arrivals post as these -- and the chat draws those with no name
+    // at all, so the card does too instead of inventing one. Otherwise the
+    // sender is named, with the chat's own rule for "is this mine": compare
+    // names case-insensitively, exactly as sameName() does in the room.
+    var sender = m && m.sender ? String(m.sender) : '';
+    if (sender) {
+      var who = document.createElement('span');
+      who.className = 'unread-row-who';
+      who.textContent = (sender.toLowerCase() === mine ? 'You' : sender) + ' ·';
+      row.appendChild(who);
+    }
+    var text = document.createElement('span');
+    text.className = 'unread-row-text';
+    text.textContent = (m && m.message) || '';
+    row.appendChild(text);
+    return row;
+  }
+  function paintCard(data) {
+    var card = document.querySelector('[data-chat-unread-card]');
+    if (!card) return;
+    var rows = card.querySelector('[data-unread-rows]');
+    var count = card.querySelector('[data-unread-count]');
+    var lines = (data && data.messages) || [];
+    var n = (data && data.count > 0) ? data.count : 0;
+    // Nothing unread, or nothing the server was willing to name: the card goes
+    // away rather than sitting empty under the month's figure.
+    if (!n || !lines.length || !rows) { card.classList.remove('on'); return; }
+    if (count) count.textContent = n === 1 ? '1 new message' : n + ' new messages';
+    var mine = (card.getAttribute('data-mine') || '').toLowerCase();
+    // Repainted from scratch on every poll, so a message that arrives while the
+    // page is open replaces the list rather than appending to it twice.
+    while (rows.firstChild) rows.removeChild(rows.firstChild);
+    for (var i = 0; i < lines.length; i++) rows.appendChild(paintCardRow(lines[i], mine));
+    // The server bounds the list (CHAT_UNREAD_LINES), so more may have arrived
+    // than there are lines for. Say so rather than let the count above disagree
+    // with what is printed below it: the omitted ones are the OLDER ones -- the
+    // server sends the newest -- so they are the earlier messages in the room.
+    var rest = n - lines.length;
+    if (rest > 0) {
+      var more = document.createElement('span');
+      more.className = 'unread-row unread-row-more';
+      more.textContent = '+' + rest + ' earlier in the room';
+      rows.appendChild(more);
+    }
+    card.classList.add('on');
+  }
   function poll() {
     if (document.visibilityState === 'hidden') return;
-    fetch('/way/api/chat/latest', { credentials: 'include' })
+    var seen = localStorage.getItem(KEY);
+    // The watermark rides along as the count's lower bound: the server answers
+    // "how many arrived since then" instead of the browser having to know which
+    // of today's messages it has already been shown.
+    var url = '/way/api/chat/latest' + (seen ? '?since=' + encodeURIComponent(seen) : '');
+    fetch(url, { credentials: 'include' })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
         if (!data || !data.at) return;
-        var seen = localStorage.getItem(KEY);
-        if (!seen) { localStorage.setItem(KEY, data.at); paint(false); return; }
+        if (!seen) { localStorage.setItem(KEY, data.at); paint(false); paintCard(null); return; }
         if (onChat) {
           if (data.at > seen) localStorage.setItem(KEY, data.at);
           paint(false);
+          paintCard(null);
           return;
         }
         paint(data.at > seen);
+        paintCard(data);
       })
       .catch(function () {});
   }

@@ -602,14 +602,21 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     });
   }
 
-  // ---- Live chat watermark (the Home nav's unread dot) ----
+  // ---- Live chat watermark (the Home nav's unread dot, and the Home page's
+  // ---- unread card) ----
   // The newest message as the DO holds it, NOT as D1 does: the flush runs once
   // at midnight, so today's messages exist only in the Durable Object. Returns
-  // a timestamp to compare against, never the conversation -- every page of
-  // the app polls this, so the payload is one field wide.
+  // a timestamp to compare against and the unread lines, never the whole
+  // conversation -- every page of the app polls this, so the answer is one row,
+  // one count and a bounded window of previews (both limits are the DO's, so
+  // they hold for every caller). `since` is the caller's own watermark, passed
+  // through untouched: the DO binds it as a query parameter, so a forged value
+  // can only ever describe the caller's own view of the room.
   if (pathname === "/api/chat/latest" && request.method === "GET") {
+    const since = url.searchParams.get("since");
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
     const id = env.FLEET_DO.idFromName("fleet");
-    const res = await env.FLEET_DO.get(id).fetch("https://fleet-do/chat-latest");
+    const res = await env.FLEET_DO.get(id).fetch(`https://fleet-do/chat-latest${qs}`);
     return new Response(res.body, {
       status: res.status,
       headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
