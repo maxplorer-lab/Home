@@ -1842,10 +1842,41 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     !!meetPillFn && !!meetStripFn && /meetDecision\(/.test(meetPillFn) && /meetEtaFor\(/.test(meetStripFn),
     !meetStripFn ? 'renderMeetStrip is not in the page'
       : 'the gauge grew its own copy of the gates, so the bar under the map can show a crossing the pill would not have drawn')
-  check('the gauge puts what it measures to where the distance actually falls on the scale',
-    !!meetStripFn && /pct\(target\.dist\)/.test(meetStripFn) && /m \/ scale/.test(meetStripFn),
+  // Which way the bar runs IS the reading, not a style choice: the fill is how
+  // much of the current scale is still LEFT, so it grows as the two of them close.
+  // Filled with the distance instead -- which is how it was drawn first -- a
+  // widening gap looks like the bar filling UP, the opposite of what it is.
+  {
+    const fillSrc = fnBody(wayCode, 'meetStripFillFraction')
+    let ok = false, why = 'meetStripFillFraction is not in the page'
+    if (fillSrc) {
+      try {
+        const fill = new Function('return function meetStripFillFraction(dist, scale) ' + fillSrc)()
+        // Halfway along a 1 km bar is 500 m apart; 0 m is the full bar and 1 km the
+        // empty one, which is the inversion itself.
+        const points = [[0, 1000, 1], [250, 1000, 0.75], [500, 1000, 0.5], [1000, 1000, 0],
+          [1500, 2000, 0.25], [0, 2000, 1], [2000, 2000, 0]]
+        const bad = points.filter(([d, s, want]) => Math.abs(fill(d, s) - want) > 1e-9)
+        // …and driven by the distance: every further fix has to DRAIN it, never
+        // fill it, or the bar is monotone the wrong way whatever it is scaled by.
+        const walk = []
+        for (let d = 0; d <= 1000; d += 25) walk.push(fill(d, 1000))
+        const drains = walk.every((v, i) => i === 0 || v <= walk[i - 1] + 1e-9) &&
+          walk[0] === 1 && walk[walk.length - 1] === 0
+        // …and it bottoms out past the top of the scale rather than going negative.
+        const clamped = fill(50000, 1000) === 0 && fill(-5, 1000) === 1
+        ok = !!fillSrc && bad.length === 0 && drains && clamped
+        why = `500 m apart fills ${fill(500, 1000)} of a 1 km bar while 1 km fills ${fill(1000, 1000)} · the same bar walked out from 0 to 1 km drains ${walk[0]} → ${walk[walk.length - 1]} · 50 km on a 1 km bar reads ${fill(50000, 1000)}`
+      } catch (e) { why = 'the fill would not evaluate: ' + e.message }
+    }
+    check('the bar fills as the pair closes and drains as they part, 0 at the far end of the scale', ok, why)
+  }
+  check('the dot rides the head of the fill, so the mark and the shading are one reading',
+    !!meetStripFn && /meetStripFillFraction\(m, scale\)/.test(meetStripFn) &&
+    /pct\(target\.dist\)/.test(meetStripFn) &&
+    /dot\.style\.left = headPct/.test(meetStripFn) && /fill\.style\.width = headPct/.test(meetStripFn),
     !meetStripFn ? 'renderMeetStrip is not in the page'
-      : 'the dot is no longer placed by distance/scale, so the bar stopped being a ruler: 500 m apart must be halfway along a 1 km bar')
+      : 'the dot, the fill and the scale became independent again, so the bar can shade one fraction of the scale and mark another')
   check('the gauge rescales at once when the pair outgrows the bar, and reluctantly back',
     !!meetScaleFn && /while \(i < L\.length - 1 && dist > L\[i\]\) i\+\+/.test(meetScaleFn) &&
     /dist < L\[i - 1\] \* CONFIG\.MEET_STRIP_SHRINK_AT/.test(meetScaleFn) &&

@@ -129,11 +129,11 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 #eta-pill .eta-sub { color: #9ca3af; font-size: 9px; letter-spacing: 0.2px; }
 
 /* ---- The distance gauge (under the map, not over it) ---- */
-/* Three zones, left to right: WHAT it measures to, the bar itself with that
-   thing placed to scale, and the numbers (the scale the bar represents, then the
-   exact distance). A ruler whose SCALE moves: the bar is one ladder rung wide
-   and the dot sits at its true fraction of that rung, so 500 m apart is halfway
-   along a 1 km bar. It is a FLEX SIBLING of #map rather than an overlay: the
+/* Three zones, left to right: WHAT it measures to, the bar itself, and the
+   numbers (the scale the bar represents, then the exact distance). A ruler whose
+   SCALE moves: the bar spans the rung the distance sits on, and the FILL is what
+   is still LEFT of that rung -- so 500 m apart fills half of a 1 km bar, and the
+   shading grows as the two of them close. It is a FLEX SIBLING of #map rather than an overlay: the
    Layer button and the badge strip both live in the map's bottom corners, and a
    full-width bar pinned there would sit on top of one of them. */
 #meet-strip {
@@ -195,9 +195,10 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
     background-image: linear-gradient(90deg, rgba(255,255,255,0.16) 1px, transparent 1px);
     background-size: 25% 100%;
 }
-/* The fill's and the dot's colours are set by meetStripTint() from the page,
-   green to amber by closeness WITHIN the current rung -- so these two are only
-   the fallback for a moment in which nothing has been measured yet. */
+/* The fill is anchored to the FAR end of the scale (the left edge) and grows
+   toward "here" as the two close; the dot rides its head. Both of their colours
+   are set by meetStripTint() from the page, green when near to amber when far --
+   so this rule is only the fallback for a moment that has measured nothing yet. */
 #meet-strip-track .fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(255, 255, 255, 0.16); }
 #meet-strip-track .peer { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1.5px; background: #9ca3af; border-radius: 2px; }
 #meet-strip-track .cross { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; }
@@ -410,10 +411,11 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 
     <div id="map"></div>
 
-    <!-- The distance gauge: who/what it measures to, the bar with that dot at
-         its true fraction of one ladder rung, then the scale the bar represents
-         and the exact distance. The red tick is where the two of them would
-         actually cross, drawn only while the pill is up. -->
+    <!-- The distance gauge: who/what it measures to, then the bar -- which fills
+         as the two of them CLOSE and drains as they part, with the dot on the
+         head of the fill -- then the scale the bar represents and the exact
+         distance. The red tick is where the two of them would actually cross,
+         drawn only while the pill is up. -->
     <div id="meet-strip" title="">
         <button class="who" id="meet-strip-who" onclick="toggleStripPicker()" aria-haspopup="listbox" aria-expanded="false"
                 title="Pick one person or place to measure to"><span class="who-name" id="meet-strip-who-name">--</span><span class="who-caret">&#9662;</span></button>
@@ -675,8 +677,9 @@ const CONFIG = {
     MEET_ETA_TELEPORT_KMH: 250,    // an implied speed above this is a bad fix, not motion
     MEET_ETA_MAX_MIN: 15,          // the horizon the countdown is allowed to name
     // ── The strip under the map: a distance gauge, not a timeline ─────
-    // The bar covers ONE rung of a ladder and the far thing's dot sits at its
-    // true fraction of that rung, so 500 m apart is halfway along a 1 km bar.
+    // The bar spans ONE rung of a ladder and its fill is how much of that rung is
+    // still LEFT, so 500 m apart fills half of a 1 km bar -- and the fill grows as
+    // the two of them close (meetStripFillFraction), the dot riding its head.
     // The ladder is written as BANDS -- [up to this many metres, snap to a
     // multiple of this many] -- because that is how the rule is actually
     // thought about: fine while it matters, coarser as it stops mattering. The
@@ -753,7 +756,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-25.2-superapp';
+const WAY_BUILD = '2026-09-25.3-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -2121,9 +2124,15 @@ function showMeetPill(eta) {
 }
 
 // ── The distance gauge under the map (VISUAL ONLY) ───────────────
-// Three zones, left to right: WHAT it measures to, the bar with that thing placed
-// to scale, and the numbers (the scale the bar represents, then the exact
-// distance).
+// Three zones, left to right: WHAT it measures to, the bar, and the numbers (the
+// scale the bar represents, then the exact distance).
+//
+// Which way the bar runs is a decision, not an accident: the FAR end of the
+// current scale is on the left and the watched device is on the right, so the fill
+// GROWS as the two of them close and DRAINS as they part. One glance then answers
+// the only question a distance gauge is asked -- approaching or separating --
+// before any number is read. It was drawn the other way round first, filling with
+// the distance, which made a widening gap look like the bar filling up.
 //
 // Why this instead of the timeline it replaces: a crossing is only ever the last
 // 60-90 s of a trip (that is what `settled` buys), so a timeline was empty at
@@ -2189,12 +2198,32 @@ function meetStripScale(dist, subjectKey) {
     return L[i];
 }
 
-/** How close, RELATIVE TO THE CURRENT SCALE: 0 when the distance is as small as
- *  this rung's step allows, 1 when it is at the top of the rung. Deliberately not
- *  real distance -- 2 km reads green on a 5 km bar and amber on a 2 km bar -- and
- *  deliberately not the dot's own position either: with rungs this fine the dot
- *  lives in the right third of the bar at every range, so a colour read off the
- *  dot would be amber always and would say nothing. */
+/** The fill: what fraction of the CURRENT SCALE is closed. 0 when the distance is
+ *  at the top of the bar's scale -- nothing gained yet -- and 1 when it is zero.
+ *  Its complement is how far along the bar the flashed reference sits, which is
+ *  why the dot rides the fill's head: the number beside the bar, the head and the
+ *  shaded part are then one reading of the same fact ("3.1 km of a 4 km bar" is a
+ *  quarter full), not three.
+ *
+ *  Rescaling is what the fill pays for the scale's own hysteresis: the rung grows
+ *  the instant the distance outgrows it and shrinks at 0.75x the one below, so a
+ *  rescale steps the fill (down to a quarter when closing, up to a half when
+ *  parting, on the fine rungs) at the same moment the scale label changes. That
+ *  step is the price of a bar that always means "of the scale shown", and it is
+ *  why the exact distance is printed rather than implied. */
+function meetStripFillFraction(dist, scale) {
+    return Math.max(0, Math.min(1, 1 - dist / Math.max(1, scale)));
+}
+
+/** How far INTO ITS RUNG a distance sits: 0 when the distance is as small as this
+ *  rung's step allows, 1 when it is at the top of the rung. This one drives the
+ *  COLOUR, not the fill (meetStripFillFraction does that): read off the whole
+ *  scale instead and the colour barely moves -- hysteresis keeps the distance in
+ *  the top half of the bar's scale at every real range, so a scale-wide ramp is
+ *  amber at 500 m and amber at 50 km and says nothing. Rung-relative it sweeps
+ *  green to amber on every rung instead, and since it is driven by the same
+ *  distance it still moves WITH the fill (green as the bar grows, amber as it
+ *  drains) even though the two fractions are not the same number. */
 function meetStripCloseness(dist, i) {
     const L = MEET_STRIP_LADDER;
     const prev = i > 0 ? L[i - 1] : 0;
@@ -2552,23 +2581,30 @@ function renderMeetStrip(eta) {
     }
 
     const scale = meetStripScale(target.dist, target.kind + ':' + target.id);
-    const pct = function(m) { return Math.max(0, Math.min(100, (m / scale) * 100)); };
-    const dotPct = pct(target.dist);
+    // Every mark on the track is placed by this one mapping, so the fill, the dot
+    // and the crossing stay in one coordinate system: a distance, expressed as how
+    // much of the bar's scale is still LEFT.
+    const pct = function(m) { return meetStripFillFraction(m, scale) * 100; };
+    // The fill's head IS the reading -- the dot sits on it -- so the shaded part
+    // and the mark cannot drift apart and say two different things.
+    const headPct = pct(target.dist);
     const tint = meetStripTint(meetStripCloseness(target.dist, meetStripScaleIdx));
 
     document.getElementById('meet-strip-scale').textContent = meetStripScaleLabel(scale);
     const dot = document.getElementById('meet-strip-peer');
     dot.style.display = 'block';   // …restored from the unresolved pick above
-    dot.style.left = dotPct.toFixed(2) + '%';
+    dot.style.left = headPct.toFixed(2) + '%';
     dot.style.background = 'rgb(' + tint + ')';
     const fill = document.getElementById('meet-strip-fill');
-    fill.style.width = dotPct.toFixed(2) + '%';
+    fill.style.width = headPct.toFixed(2) + '%';
     fill.style.background = 'rgba(' + tint + ',0.35)';
 
     // Where the two of them would actually cross: my own speed straight down my
-    // own track for the time to closest approach. Drawn only while the pill is up
-    // -- a red mark on a pair with no crossing would be a promise the pill is not
-    // making.
+    // own track for the time to closest approach, on the same axis as the rest --
+    // so it lands to the RIGHT of the dot whenever the crossing is nearer to me
+    // than the peer is now, which for a pair actually closing it is. Drawn only
+    // while the pill is up -- a red mark on a pair with no crossing would be a
+    // promise the pill is not making.
     const crossEl = document.getElementById('meet-strip-cross');
     const mv = live ? meetVelocity(devicePings[selectedDevice]) : null;
     if (live && mv) {
@@ -2578,16 +2614,18 @@ function renderMeetStrip(eta) {
         crossEl.style.display = 'none';
     }
 
-    // The reading, always as a number: the dot clamps at the far end once the
-    // distance is past the top of the ladder, so the bar must never be the only
-    // thing that says how far it is.
+    // The reading, always as a number: past the top of the ladder the bar bottoms
+    // out -- empty, dot at the left edge -- and an empty bar is what "far" looks
+    // like at every range, so the bar must never be the only thing that says how
+    // far it is.
     const ageS = target.at ? Math.max(0, Math.round((Date.now() - new Date(target.at).getTime()) / 1000)) : 0;
     const stale = !!target.at && ageS > CONFIG.MEET_ETA_FRESH_S;
     const gap = meetStripDistanceLabel(target.dist);
-    // The trend arrow: WHICH WAY the gap is moving. The dot and the fill carry how
-    // far it is (tinted green to amber within the rung), so this is the one sign of
-    // movement left once the dot sits near the end of the scale -- and the only
-    // thing on the bar that reacts to a DIRECTION rather than to a distance.
+    // The trend arrow: WHICH WAY the gap is moving. The fill carries how much of
+    // the scale is closed (tinted green when near, amber when far), and a rescale
+    // can step that -- so a filled bar is not by itself proof of closing, and this
+    // is the one thing on the bar that reacts to a DIRECTION rather than to a
+    // distance.
     const trend = meetStripTrend(selectedDevice, target);
     const trendEl = document.getElementById('meet-strip-trend');
     trendEl.textContent = trend === 'closing' ? '▼' : trend === 'opening' ? '▲' : trend === 'flat' ? '▬' : '';

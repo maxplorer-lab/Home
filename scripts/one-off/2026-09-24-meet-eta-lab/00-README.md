@@ -54,9 +54,10 @@ under you, which is the fastest way to see what that rule actually does.
 
 **This strip is not what the app ships.** The lab's bar answers *when* over a
 window of time; `/way/` was given a **distance gauge** instead — one ladder rung
-wide, with the far thing's dot at its true fraction of that rung, a colour ramp
-by closeness *within* the rung (green → amber), and a red tick where the pair
-would cross. The rungs come from a band spec (`MEET_STRIP_BANDS_M`: 200 m steps
+wide, **filling** as the two of them close and draining as they part (the far
+thing's dot rides the head of the fill), a colour ramp by closeness *within* the
+rung (green → amber) that moves with it, and a red tick where the pair would
+cross. The rungs come from a band spec (`MEET_STRIP_BANDS_M`: 200 m steps
 under a km, then 1, 5, 10, 20 and 50 km, then 100 km), and the gauge can measure
 to the nearest **person** or the nearest **place**, as a setting — or to one
 chosen from a list on the bar itself (every person and place, nearest first from
