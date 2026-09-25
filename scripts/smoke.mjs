@@ -1762,34 +1762,347 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // MIDDLE of a true meet, because every driver is inside their own home fence
   // for the first minute of a trip; and reading a phone's reported speed instead
   // of its fixes believes the same lie twice.
-  const meetFn = fnBody(wayCode, 'meetEtaFor')
+  // The verdict itself is ONE function on purpose: the pill and the gauge under
+  // the map both ask it, so they cannot disagree about the same pair. These
+  // checks therefore read meetDecision, not the pill.
+  const meetFn = fnBody(wayCode, 'meetDecision')
+  const meetPillFn = fnBody(wayCode, 'meetEtaFor')
+  const meetStripFn = fnBody(wayCode, 'renderMeetStrip')
+  const meetScaleFn = fnBody(wayCode, 'meetStripScale')
   const meetVelFn = fnBody(wayCode, 'meetVelocity')
   const meetSettled = Number((wayCode.match(/MEET_ETA_SETTLED_M: ([0-9.]+)/) || [])[1])
   const meetDcpa = Number((wayCode.match(/MEET_ETA_DCPA_MAX_M: ([0-9.]+)/) || [])[1])
+  // The bar's ladder is BUILT by the page from a band spec, so these checks run
+  // the real builder over the real bands: a copy of the numbers here would keep
+  // passing while the bar stepped by something else entirely. The array is read
+  // by BRACKET, not by regex: wayCode has its comments stripped, so a pattern
+  // anchored on the prose that follows would depend on which comment happened to
+  // sit there.
+  const stripBands = (() => {
+    const at = wayCode.indexOf('MEET_STRIP_BANDS_M:')
+    if (at === -1) return []
+    const open = wayCode.indexOf('[', at)
+    if (open === -1) return []
+    let depth = 0, i = open
+    for (; i < wayCode.length; i++) {
+      if (wayCode[i] === '[') depth++
+      else if (wayCode[i] === ']') { depth--; if (depth === 0) { i++; break } }
+    }
+    try { return JSON.parse(wayCode.slice(open, i).replace(/\/\/[^\n]*/g, '').replace(/\s+/g, '')) } catch (e) { return [] }
+  })()
+  const stripShrink = Number((wayCode.match(/MEET_STRIP_SHRINK_AT: ([0-9.]+)/) || [])[1])
+  const stripLadder = (() => {
+    const src = fnBody(wayCode, 'meetStripLadder')
+    if (!src || !stripBands.length) return []
+    try {
+      return new Function('CONFIG', 'return function meetStripLadder() ' + src)({ MEET_STRIP_BANDS_M: stripBands })()
+    } catch (e) { return [] }
+  })()
+  /** The page's own rung chooser, over the page's own ladder, with a FRESH
+   *  remembered index: every call starts where a first render would. */
+  const stripScaleAt = (dist) => {
+    const src = fnBody(wayCode, 'meetStripScale')
+    if (!src || !stripLadder.length) return null
+    try {
+      const f = new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;\nlet meetStripScaleKey = null;\nreturn function meetStripScale(dist, subjectKey) ' + src)
+      return f({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)(dist)
+    } catch (e) { return null }
+  }
   check('the meeting pill only trusts its own estimate once the pair is close',
     !!meetFn && Number.isFinite(meetSettled) && meetSettled > 0 && meetSettled <= 2000 &&
     /range > CONFIG\.MEET_ETA_SETTLED_M/.test(meetFn),
-    !meetFn ? 'meetEtaFor is not in the page'
+    !meetFn ? 'meetDecision is not in the page'
       : `settled=${meetSettled} m — without a ceiling the extrapolation is fiction at range, which is exactly where the lab's first false positive came from`)
   check('the meeting pill refuses a crossing that passes wide, and one that is not closing',
     !!meetFn && Number.isFinite(meetDcpa) && meetDcpa > 0 &&
     /dcpa > CONFIG\.MEET_ETA_DCPA_MAX_M/.test(meetFn) &&
     /closing < CONFIG\.MEET_ETA_CLOSING_MIN_KMH/.test(meetFn),
-    !meetFn ? 'meetEtaFor is not in the page'
+    !meetFn ? 'meetDecision is not in the page'
       : 'the miss distance is the only gate that separates a meeting from two people on parallel roads pointed at each other')
   check('the meeting pill derives each velocity from that device\'s own fixes',
     !!meetVelFn && /timestamp/.test(meetVelFn) && /MEET_ETA_TELEPORT_KMH/.test(meetVelFn) &&
     !/\.speed/.test(meetVelFn),
     !meetVelFn ? 'meetVelocity is not in the page'
-      : 'meetVelocity reads a reported speed, or no longer rejects an impossible one: a phone whose speed column lies would be believed twice')
+      : 'the velocity reads a reported speed, or no longer rejects an impossible one: a phone whose speed column lies would be believed twice')
+  check('the meeting pill will not promise anything from a stale fix',
+    !!meetFn && /MEET_ETA_FRESH_S/.test(meetFn) && /if \(!fresh\(mine\)/.test(meetFn),
+    !meetFn ? 'meetDecision is not in the page'
+      : 'the freshness test stopped gating the pill: a five minute old fix is a memory of where somebody was, not a prediction of where they will be')
   check('a peer parked in a fence is home, a peer driving through one is not',
     !!meetFn && /is_inside_geofence && theirs\.kmh < CONFIG\.ETA_MIN_SPEED_KMH/.test(meetFn),
-    !meetFn ? 'meetEtaFor is not in the page'
+    !meetFn ? 'meetDecision is not in the page'
       : 'the fence test is stricter than "inside a fence AND not moving", so the pill goes dark whenever the driver passes their own house')
   check('the meeting pill hands the moment over to the Together pill inside the together radius',
     !!meetFn && /range <= CONFIG\.TOGETHER_DISTANCE_M/.test(meetFn),
-    !meetFn ? 'meetEtaFor is not in the page'
+    !meetFn ? 'meetDecision is not in the page'
       : 'two pills would be saying the same thing to the same pair')
+  // The gauge is the pill's own answer on a distance ruler, so it reads the same
+  // verdict rather than a second copy of the gates.
+  check('the pill and the gauge under the map ask one verdict function',
+    !!meetPillFn && !!meetStripFn && /meetDecision\(/.test(meetPillFn) && /meetEtaFor\(/.test(meetStripFn),
+    !meetStripFn ? 'renderMeetStrip is not in the page'
+      : 'the gauge grew its own copy of the gates, so the bar under the map can show a crossing the pill would not have drawn')
+  check('the gauge puts what it measures to where the distance actually falls on the scale',
+    !!meetStripFn && /pct\(target\.dist\)/.test(meetStripFn) && /m \/ scale/.test(meetStripFn),
+    !meetStripFn ? 'renderMeetStrip is not in the page'
+      : 'the dot is no longer placed by distance/scale, so the bar stopped being a ruler: 500 m apart must be halfway along a 1 km bar')
+  check('the gauge rescales at once when the pair outgrows the bar, and reluctantly back',
+    !!meetScaleFn && /while \(i < L\.length - 1 && dist > L\[i\]\) i\+\+/.test(meetScaleFn) &&
+    /dist < L\[i - 1\] \* CONFIG\.MEET_STRIP_SHRINK_AT/.test(meetScaleFn) &&
+    Number.isFinite(stripShrink) && stripShrink > 0.4 && stripShrink < 1,
+    !meetScaleFn ? 'meetStripScale is not in the page'
+      : `shrink threshold=${stripShrink} — without the hysteresis half a pair sitting on a ladder boundary rescales the whole bar on every fix, and ±6 m of fix noise crosses 1,000 m repeatedly`)
+  // The bands ARE the rule (200 m under a km, then 1, 5, 10, 20, 50 km, then
+  // 100 km up to a ceiling), so they are pinned literally: a "tidier" ladder
+  // here is a different bar, not a refactor.
+  check('the bar\'s scale steps are the bands it claims: 200 m under a km, then 1, 5, 10, 20, 50, 100 km',
+    JSON.stringify(stripBands) === JSON.stringify(
+      [[1000, 200], [10000, 1000], [50000, 5000], [100000, 10000], [200000, 20000], [300000, 50000], [1000000, 100000]]) &&
+    stripLadder.length > 30 && stripLadder.every((v, i) => i === 0 || v > stripLadder[i - 1]),
+    stripBands.length ? `MEET_STRIP_BANDS_M is ${JSON.stringify(stripBands)}` : 'MEET_STRIP_BANDS_M is missing or unparseable')
+  // …and the reading of them is a distance landing on the smallest rung that
+  // still CONTAINS it, which is the half that a band spec can get subtly wrong.
+  {
+    const want = [[150, 200], [200, 200], [300, 400], [700, 800], [1000, 1000], [1001, 2000],
+      [2500, 3000], [10000, 10000], [11000, 15000], [49999, 50000], [50001, 60000], [99999, 100000],
+      [100001, 120000], [200000, 200000], [200001, 250000], [300000, 300000], [300001, 400000],
+      [1000000, 1000000], [2000000, 1000000]]
+    const got = want.map(([d]) => [d, stripScaleAt(d)])
+    const bad = got.filter(([d, r], i) => r !== want[i][1])
+    check('a distance lands on the smallest rung that still contains it',
+      stripLadder.length > 0 && bad.length === 0,
+      !stripLadder.length ? 'the ladder would not build'
+        : bad.length ? 'wrong rung: ' + bad.map(([d, r], i) => `${d} m → ${r} m (want ${want[got.findIndex((g) => g[0] === d)][1]} m)`).join(', ')
+        : `${want.length} boundaries, e.g. 1.001 km → 2 km, 11 km → 15 km, 210 km → 250 km, 310 km → 400 km, and past the ceiling the dot clamps while the number stays true`)
+  }
+  // Hysteresis is a BEHAVIOUR, so it is run rather than pattern-matched -- the
+  // same trick the pull easing above uses. The fixture is the real thing that
+  // would break it: a pair hovering on the 1 km boundary, ±6 m of fix noise.
+  {
+    const scaleSrc = fnBody(wayCode, 'meetStripScale')
+    let ok = false, why = 'meetStripScale is not evaluable'
+    if (scaleSrc && stripLadder.length) {
+      try {
+        const f = new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;\nlet meetStripScaleKey = null;\nreturn function meetStripScale(dist, subjectKey) ' + scaleSrc)
+        const scale = f({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)
+        const hover = []
+        for (let i = 0; i < 200; i++) hover.push(scale(1000 + (i % 2 ? 6 : -6)))
+        const settled = hover.slice(50).every((s) => s === hover[50])
+        const up = []
+        for (let d = 0; d <= 60000; d += 50) { const s = scale(d); if (up[up.length - 1] !== s) up.push(s) }
+        // The walk out has to be a PREFIX of the ladder (never skipping a rung in
+        // the middle) and it has to end on the rung that holds 60 km.
+        const monotone = up.every((s, i) => i === 0 || s > up[i - 1]) &&
+          up[0] === stripLadder[0] && stripLadder.indexOf(up[0]) === 0 &&
+          up.every((s) => stripLadder.indexOf(s) >= 0) && up[up.length - 1] === stripScaleAt(60000)
+        // Coming back down, 400 m settles one rung ABOVE itself at most -- that is
+        // the hysteresis working, not a failure.
+        const back = scale(400)
+        ok = settled && monotone && (back === 400 || back === 600)
+        why = `hovering on the 1 km boundary settles at ${hover[199]} m · the walk out reads ${up.length} rungs, [${up.slice(0, 6).join(', ')} … ${up[up.length - 1]}] · 400 m apart reads ${back} m`
+      } catch (e) { why = 'meetStripScale would not evaluate: ' + e.message }
+    }
+    check('the bar rescales once on a boundary wobble, not on every fix', ok, why)
+  }
+  // The colour is closeness RELATIVE TO THE RUNG, and that is a behaviour rather
+  // than a decoration: read off the dot's own position instead -- which is what
+  // "closeness" naturally suggests -- and with rungs this fine the bar is amber
+  // at every range, saying nothing. So it is run here, over the real ladder.
+  {
+    const closeSrc = fnBody(wayCode, 'meetStripCloseness')
+    const tintSrc = fnBody(wayCode, 'meetStripTint')
+    let ok = false, why = 'meetStripCloseness / meetStripTint are not in the page'
+    if (closeSrc && tintSrc && stripLadder.length) {
+      try {
+        const close = new Function('CONFIG', 'MEET_STRIP_LADDER',
+          'return function meetStripCloseness(dist, i) ' + closeSrc)({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)
+        const tint = new Function('return function meetStripTint(t) ' + tintSrc)()
+        // The 400 m rung's band runs 200..400: green at its floor, amber at its top.
+        const i400 = stripLadder.indexOf(400)
+        const lo = close(200, i400), hi = close(400, i400)
+        // …and the SAME real distance wears two different colours on two different
+        // rungs, which is what "not real distance" has to mean in practice.
+        const on2 = close(2000, stripLadder.indexOf(2000))
+        const on5 = close(2000, stripLadder.indexOf(5000))
+        const painted = "style.background = 'rgb(' + tint + ')'"
+        ok = i400 > 0 && Math.abs(lo) < 1e-9 && Math.abs(hi - 1) < 1e-9 && on5 < on2 &&
+          tint(0) === '46,204,113' && tint(1) === '245,196,81' &&
+          /meetStripCloseness\(/.test(meetStripFn || '') && (meetStripFn || '').includes(painted)
+        why = `closeness is ${lo} at the floor of the 400 m rung and ${hi} at its top · 2 km reads ${on2} on the 2 km rung but ${on5} on the 5 km one · green ${tint(0)}, amber ${tint(1)}`
+      } catch (e) { why = 'the colour would not evaluate: ' + e.message }
+    }
+    check('the bar\'s colour is closeness within the scale, green to amber', ok, why)
+  }
+  // The bar can measure to a PLACE instead of a person -- the second thing it is
+  // for -- and the switch for that belongs in Settings -> Map, next to the pace.
+  // The load-bearing part is what place mode must NOT inherit: the HUD pill only
+  // speaks up for a fence you are pointed at (a 55-degree cone), and a ruler that
+  // hid what is behind you would not be a ruler.
+  {
+    const targetFn = fnBody(wayCode, 'meetStripTarget')
+    const setFn = fnBody(wayCode, 'setStripSource')
+    const mapAt = wayCode.indexOf("settingsSection('map'")
+    const mapBlock = mapAt === -1 ? '' : wayCode.slice(mapAt, mapAt + 2400)
+    const switchInMap = mapBlock.includes('data-strip="user"') && mapBlock.includes('data-strip="fence"') &&
+      mapBlock.includes('setStripSource(')
+    check('the bar can be told to measure to the nearest place, with no direction test',
+      !!targetFn && /stripSourceMode === 'fence'/.test(targetFn) && /GEOFENCES/.test(targetFn) &&
+      /getDisplayName\(/.test(targetFn) && !/bearingDegrees|angularDiff/.test(targetFn) &&
+      !!fnBody(wayCode, 'applyStripSource') && /target\.kind === 'user'/.test(meetStripFn || ''),
+      !targetFn ? 'meetStripTarget is not in the page'
+        : /bearingDegrees|angularDiff/.test(targetFn)
+          ? 'place mode inherited the pill\'s direction test, so the nearest place stops being the nearest place whenever it happens to be behind you'
+          : 'place mode no longer reads the setting, no longer names the fence, or the pill\'s "a place has no crossing" guard is gone')
+    check('the person-or-place switch is persisted and lives in Settings -> Map',
+      (setFn || '').includes("localStorage.setItem('map_strip_source'") &&
+      wayCode.includes("localStorage.getItem('map_strip_source')") && switchInMap,
+      !setFn ? 'setStripSource is not in the page'
+        : !switchInMap ? 'the switch is not in the Map settings section, so the bar would be stuck on one source'
+          : 'the choice is not remembered across a reload')
+  }
+  // ---- The bar's reference is the USER's, not the nearest one's ------------
+  // What the picker buys: the bar stops following whoever is nearest and answers
+  // about ONE person or place, so its number can grow while you drive. Both halves
+  // are RUN rather than pattern-matched -- "the pick quietly loses to the nearest
+  // peer" is a one-line bug that reads perfectly fine in a diff. Fixture: MaxX at
+  // the origin, Niri 300 m north, Kofi 2 km south, Home1 500 m north.
+  const stripAt = (lat, lon) => ({ latitude: lat, longitude: lon, timestamp: new Date().toISOString(), is_driving: true, is_inside_geofence: false })
+  const stripFixture = () => ({
+    MaxX: stripAt(-18.9137, 47.5361),
+    Niri: stripAt(-18.9137 + 300 / 110540, 47.5361),
+    Kofi: stripAt(-18.9137 - 2000 / 110540, 47.5361)
+  })
+  const STRIP_FENCES = [{ name: 'Home1', displayName: 'Home 1', lat: -18.9137 + 500 / 110540, lng: 47.5361 }]
+  /** The page's OWN bar functions, over that fixture, with one reference injected. */
+  /** A page function as a DECLARATION, parameters included: fnBody returns the
+   *  braces only, and the bar's functions are not all zero-argument shapes. */
+  const stripDecl = (n) => {
+    const at = wayCode.indexOf(`function ${n}(`)
+    const body = at === -1 ? null : fnBody(wayCode, n)
+    return body ? wayCode.slice(at, wayCode.indexOf(body, at)) + body : null
+  }
+  const stripRun = (fns, ref, mode) => {
+    const bodies = fns.map(stripDecl)
+    const distDecl = stripDecl('distanceMeters')
+    if (!distDecl || bodies.some((b) => !b)) return null
+    const src = `var stripRef = ${JSON.stringify(ref)};\n` + [distDecl, ...bodies].join('\n') +
+      `\nreturn { ${fns.join(', ')} };`
+    return new Function('latestPing', 'GEOFENCES', 'DEVICES', 'stripSourceMode', 'getDisplayName', src)(
+      stripFixture(), STRIP_FENCES, ['MaxX', 'Niri', 'Kofi'], mode || 'user',
+      (n) => (n === 'Home1' ? 'Home 1' : n))
+  }
+  {
+    const auto = stripRun(['stripRefTarget', 'meetStripTarget'], null)
+    const picked = stripRun(['stripRefTarget', 'meetStripTarget'], { kind: 'user', id: 'Kofi' })
+    const silent = stripRun(['stripRefTarget', 'meetStripTarget'], { kind: 'user', id: 'Nobody' })
+    const place = stripRun(['stripRefTarget', 'meetStripTarget'], { kind: 'fence', id: 'Home1' })
+    let ok = false, why = 'meetStripTarget / stripRefTarget / distanceMeters are not in the page'
+    if (auto && picked && silent && place) {
+      const a = auto.meetStripTarget('MaxX', null)
+      // The pill is talking about Niri in this call; the pick must still win.
+      const p = picked.meetStripTarget('MaxX', 'Niri')
+      const g = silent.meetStripTarget('MaxX', 'Niri')
+      const f = place.meetStripTarget('MaxX', 'Niri')
+      const near = (v, want) => !!v && typeof v.dist === 'number' && Math.abs(v.dist - want) < 25
+      ok = !!a && a.id === 'Niri' && near(a, 300) &&
+        !!p && p.id === 'Kofi' && near(p, 2000) &&
+        !!g && g.id === 'Nobody' && g.dist === null &&
+        !!f && f.kind === 'fence' && f.name === 'Home 1' && near(f, 500)
+      why = `nearest → ${a && a.id} ${a && Math.round(a.dist)} m · picked Kofi → ${p && p.id} ${p && Math.round(p.dist)} m even though Niri is ${a && Math.round(a.dist)} m AND is what the pill is talking about · a pick with no fix → ${g && g.id}, still the subject, dist ${g && g.dist} · a picked place → ${f && f.name} ${f && Math.round(f.dist)} m`
+    }
+    check('the bar measures to what was picked, even when that is not the nearest', ok, why)
+  }
+  {
+    const rows = stripRun(['stripPickerRows'], { kind: 'user', id: 'Kofi' })
+    const placeRows = stripRun(['stripPickerRows'], null, 'fence')
+    let ok = false, why = 'stripPickerRows is not in the page'
+    if (rows && placeRows) {
+      const r = rows.stripPickerRows('MaxX')
+      const pr = placeRows.stripPickerRows('MaxX')
+      const marked = r.people.concat(r.places).filter((x) => x.active).map((x) => x.id).join()
+      ok = r.people.map((x) => x.id).join(' < ') === 'Niri < Kofi' &&
+        r.places.map((x) => x.id).join(' < ') === 'Home1' && marked === 'Kofi' &&
+        !!r.auto && r.auto.id === 'Niri' && r.autoLabel === 'nearest person' &&
+        !!pr.auto && pr.auto.id === 'Home1' && pr.autoLabel === 'nearest place'
+      why = `people read ${r.people.map((x) => x.id).join(' < ')}, places ${r.places.map((x) => x.id).join(' < ')}, marked ${marked || 'nothing'}; in place mode Auto is ${pr.auto && pr.auto.id}`
+    }
+    check('the picker lists every person and place, nearest first, with the pick marked', ok, why)
+  }
+  {
+    const pickSrc = fnBody(wayCode, 'pickStripRef')
+    const offSrc = fnBody(wayCode, 'deactivateStripRef')
+    const keepSrc = fnBody(wayCode, 'persistStripRef')
+    const clickSrc = fnBody(wayCode, 'stripPickerClick')
+    const panelJs = fnBody(wayCode, 'renderStripPicker') || ''
+    const bootAt = wayCode.indexOf('async function boot()')
+    const boot = bootAt === -1 ? '' : wayCode.slice(bootAt, bootAt + 3000)
+    const header = (wayCode.match(/<button class="who" id="meet-strip-who"[\s\S]{0,260}?>/) || [''])[0]
+    const panel = (wayCode.match(/<div id="strip-picker"[\s\S]{0,140}?>/) || [''])[0]
+    check('the pick is remembered, and Auto (or the lit row again) clears it',
+      !!pickSrc && !!offSrc && !!keepSrc && !!clickSrc &&
+      !!fnBody(wayCode, 'toggleStripPicker') && !!fnBody(wayCode, 'stripPickerAway') &&
+      keepSrc.includes("localStorage.setItem('map_strip_ref'") &&
+      keepSrc.includes("localStorage.removeItem('map_strip_ref'") &&
+      wayCode.includes("localStorage.getItem('map_strip_ref')") &&
+      header.includes('toggleStripPicker()') && panel.includes('role="listbox"') &&
+      /data-id=/.test(panelJs) && /pickStripRef\(|deactivateStripRef\(/.test(clickSrc) &&
+      boot.includes('stripPickerClick') && boot.includes('stripPickerAway'),
+      !pickSrc || !offSrc || !keepSrc || !clickSrc ? 'the picker\'s own functions are missing'
+        : !header.includes('toggleStripPicker()') ? 'the name on the bar is not a control any more, so the list cannot be opened where the bar is'
+          : !panel.includes('role="listbox"') || !/data-id=/.test(panelJs) ? 'the panel is not in the bar\'s own markup, or its rows carry no id to pick'
+            : !boot.includes('stripPickerClick') ? 'the delegated row click is never bound, so a tap does nothing'
+              : 'the pick is not persisted, or nothing clears it back to Auto')
+  }
+  {
+    const rateDecl = stripDecl('rangeRateKmh')
+    const trendSrc = fnBody(wayCode, 'meetStripTrend')
+    let ok = false, why = 'rangeRateKmh / meetStripTrend are not in the page'
+    if (rateDecl) {
+      try {
+        const rate = new Function(rateDecl + '\nreturn rangeRateKmh;')()
+        const a = { latitude: -18.9137, longitude: 47.5361 }
+        const b = { latitude: a.latitude + 1000 / 110540, longitude: a.longitude }   // 1 km due north
+        const at = rate(a, b, { x: 0, y: 10 }, { x: 0, y: 0 })    // 10 m/s at it
+        const away = rate(a, b, { x: 0, y: -10 }, { x: 0, y: 0 })  // 10 m/s away from it
+        const headOn = rate(a, b, { x: 0, y: 10 }, { x: 0, y: -10 })
+        ok = Math.abs(at - 36) < 0.1 && Math.abs(away + 36) < 0.1 && Math.abs(headOn - 72) < 0.2 &&
+          !!trendSrc && /rangeRateKmh\(/.test(trendSrc) && /rangeRateKmh\(/.test(meetFn || '') &&
+          /meetStripTrend\(/.test(meetStripFn || '') && wayCode.includes('id="meet-strip-trend"')
+        why = `1 km apart: driving at it reads ${at.toFixed(1)} km/h, driving away ${away.toFixed(1)}, head-on ${headOn.toFixed(1)} — the arrow and the pill must read the same number, or the bar can say "closing" for a pair the pill just called off`
+      } catch (e) { why = 'rangeRateKmh would not evaluate: ' + e.message }
+    }
+    check('the trend arrow is the same range rate the verdict gates on', ok, why)
+  }
+  {
+    const scaleKeySrc = fnBody(wayCode, 'meetStripScale')
+    let ok = false, why = 'meetStripScale is not in the page'
+    if (scaleKeySrc && stripLadder.length) {
+      try {
+        const f = new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;\nlet meetStripScaleKey = null;\nreturn function meetStripScale(dist, subjectKey) ' + scaleKeySrc)
+        const scale = f({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)
+        for (let i = 0; i < 10; i++) scale(12000, 'user:MaxX')
+        const held = scale(11900, 'user:MaxX')
+        const fresh = scale(150, 'fence:Home1')
+        ok = held === 15000 && fresh === 200
+        why = `12 km holds at ${held} m, and a new reference at 150 m reads ${fresh} m (want 200): the old rung was carried onto somebody else's bar`
+      } catch (e) { why = 'meetStripScale would not evaluate: ' + e.message }
+    }
+    check('a new reference starts on its own rung instead of walking down the old one', ok, why)
+  }
+  // The gauge and the pill differ on exactly one thing, deliberately: a distance
+  // reading is still true when it is old, a promise about the next few seconds is
+  // not. So this one must NOT bail on staleness, only label it.
+  check('the gauge still draws a stale peer and says how old the reading is',
+    !!meetStripFn && /MEET_ETA_FRESH_S/.test(meetStripFn) && /old'/.test(meetStripFn) &&
+    !/if \(stale\) return/.test(meetStripFn),
+    !meetStripFn ? 'renderMeetStrip is not in the page'
+      : 'the gauge hides (or keeps silent about) a stale peer: "he was 3 km away, four minutes ago" is still worth showing, with its age')
+  // Layout, not maths: the Layer button and the badge strip live in the map's
+  // bottom corners, so a strip pinned there as an overlay would sit on one of
+  // them. It has to be a sibling that takes its own height.
+  check('the meeting strip sits under the map rather than over its bottom corners',
+    /<div id="map"><\/div>[\s\S]{0,400}?<div id="meet-strip"/.test(wayCode) && /#meet-strip \{[\s\S]{0,120}?flex-shrink: 0/.test(wayCode),
+    'the strip is inside #map or overlays its corners again: the Layer button is bottom-left and the badges bottom-right')
 
   // (4) Neither page can be verified by reading its text: a syntax error in an
   // inline script is a blank app, served happily, with a 200. By design there

@@ -52,6 +52,25 @@ Its panel has the same controls as the lab's, including `fenceMode` — switch i
 while the window plays and the 15 s hole in the strip appears or disappears
 under you, which is the fastest way to see what that rule actually does.
 
+**This strip is not what the app ships.** The lab's bar answers *when* over a
+window of time; `/way/` was given a **distance gauge** instead — one ladder rung
+wide, with the far thing's dot at its true fraction of that rung, a colour ramp
+by closeness *within* the rung (green → amber), and a red tick where the pair
+would cross. The rungs come from a band spec (`MEET_STRIP_BANDS_M`: 200 m steps
+under a km, then 1, 5, 10, 20 and 50 km, then 100 km), and the gauge can measure
+to the nearest **person** or the nearest **place**, as a setting — or to one
+chosen from a list on the bar itself (every person and place, nearest first from
+the device being watched; the pick is persisted, and tapping the lit row again or
+`Auto` gives it up). A picked reference is where the two views now differ most:
+the lab's pair is always whichever pair the math is being asked about, while the
+app's bar can be pointed at somebody the pill is not talking about, so the bar
+asks the verdict about *its own* two ends. The reasoning is
+that a timeline is empty at every moment except the last ~60 s of a trip, and it
+never answers "how far is he?". So the timeline below is kept as the *evidence*
+for the gates (it is the only view where a hole in the middle of a meet is
+visible at all), not as the shipped drawing; the gauge, its bands, its hysteresis
+and its colour ramp are guarded in `scripts/smoke.mjs` section 15 instead.
+
 It deliberately does **not** carry a tile URL. It loads the app's own
 `/shared/basemaps.js` — the module both real maps read, and the file that
 explains why there is exactly one place a tile URL may live. Since that file is
