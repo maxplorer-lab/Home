@@ -1752,6 +1752,45 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     Number.isFinite(etaMin) && etaMin === doMin && etaBearing === doBearing,
     `the page uses ${etaMin} km/h / ${etaBearing}° where the DO uses ${doMin} km/h / ${doBearing}°`)
 
+  // (3b) The meeting pill: the map's other ETA ("when will the two of you
+  // cross"), and the only part of this page with real geometry in it. Each rule
+  // below is a defect the one-off lab FOUND and measured
+  // (scripts/one-off/2026-09-24-meet-eta-lab — its check-maths.mjs pins the same
+  // rules from the other side), so dropping one puts that defect back on the
+  // map: no `settled` ceiling gave a pair 2.1 km apart a 39 m "meeting" they
+  // missed by 464 m; the strict fence rule made the pill go dark for 15 s in the
+  // MIDDLE of a true meet, because every driver is inside their own home fence
+  // for the first minute of a trip; and reading a phone's reported speed instead
+  // of its fixes believes the same lie twice.
+  const meetFn = fnBody(wayCode, 'meetEtaFor')
+  const meetVelFn = fnBody(wayCode, 'meetVelocity')
+  const meetSettled = Number((wayCode.match(/MEET_ETA_SETTLED_M: ([0-9.]+)/) || [])[1])
+  const meetDcpa = Number((wayCode.match(/MEET_ETA_DCPA_MAX_M: ([0-9.]+)/) || [])[1])
+  check('the meeting pill only trusts its own estimate once the pair is close',
+    !!meetFn && Number.isFinite(meetSettled) && meetSettled > 0 && meetSettled <= 2000 &&
+    /range > CONFIG\.MEET_ETA_SETTLED_M/.test(meetFn),
+    !meetFn ? 'meetEtaFor is not in the page'
+      : `settled=${meetSettled} m — without a ceiling the extrapolation is fiction at range, which is exactly where the lab's first false positive came from`)
+  check('the meeting pill refuses a crossing that passes wide, and one that is not closing',
+    !!meetFn && Number.isFinite(meetDcpa) && meetDcpa > 0 &&
+    /dcpa > CONFIG\.MEET_ETA_DCPA_MAX_M/.test(meetFn) &&
+    /closing < CONFIG\.MEET_ETA_CLOSING_MIN_KMH/.test(meetFn),
+    !meetFn ? 'meetEtaFor is not in the page'
+      : 'the miss distance is the only gate that separates a meeting from two people on parallel roads pointed at each other')
+  check('the meeting pill derives each velocity from that device\'s own fixes',
+    !!meetVelFn && /timestamp/.test(meetVelFn) && /MEET_ETA_TELEPORT_KMH/.test(meetVelFn) &&
+    !/\.speed/.test(meetVelFn),
+    !meetVelFn ? 'meetVelocity is not in the page'
+      : 'meetVelocity reads a reported speed, or no longer rejects an impossible one: a phone whose speed column lies would be believed twice')
+  check('a peer parked in a fence is home, a peer driving through one is not',
+    !!meetFn && /is_inside_geofence && theirs\.kmh < CONFIG\.ETA_MIN_SPEED_KMH/.test(meetFn),
+    !meetFn ? 'meetEtaFor is not in the page'
+      : 'the fence test is stricter than "inside a fence AND not moving", so the pill goes dark whenever the driver passes their own house')
+  check('the meeting pill hands the moment over to the Together pill inside the together radius',
+    !!meetFn && /range <= CONFIG\.TOGETHER_DISTANCE_M/.test(meetFn),
+    !meetFn ? 'meetEtaFor is not in the page'
+      : 'two pills would be saying the same thing to the same pair')
+
   // (4) Neither page can be verified by reading its text: a syntax error in an
   // inline script is a blank app, served happily, with a 200. By design there
   // is no build step, which makes this the only compile either page gets — and

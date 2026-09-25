@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meeting-ETA lab</title>
+<!--
+  Throwaway. Not shipped, not imported by the app, no build step, no server:
+  open this file directly and it reads `tracks.js` from the same folder (see
+  build-data.mjs, which writes it). It exists to answer three questions with
+  real numbers instead of intuition:
+
+    1. Does a time-to-crossing estimate point at the moments a human would
+       point at? (The MEET events table, and the plots.)
+    2. Is the "both headings somewhat toward each other" test doing the work,
+       or is the closing rate doing it? (The ablation table: each gate turned
+       off one at a time, and what shows up that the gate was hiding.)
+    3. How often does the geometry get interesting but NOT mean a meeting?
+       (The pair summary's closest-DCPA column, and the PASSING rows in the
+       raw steps table.)
+
+  Every number here is derived from the fixes. `kmh` is the device's own
+  report and is shown only so a lying speed column is visible.
+-->
+<style>
+  :root { --ink:#111827; --dim:#6b7280; --rule:#e5e7eb; --paper:#fff; --bg:#f6f7f9;
+          --ok:#047857; --no:#b91c1c; --a:#1d4ed8; --b:#b45309; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 22px 60px; background:var(--bg); color:var(--ink);
+         font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  h1 { font-size:19px; margin:0 0 4px; letter-spacing:-.01em; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.07em; color:var(--dim);
+       margin:30px 0 8px; }
+  .lede { color:var(--dim); max-width:78ch; margin:0 0 14px; }
+  .card { background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:14px 16px; }
+  .row { display:flex; flex-wrap:wrap; gap:18px; align-items:flex-start; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th,td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  th:first-child,td:first-child { text-align:left; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:600; }
+  td.dim,.dim { color:var(--dim); }
+  .num { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .meet { color:var(--ok); font-weight:700; }
+  .pass { color:var(--b); }
+  .silent { color:var(--dim); }
+  .pill { display:inline-block; border:1px solid var(--rule); border-radius:999px;
+          padding:1px 9px; background:#f9fafb; font-size:12px; }
+  label.f { display:flex; gap:6px; align-items:center; font-size:12px; }
+  label.f input[type=number] { width:64px; font-family:ui-monospace,monospace; font-size:12px;
+          padding:2px 4px; border:1px solid var(--rule); border-radius:4px; }
+  fieldset { border:1px solid var(--rule); border-radius:8px; padding:10px 12px; margin:0;
+             background:var(--paper); }
+  legend { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); padding:0 6px; }
+  .gates { display:grid; gap:6px; }
+  .gates label.f { white-space:nowrap; }
+  .gates code { font-size:11px; color:var(--dim); }
+  .missing { border-left:3px solid var(--no); padding:12px 16px; background:#fff;
+             border-radius:0 8px 8px 0; max-width:80ch; }
+  .missing pre { background:#f3f4f6; padding:8px 10px; border-radius:6px; overflow-x:auto; }
+  .ev { border-top:1px solid var(--rule); padding:12px 0; display:flex; gap:18px; align-items:flex-start; }
+  .ev:first-child { border-top:0; }
+  .ev h3 { margin:0 0 4px; font-size:14px; }
+  .ev .meta { color:var(--dim); font-size:12px; }
+  details { margin-top:8px; }
+  summary { cursor:pointer; color:var(--dim); font-size:12px; }
+  .scroll { max-height:420px; overflow:auto; border:1px solid var(--rule); border-radius:8px; background:#fff; }
+  .why { color:var(--no); font-size:11px; }
+  select { font:inherit; padding:3px 6px; border:1px solid var(--rule); border-radius:6px; background:#fff; }
+  .legend span { margin-right:14px; font-size:11px; color:var(--dim); }
+  .swatch { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; }
+</style>
+</head>
+<body>
+
+<h1>Meeting-ETA lab</h1>
+<p class="lede">
+  Replacing the "heading toward &lt;fence&gt; &mdash; ~5m" pill with an estimate of when two people will
+  cross: distance and/or time, shown only while the geometry says they are actually converging.
+  Everything below is derived from the fixes in <code class="num">tracks.js</code>. The app is not involved.
+</p>
+<div id="source"></div>
+<div id="missing" style="display:none"></div>
+
+<div id="app" style="display:none">
+  <div class="row" style="margin-top:16px">
+    <fieldset>
+      <legend>Thresholds</legend>
+      <div class="gates" style="grid-template-columns:repeat(auto-fit,minmax(255px,1fr))">
+        <label class="f">Stop showing past <input type="number" id="t.tcaMaxMin" value="15"> min</label>
+        <label class="f">Miss distance under <input type="number" id="t.dcpaMax" value="250"> m</label>
+        <label class="f">Closing faster than <input type="number" id="t.closingMin" value="3"> km/h</label>
+        <label class="f">Headings within <input type="number" id="t.maxDeg" value="55">&deg;</label>
+        <label class="f">Already together under <input type="number" id="t.together" value="150"> m</label>
+        <label class="f">Fix stale after <input type="number" id="t.freshS" value="180"> s</label>
+        <label class="f">Trust the estimate under <input type="number" id="t.settledM" value="1200"> m</label>
+        <label class="f">Moving relative to each other over <input type="number" id="t.relMin" value="10"> km/h</label>
+        <label class="f">A peer counts as moving over <input type="number" id="t.movingKmh" value="15"> km/h</label>
+        <label class="f">Discard fixes implying over <input type="number" id="t.teleport" value="250"> km/h</label>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Gates</legend>
+      <div class="gates">
+        <label class="f"><input type="checkbox" id="g.outside" checked> <code>bothOutside</code> &mdash; the fence gate is on</label>
+        <label class="f">&nbsp;&nbsp;&#8627; whose fence counts
+          <select id="t.fenceMode">
+            <option value="strict">either peer's, inside any fence</option>
+            <option value="stationary">only a parked peer's</option>
+          </select>
+        </label>
+        <label class="f"><input type="checkbox" id="g.fresh" checked> <code>fresh</code> &mdash; both fixes newer than the staleness cap</label>
+        <label class="f"><input type="checkbox" id="g.closing" checked> <code>closing</code> &mdash; range is actually shrinking</label>
+        <label class="f"><input type="checkbox" id="g.dcpa" checked> <code>dcpa</code> &mdash; they will pass within the miss distance</label>
+        <label class="f"><input type="checkbox" id="g.settled" checked> <code>settled</code> &mdash; close enough that the estimate is not noise</label>
+        <label class="f"><input type="checkbox" id="g.relative" checked> <code>relative</code> &mdash; a real relative speed, not two devices drifting in parallel</label>
+        <label class="f"><input type="checkbox" id="g.heading" checked> <code>heading</code> &mdash; each moving peer is pointed at the other</label>
+        <label class="f"><input type="checkbox" id="g.speed" checked> <code>speed</code> &mdash; at least one peer is moving</label>
+        <label class="f"><input type="checkbox" id="g.notTogether" checked> <code>notTogether</code> &mdash; they are not already within the together radius</label>
+      </div>
+    </fieldset>
+  </div>
+
+  <h2>Pairs</h2>
+  <div class="card"><div id="pairs"></div></div>
+
+  <h2>What each gate is hiding</h2>
+  <p class="lede" style="margin:0 0 8px">
+    Each row recomputes with <em>only that gate</em> switched off, everything else as configured above.
+    If turning a gate off adds nothing, that gate is not earning its keep &mdash; and if it adds rows you
+    actually agree with, the gate is wrong.
+  </p>
+  <div class="card"><div id="ablation"></div></div>
+
+  <h2>Meeting events</h2>
+  <div class="card"><div id="events"></div></div>
+
+  <h2>Raw steps</h2>
+  <div class="card">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+      <label class="f">Pair <select id="pairSel"></select></label>
+      <label class="f"><input type="checkbox" id="onlyInteresting"> show only converging steps</label>
+    </div>
+    <div class="scroll" id="steps"></div>
+  </div>
+</div>
+
+<!-- Both generated-or-shared files are loaded with a timestamp on them:
+     `python -m http.server` sends no no-cache headers, so a regenerated
+     tracks.js -- or an edited meet-maths.js -- would otherwise be served from
+     cache, and a stale copy looks exactly like a bug in the maths.
+     (It has happened twice: once with tracks.js, once with meet-maths.js and
+     `thresholds is not a function`.) -->
+<script>document.write('<script src="meet-maths.js?t=' + Date.now() + '"><\/script>');</script>
+<script>document.write('<script src="tracks.js?t=' + Date.now() + '"><\/script>');</script>
+<script>
+"use strict";
+
+// ── geometry, CPA/TCA and the gates: shared with the real-map demo ──────────
+// meet-maths.js holds the projector, the pair evaluation, the gate set and the
+// pill's phrasing. It is a file rather than a block here because meet-map.html
+// has to draw the same conclusion over the same dataset on real map tiles, and
+// two copies of a rule drift.
+const { projector, DEFAULTS, evaluatePair, decide, pill, events } = window.MeetMaths;
+// (`DEFAULTS` is still used by num() as the fallback for a blank box.)
+
+// ── config, read live from the inputs ───────────────────────────────────────
+const num = (id) => Number(document.getElementById(id).value) || DEFAULTS[id];
+const gatesOn = () => ({
+  outside:      document.getElementById("g.outside").checked,
+  fresh:        document.getElementById("g.fresh").checked,
+  closing:      document.getElementById("g.closing").checked,
+  dcpa:         document.getElementById("g.dcpa").checked,
+  settled:      document.getElementById("g.settled").checked,
+  relative:     document.getElementById("g.relative").checked,
+  heading:      document.getElementById("g.heading").checked,
+  speed:        document.getElementById("g.speed").checked,
+  notTogether:  document.getElementById("g.notTogether").checked,
+});
+// Every control mapped to the evaluation's units by meet-maths.js, read from the
+// DOM there too, so this page cannot judge with different numbers than it shows.
+const cfg = () => MeetMaths.readThresholds("t.");// ── one pair, every step ─────
+// evaluatePair, decide and pill now live in meet-maths.js, shared with the
+// real-map demo so the two views cannot disagree about the same dataset.
+
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+/** One peer's fence state. The raw fact is "inside" or not; under the
+ *  `stationary` rule an INSIDE peer that is driving is not suppressed, so the
+ *  cell has to say so -- otherwise the column reads as a gate that ignored its
+ *  own input. */
+const fenceCell = (outside, fence, parkedInFence) =>
+  outside ? "y" : `<span class='why'>${esc(fence ?? "n")}${parkedInFence === false ? " (driving)" : ""}</span>`;
+const m = (v) => (v === null || v === undefined ? "&mdash;" : Math.round(v));
+const kmh = (v) => (v === null || v === undefined ? "&mdash;" : v.toFixed(0));
+const deg = (v) => (v === null || v === undefined ? "&mdash;" : Math.round(v) + "&deg;");
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+// ── the lab ─────────────────────────────────────────────────────────────────
+const DATA = window.MEET_LAB_TRACKS;
+if (!DATA) {
+  document.getElementById("missing").style.display = "block";
+  document.getElementById("missing").className = "missing";
+  document.getElementById("missing").innerHTML =
+    "<strong>No tracks.js next to this page.</strong><p>Build it first:</p>" +
+    "<pre>node scripts/one-off/2026-09-24-meet-eta-lab/build-data.mjs --demo</pre>" +
+    "<p>then swap <code>--demo</code> for <code>--source remote --days 3</code> to run it over the real trips.</p>";
+} else {
+  document.getElementById("app").style.display = "block";
+  const totalPings = DATA.devices.reduce((n, d) => n + d.pings.length, 0);
+  const span = DATA.devices.flatMap((d) => [d.pings[0]?.t, d.pings[d.pings.length - 1]?.t]).filter(Boolean);
+  document.getElementById("source").innerHTML =
+    `<div class="card"><strong>${esc(DATA.source)}</strong> &middot; ${DATA.devices.length} devices &middot; ${totalPings} fixes` +
+    (span.length ? ` &middot; ${clock(Math.min(...span))} to ${clock(Math.max(...span))}` : "") +
+    (DATA.notes ? `<div class="dim" style="margin-top:6px;max-width:90ch">${esc(DATA.notes)}</div>` : "") +
+    `<div class="dim" style="margin-top:6px">Loaded ${esc(DATA.generatedAt)}</div></div>`;
+
+  const pairs = [];
+  for (let i = 0; i < DATA.devices.length; i++)
+    for (let j = i + 1; j < DATA.devices.length; j++)
+      pairs.push([DATA.devices[i], DATA.devices[j]]);
+
+  // Each pair is evaluated once per threshold change; the gates are then
+  // applied as filters over the same rows, so an ablation cannot change the
+  // geometry it is comparing against.
+  let cache = { key: "", rows: new Map() };
+  function rowsFor(pair, C) {
+    const key = pair[0].id + "|" + pair[1].id;
+    const ck = JSON.stringify(C);
+    if (cache.key !== ck) { cache = { key: ck, rows: new Map() }; }
+    if (!cache.rows.has(key)) {
+      const rows = evaluatePair(pair[0], pair[1], C);
+      rows.forEach((s) => { s.subject = pair[0].id; });
+      cache.rows.set(key, rows);
+    }
+    return cache.rows.get(key);
+  }
+
+  function render() {
+    const C = cfg(), gates = gatesOn();
+
+    // ── pairs ──
+    const summary = pairs.map(([a, b]) => {
+      const rows = rowsFor([a, b], C);
+      const judged = rows.filter((s) => s.checks);
+      const evs = events(rows, gates);
+      // What actually happened, as opposed to what was predicted: the smallest
+      // range ever observed. A prediction is only worth reading next to it.
+      const closest = judged.reduce((acc, s) => (acc === null || s.range < acc.range ? s : acc), null);
+      // What the pill would have SAID, as opposed to the best prediction money
+      // could buy: the number from the first step of the first event. Quoting
+      // "the smallest miss distance anywhere in the recording" instead is how
+      // this table first reported a 3 m miss for two devices 444 m apart -- a
+      // noise artefact of a pair whose relative velocity is nearly zero.
+      const says = evs.length ? evs[0].first : null;
+      const converging = judged.filter((s) => s.checks.closing).length;
+      return { a: a.id, b: b.id, fixes: a.pings.length + b.pings.length, steps: rows.length, judged: judged.length,
+               converging, events: evs, says, closest, unusable: rows.filter((s) => s.unusable).length };
+    }).sort((x, y) => y.events.length - x.events.length || (x.closest?.range ?? 1e9) - (y.closest?.range ?? 1e9));
+
+    document.getElementById("pairs").innerHTML =
+      "<table><thead><tr><th>pair</th><th>fixes</th><th>steps judged</th><th>converging</th>" +
+      "<th>meetings</th><th>closest seen</th><th>at</th><th>what the pill said</th><th>at</th><th>unusable</th></tr></thead><tbody>" +
+      summary.map((r) => `<tr>
+        <td>${esc(r.a)} &times; ${esc(r.b)}</td>
+        <td class="dim num">${r.fixes}</td>
+        <td class="num">${r.judged}</td>
+        <td class="num">${r.converging}</td>
+        <td class="num ${r.events.length ? "meet" : "silent"}">${r.events.length}</td>
+        <td class="num">${r.closest ? m(r.closest.range) + " m" : "&mdash;"}</td>
+        <td class="dim num">${r.closest ? clock(r.closest.t) : "&mdash;"}</td>
+        <td class="num">${r.says ? "miss " + m(r.says.dcpa) + " m" : "&mdash;"}</td>
+        <td class="dim num">${r.says ? clock(r.says.t) : "&mdash;"}</td>
+        <td class="dim num">${r.unusable || ""}</td>
+      </tr>`).join("") + "</tbody></table>";
+
+    // ── ablation ──
+    const baseEvents = summary.flatMap((r) => r.events);
+    const baseKeys = new Set(baseEvents.map((e) => `${e.pair}|${Math.round(e.first.t / 600000)}`));
+    const off = Object.keys(gates).map((g) => {
+      const alt = Object.assign({}, gates, { [g]: false });
+      const evs = pairs.flatMap(([a, b]) => events(rowsFor([a, b], C), alt));
+      const extra = evs.filter((e) => !baseKeys.has(`${e.pair}|${Math.round(e.first.t / 600000)}`));
+      return { g, n: evs.length, delta: evs.length - baseEvents.length, extra };
+    });
+
+    document.getElementById("ablation").innerHTML =
+      `<table><thead><tr><th>gate off</th><th>meetings</th><th>vs now</th><th>what it was hiding</th></tr></thead><tbody>` +
+      off.map((r) => `<tr>
+        <td><code>${r.g}</code></td>
+        <td class="num">${r.n}</td>
+        <td class="num ${r.delta > 0 ? "pass" : "silent"}">${r.delta > 0 ? "+" + r.delta : "0"}</td>
+        <td style="white-space:normal;text-align:left" class="dim">${
+          r.extra.length === 0 ? "nothing" :
+          r.extra.slice(0, 3).map((e) => `${esc(e.pair)} at ${clock(e.first.t)} &mdash; ${m(e.first.range)} m apart, miss ${m(e.first.dcpa)} m, ${Math.round(e.first.tcaS)} s out`).join("<br>") +
+          (r.extra.length > 3 ? `<br>+${r.extra.length - 3} more` : "")
+        }</td>
+      </tr>`).join("") + "</tbody></table>";
+
+    // ── events ──
+    const all = pairs.flatMap(([a, b]) => events(rowsFor([a, b], C), gates))
+      .sort((x, y) => x.first.t - y.first.t);
+    const byPair = new Map(summary.map((r) => [`${r.a} x ${r.b}`, r]));
+    document.getElementById("events").innerHTML = all.length === 0
+      ? `<p class="dim">No meeting under the current gates and thresholds. Turning one off above shows what that gate is suppressing.</p>`
+      : all.map((e, i) => {
+          const s = e.first;
+          const truth = byPair.get(e.pair);
+          const err = truth && truth.closest ? Math.abs(s.dcpa - truth.closest.range) : null;
+          return `<div class="ev">
+            <div style="min-width:330px">
+              <h3>${esc(e.pair)} <span class="pill">${pill(s, C)}</span></h3>
+              <div class="meta">${clock(e.first.t)} &rarr; ${clock(e.lastT)} &middot; ${e.steps.length} steps</div>
+              <div class="meta">${m(s.range)} m apart at the first step, closing ${kmh(s.closing)} km/h</div>
+              <div class="meta">first estimate: miss ${m(s.dcpa)} m, ${Math.round(s.tcaS)} s out &middot; best while it showed: ${m(e.minDcpa)} m</div>
+              ${truth && truth.closest ? `<div class="meta">they actually came within <strong>${m(truth.closest.range)} m</strong> at ${clock(truth.closest.t)}` +
+                (err !== null && err > 100 ? ` &mdash; <span class="why">the first step was off by ${m(err)} m</span>` : "") + `</div>` : ""}
+              <details><summary>the first judged step</summary><div class="num dim" style="font-size:11px;margin-top:6px">
+                headings ${deg(s.headingA)} / ${deg(s.headingB)} &middot;
+                speeds ${kmh(s.speedA)} / ${kmh(s.speedB)} km/h (reported ${kmh(s.kmhA)} / ${kmh(s.kmhB)}, from ${esc(s.sourceA)} / ${esc(s.sourceB)})<br>
+                TCA ${s.tcaS === null ? "&mdash;" : Math.round(s.tcaS) + " s"} &middot;
+                DCPA ${m(s.dcpa)} m &middot; closing ${kmh(s.closing)} km/h analytic / ${kmh(s.closingMeasured)} measured<br>
+                fences: ${esc(s.fenceA ?? "-")} / ${esc(s.fenceB ?? "-")}
+              </div></details>
+            </div>
+            ${plot(e)}
+          </div>`;
+        }).join("");
+
+    // ── raw steps ──
+    const sel = document.getElementById("pairSel");
+    const keep = sel.value;
+    sel.innerHTML = summary.map((r, i) => `<option value="${i}">${esc(r.a)} &times; ${esc(r.b)}</option>`).join("");
+    if (keep && Number(keep) < summary.length) sel.value = keep;
+    if (!summary.length) {
+      // One device in the recording: a real possibility (a fresh install has
+      // exactly one phone), and there is no pair to judge.
+      sel.innerHTML = "";
+      document.getElementById("steps").innerHTML =
+        '<p class="dim" style="padding:12px">One device in this dataset, so there is nobody to cross. Add a second phone, or run the demo.</p>';
+      return;
+    }
+    const only = document.getElementById("onlyInteresting").checked;
+    const which = summary[Number(sel.value) || 0] ?? summary[0];
+    const chosen = pairs.find(([a, b]) => a.id === which.a && b.id === which.b);
+    const rows = rowsFor(chosen, C)
+      .filter((s) => !only || (s.checks && (s.checks.closing || s.range <= C.together)))
+      .slice(0, 500);
+    document.getElementById("steps").innerHTML =
+      "<table><thead><tr><th>time</th><th>range m</th><th>closing km/h</th><th>measured</th><th>TCA s</th>" +
+      "<th>miss m</th><th>headings</th><th>spd A/B</th><th>outside</th><th>fresh</th><th>verdict</th><th>failed</th></tr></thead><tbody>" +
+      rows.map((s) => `<tr>
+        <td class="num dim">${clock(s.t)}</td>
+        <td class="num">${m(s.range)}</td>
+        <td class="num">${kmh(s.closing)}</td>
+        <td class="num dim">${kmh(s.closingMeasured)}</td>
+        <td class="num">${s.tcaS === null ? "&mdash;" : Math.round(s.tcaS)}</td>
+        <td class="num">${m(s.dcpa)}</td>
+        <td class="dim num">${deg(s.headingA)} ${deg(s.headingB)}</td>
+        <td class="dim num">${kmh(s.speedA)} ${kmh(s.speedB)}</td>
+        <td class="num">${fenceCell(s.outsideA, s.fenceA, s.parkedInFenceA)} ${fenceCell(s.outsideB, s.fenceB, s.parkedInFenceB)}</td>
+        <td class="num">${s.freshA ? "y" : "<span class='why'>stale</span>"} ${s.freshB ? "y" : "<span class='why'>stale</span>"}</td>
+        <td class="${decide(s, gates) === "meet" ? "meet" : "silent"}">${
+          s.unusable ? "<span class='why'>unjudged</span>" : decide(s, gates)}</td>
+        <td class="why" style="text-align:left;white-space:normal">${s.checks ? Object.keys(s.checks).filter((k) => !s.checks[k]).join(", ") : esc(s.unusable ?? "")}</td>
+      </tr>`).join("") + "</tbody></table>";
+    if (rows.length === 0) document.getElementById("steps").innerHTML = `<p class="dim" style="padding:12px">No steps for this pair.</p>`;
+  }
+
+  /** Both tracks in the event's window, normalized. Enough to see at a glance
+   *  whether "will meet" is true: the two lines have to actually cross. */
+  function plot(e) {
+    const [an, bn] = e.pair.split(" x ");
+    const A = DATA.devices.find((d) => d.id === an), B = DATA.devices.find((d) => d.id === bn);
+    const lo = e.first.t - 3 * 60000, hi = e.lastT + 3 * 60000;
+    const clip = (d) => d.pings.filter((p) => p.t >= lo && p.t <= hi);
+    const pa = clip(A), pb = clip(B);
+    if (pa.length < 2 || pb.length < 2) return "";
+    const P = projector(pa[0].lat, pa[0].lon);
+    const xy = (p) => P(p.lat, p.lon);
+    const all = [...pa, ...pb].map(xy);
+    const xs = all.map((p) => p.x), ys = all.map((p) => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const pad = 12, w = 260, h = 150;
+    const k = Math.min((w - pad * 2) / Math.max(1, x1 - x0), (h - pad * 2) / Math.max(1, y1 - y0));
+    const sx = (x) => pad + (x - x0) * k, sy = (y) => h - pad - (y - y0) * k;
+    const line = (pts) => pts.map((p, i) => (i ? "L" : "M") + sx(xy(p).x).toFixed(1) + " " + sy(xy(p).y).toFixed(1)).join(" ");
+    // The subject device's position at the event's first step.
+    const cp = xy(pa[0]);
+    const fences = (DATA.fences || []).filter((f) => {
+      const c = P(f.lat, f.lon);
+      return c.x > x0 - f.radiusM && c.x < x1 + f.radiusM && c.y > y0 - f.radiusM && c.y < y1 + f.radiusM;
+    });
+    return `<svg width="${w}" height="${h}" style="background:#fff;border:1px solid var(--rule);border-radius:6px;flex:0 0 auto">
+      ${fences.map((f) => { const c = P(f.lat, f.lon);
+        return `<circle cx="${sx(c.x).toFixed(1)}" cy="${sy(c.y).toFixed(1)}" r="${Math.max(3, f.radiusM * k).toFixed(1)}" fill="none" stroke="#d1d5db" stroke-dasharray="3,3"/>`; }).join("")}
+      <path d="${line(pa)}" fill="none" stroke="var(--a)" stroke-width="1.6"/>
+      <path d="${line(pb)}" fill="none" stroke="var(--b)" stroke-width="1.6"/>
+      <circle cx="${sx(cp.x).toFixed(1)}" cy="${sy(cp.y).toFixed(1)}" r="3" fill="#111827"/>
+      <text x="${pad}" y="12" font-size="9" fill="var(--dim)">${esc(an)} at t0 (black dot)</text>
+    </svg>`;
+  }
+
+  // Real data can be hundreds of thousands of fixes, so a keystroke in a
+  // threshold box must not start a full re-evaluation of every pair: coalesce
+  // input into one render, and let checkboxes stay instant.
+  let queued = null;
+  document.getElementById("app").addEventListener("input", (e) => {
+    if (e.target.type === "checkbox") return;
+    clearTimeout(queued);
+    queued = setTimeout(render, 200);
+  });
+  document.getElementById("app").addEventListener("change", render);
+  render();
+}
+</script>
+</body>
+</html>

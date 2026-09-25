@@ -120,6 +120,13 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
     display: none; flex-direction: column; gap: 1px; font-size: 10px; color: #9ca3af; max-width: 150px;
 }
 #eta-pill .eta-dest { color: #38bdf8; font-weight: 700; font-size: 11px; }
+/* The pill says one of two things, about two different subjects, so the colour
+   has to say which: SKY is about a place (the fence you are heading to), GREEN
+   is about the two of you (the same green the "Together" pill uses). A slot
+   that can mean either must not look identical in both cases. */
+#eta-pill.meet { border-color: rgba(46, 204, 113, 0.4); }
+#eta-pill.meet .eta-dest { color: #2ecc71; }
+#eta-pill .eta-sub { color: #9ca3af; font-size: 9px; letter-spacing: 0.2px; }
 
 /* ---- Layer toggle ---- */
 #layer-box { position: absolute; bottom: 16px; left: 12px; z-index: 1002; display: flex; flex-direction: column; gap: 4px; }
@@ -547,6 +554,19 @@ const CONFIG = {
     ETA_MIN_SPEED_KMH: 15,
     ETA_MAX_BEARING_DIFF_DEG: 55,
 
+    // ── The meeting pill (the other thing #eta-pill can say) ─────
+    // "When will the two of you cross", as opposed to "how far to the place".
+    // Every number here was chosen against the one-off lab in
+    // scripts/one-off/2026-09-24-meet-eta-lab, whose README says which gate
+    // each one buys -- they are not estimates of the same thing.
+    MEET_ETA_SETTLED_M: 1200,      // under this separation the extrapolation is worth reading
+    MEET_ETA_DCPA_MAX_M: 250,      // a crossing that passes 250 m wide is not a meeting
+    MEET_ETA_CLOSING_MIN_KMH: 3,   // the range has to actually be shrinking
+    MEET_ETA_FRESH_S: 180,         // a fix older than this is not a position
+    MEET_ETA_MAX_GAP_S: 600,       // two fixes this far apart are a gap, not a velocity
+    MEET_ETA_TELEPORT_KMH: 250,    // an implied speed above this is a bad fix, not motion
+    MEET_ETA_MAX_MIN: 15,          // the horizon the countdown is allowed to name
+
     // ── Playback (VISUAL ONLY) ───────────────────────────────────
     // The map is drawn from a cursor that trails real time by
     // PLAYBACK_LAG_SECONDS, so a ping is always already in hand by the time
@@ -598,7 +618,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-21.1-superapp';
+const WAY_BUILD = '2026-09-25.1-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -1754,6 +1774,132 @@ function updateSpeedoHUD() {
     }
 }
 
+// ── The meeting ETA (VISUAL ONLY) ───────────────────────────────
+// The pill above answers "how far to the place". This answers the question the
+// map could not answer at all: "when will the two of you cross".
+//
+// Every rule in here was priced in scripts/one-off/2026-09-24-meet-eta-lab
+// against a fixture whose geometry is known by construction -- the lab's README
+// and check-maths.mjs say which gate each line below buys. The three that are
+// not obvious, all three measured rather than assumed:
+//
+//   * Each side's velocity is derived from that device's OWN last two fixes,
+//     never from the speed column it reports. A phone whose speed is wrong would
+//     otherwise be believed twice: once for how fast it is going, and once for
+//     which way it is pointed.
+//   * `settled` (MEET_ETA_SETTLED_M): at two kilometres out, ±6 m of fix noise
+//     swings the predicted miss distance by hundreds of metres, so the estimate
+//     is fiction at range and true up close. The pill stays dark until they are
+//     closer than this -- the lab's first false positive was a pair 2.1 km apart
+//     that was going to "miss by 39 m" and actually passed 464 m wide.
+//   * The fence rule counts a peer inside a fence as HOME only if it is also not
+//     moving. The stricter reading ("neither peer inside any fence") silenced
+//     fifteen seconds in the MIDDLE of a real meet, because every driver is
+//     inside their own home fence for the first minute of a trip.
+//
+// A parked subject is not representable here on purpose: the map only keeps
+// moving fixes (shouldDrawPoint), so a phone that is not going anywhere has no
+// velocity to derive. Same reason the fence pill needs a moving device.
+
+/** Compass bearing (0 = north, clockwise) of a local-frame velocity vector. */
+function bearingOfVector(x, y) {
+    return (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
+}
+
+/** Velocity of one device in metres per second (x east, y north), from its own
+ *  last two drawn fixes. Null when those two points cannot give a velocity at
+ *  all: no history, a gap, or a jump no vehicle could have made. */
+function meetVelocity(pts) {
+    if (!pts || pts.length < 2) return null;
+    const prev = pts[pts.length - 2], cur = pts[pts.length - 1];
+    const dt = (new Date(cur.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 1000;
+    if (!(dt > 0) || dt > CONFIG.MEET_ETA_MAX_GAP_S) return null; // a gap is not a velocity
+    const ky = 110540, kx = 111320 * Math.cos(cur.latitude * Math.PI / 180);
+    const x = (cur.longitude - prev.longitude) * kx / dt;
+    const y = (cur.latitude - prev.latitude) * ky / dt;
+    const kmh = Math.sqrt(x * x + y * y) * 3.6;
+    if (kmh > CONFIG.MEET_ETA_TELEPORT_KMH) return null; // a bad fix is not motion
+    return { x: x, y: y, kmh: kmh, fix: cur };
+}
+
+/** The best meeting the SELECTED device is heading into, or null. Only that
+ *  device is ever the subject: the pill says what is about to happen to the
+ *  person you are watching. Of the pairs that pass, it reports the soonest
+ *  crossing -- an upcoming one is what a countdown is for. */
+function meetEtaFor(deviceId) {
+    const mine = meetVelocity(devicePings[deviceId]);
+    if (!mine || mine.kmh < CONFIG.ETA_MIN_SPEED_KMH) return null;
+    const now = Date.now();
+    // The badge's staleness rule, applied to both sides: a five minute old fix is
+    // a memory of where somebody was, not where they are.
+    const fresh = function(v) { return now - new Date(v.fix.timestamp).getTime() <= CONFIG.MEET_ETA_FRESH_S * 1000; };
+    if (!fresh(mine)) return null;
+
+    const kx = 111320 * Math.cos(mine.fix.latitude * Math.PI / 180), ky = 110540;
+    let best = null;
+
+    for (let i = 0; i < DEVICES.length; i++) {
+        const otherId = DEVICES[i];
+        if (otherId === deviceId) continue;
+        const theirs = meetVelocity(devicePings[otherId]);
+        if (!theirs || !fresh(theirs)) continue;
+        // HOME, not merely "inside a fence": a peer parked in one is not about
+        // to meet anybody, while a peer driving through one is.
+        if (theirs.fix.is_inside_geofence && theirs.kmh < CONFIG.ETA_MIN_SPEED_KMH) continue;
+
+        const r = {
+            x: (theirs.fix.longitude - mine.fix.longitude) * kx,
+            y: (theirs.fix.latitude - mine.fix.latitude) * ky
+        };
+        const range = Math.sqrt(r.x * r.x + r.y * r.y);
+        // Past the together radius the peer pill owns the moment; inside it the
+        // two pills would be saying the same thing.
+        if (range <= CONFIG.TOGETHER_DISTANCE_M || range > CONFIG.MEET_ETA_SETTLED_M) continue;
+
+        const v = { x: theirs.x - mine.x, y: theirs.y - mine.y };
+        const vv = v.x * v.x + v.y * v.y;
+        const rv = r.x * v.x + r.y * v.y;
+        const tcaS = vv > 0.01 ? Math.max(0, -rv / vv) : 0;
+        if (tcaS > CONFIG.MEET_ETA_MAX_MIN * 60) continue;
+        const closing = -(rv / range) * 3.6; // km/h, positive while they close
+        if (closing < CONFIG.MEET_ETA_CLOSING_MIN_KMH) continue;
+        // Closest point of approach: how near they will get, not how near they
+        // are. That one number is what separates a meeting from two people on
+        // parallel roads 473 m apart who are pointed straight at each other.
+        const dcpa = Math.sqrt(Math.pow(r.x + v.x * tcaS, 2) + Math.pow(r.y + v.y * tcaS, 2));
+        if (dcpa > CONFIG.MEET_ETA_DCPA_MAX_M) continue;
+
+        // Every side that is moving has to be pointed at the other. Two gates,
+        // both from the lab: a heading test alone lets a parallel-road pair
+        // through, and dropping it lets an overtake through.
+        const myToThem = bearingDegrees(mine.fix.latitude, mine.fix.longitude, theirs.fix.latitude, theirs.fix.longitude);
+        if (angularDiff(bearingOfVector(mine.x, mine.y), myToThem) > CONFIG.ETA_MAX_BEARING_DIFF_DEG) continue;
+        if (theirs.kmh >= CONFIG.ETA_MIN_SPEED_KMH) {
+            if (angularDiff(bearingOfVector(theirs.x, theirs.y), (myToThem + 180) % 360) > CONFIG.ETA_MAX_BEARING_DIFF_DEG) continue;
+        }
+
+        if (!best || tcaS < best.tcaS) {
+            best = { peerId: otherId, tcaS: tcaS, dcpa: dcpa, range: range, closing: closing };
+        }
+    }
+    return best;
+}
+
+/** Draws the meeting pill: the person, when, and the two numbers behind it.
+ *  Named "Meeting" and worn in green rather than the fence pill's sky, because
+ *  the title has to say which of the two subjects the pill is about. */
+function showMeetPill(eta) {
+    const etaEl = document.getElementById('eta-pill');
+    const when = eta.tcaS <= 60 ? 'in &lt;1 min' : 'in ~' + Math.round(eta.tcaS / 60) + ' min';
+    const gap = eta.range >= 1000 ? (eta.range / 1000).toFixed(1) + ' km' : Math.round(eta.range) + ' m';
+    etaEl.className = 'meet';
+    etaEl.innerHTML =
+        '<span>Meeting</span>' +
+        '<span class="eta-dest">' + eta.peerId + ' ' + when + '</span>' +
+        '<span class="eta-sub">' + gap + ' · passing ' + Math.round(eta.dcpa) + ' m away</span>';
+    etaEl.style.display = 'flex';
+}
+
 function updateTogetherAndETA() {
     const ids = Object.keys(latestPing);
     let together = false;
@@ -1770,7 +1916,24 @@ function updateTogetherAndETA() {
     const etaEl = document.getElementById('eta-pill');
     const p = selectedDevice ? latestPing[selectedDevice] : null;
     const pts = selectedDevice ? (devicePings[selectedDevice] || []) : [];
+
+    // The meeting ETA goes first. When both it and the fence countdown are true,
+    // the one about a person and a moment is the more urgent thing this slot can
+    // say. Whether the fence countdown should survive at all is the question the
+    // lab left open (its pill would replace this one outright, on the argument
+    // that the badge's approach pulse already covers "you are nearly home");
+    // keeping it as the fallback means this change cannot make the pill say LESS
+    // than it did before.
+    // Both pills start from the same place: a device that is DRIVING right now,
+    // by the map's own record of it (is_driving, the state machine's answer)
+    // rather than a speed this code derived.
+    if (selectedDevice && p && p.is_driving) {
+        const meet = meetEtaFor(selectedDevice);
+        if (meet) { showMeetPill(meet); return; }
+    }
+
     if (!p || p.is_inside_geofence || !p.is_driving || (p.speed || 0) < CONFIG.ETA_MIN_SPEED_KMH || pts.length < 2 || GEOFENCES.length === 0) {
+        etaEl.className = '';
         etaEl.style.display = 'none';
         return;
     }
@@ -1788,6 +1951,7 @@ function updateTogetherAndETA() {
 
     const speedMs = (p.speed || 0) / 3.6;
     const etaMin = speedMs > 0 ? Math.max(1, Math.round((bestDist / speedMs) / 60)) : null;
+    etaEl.className = '';
     etaEl.innerHTML = '<span>Heading toward</span><span class="eta-dest">' + getDisplayName(best.name) + ' - ~' + (etaMin !== null ? etaMin : '--') + 'm</span>';
     etaEl.style.display = 'flex';
 }
