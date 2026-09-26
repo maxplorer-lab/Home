@@ -2061,52 +2061,52 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   }
   // ---- The bar's DIRECTION half --------------------------------------------
   // "2.4 km" is half of "where is it": the other half is WHICH WAY, and it is
-  // drawn twice from ONE bearing -- the chip on the bar and the arrow on the map.
-  // Two things are worth RUNNING rather than admiring, because both are quiet
-  // when they are wrong: that the two halves really are one reading, and that the
-  // bearing maths is right (a compass point is a rounding rule, and pointAhead has
-  // to land north when it is asked for north).
+  // drawn ONCE, on the bar. It was drawn on the map too for a while -- a dashed
+  // line and an arrowhead from the device's dot -- and living with it settled the
+  // question: on a live map that is a permanent mark over the roads and the
+  // trails, i.e. over the thing the map is for, saying nothing the chip does not.
+  // So the check holds BOTH halves of that decision: the reading is still one
+  // bearing, and it is nowhere but the chip -- and the chip is big enough to read,
+  // because a bearing drawn in one place and too small to see is the same as
+  // having removed it.
   {
     const dirFn = fnBody(wayCode, 'renderDirection')
     const pointsSrc = (wayCode.match(/const COMPASS_POINTS = \[[^\]]*\]/) || [])[0]
     const compassDecl = stripDecl('compassPoint')
-    const aheadDecl = stripDecl('pointAhead')
     let dirRun = null
-    if (pointsSrc && compassDecl && aheadDecl) {
+    if (pointsSrc && compassDecl) {
       try {
-        dirRun = new Function(pointsSrc + '\n' + [compassDecl, aheadDecl].join('\n') +
-          '\nreturn { compassPoint, pointAhead };')()
+        dirRun = new Function(pointsSrc + '\n' + compassDecl + '\nreturn { compassPoint };')()
       } catch (e) { dirRun = null }
     }
-    let ok = false, why = 'renderDirection / compassPoint / pointAhead are not in the page'
+    // The chip's own rules, read out of the SERVED stylesheet: the arrow's size,
+    // the chip's, and the ring that separates it from the map showing through.
+    const chipCss = (wayCode.match(/#meet-strip \.bearing \{[\s\S]*?\}/) || [])[0] || ''
+    const arrowCss = (wayCode.match(/#meet-strip \.bearing \.bearing-arrow \{[^}]*\}/) || [])[0] || ''
+    const px = (css) => parseInt((css.match(/font-size:\s*([0-9.]+)px/) || [])[1], 10)
+    let ok = false, why = 'renderDirection / compassPoint are not in the page'
     if (dirFn && dirRun) {
-      const lat = -18.9137, lng = 47.5361
-      // The page's own metres-per-degree (111320), NOT the fixture's 110540: the
-      // point of this half is that the two agree on where "1 km north" is.
-      const north = dirRun.pointAhead(lat, lng, 0, 1000)
-      const east = dirRun.pointAhead(lat, lng, 90, 1000)
-      const south = dirRun.pointAhead(lat, lng, 180, 1000)
-      const nLat = (north.lat - lat) * 111320
-      const eLng = (east.lng - lng) * 111320 * Math.cos(lat * Math.PI / 180)
       const cp = dirRun.compassPoint
       const oneReading = dirFn.includes('bearingDegrees(') && dirFn.includes('markerPositions[') &&
-        dirFn.includes('meet-strip-bearing-arrow') && dirFn.includes('direction-head') &&
-        dirFn.includes('CONFIG.DIRECTION_MIN_M') && dirFn.includes('CONFIG.DIRECTION_MAX_M')
+        dirFn.includes('meet-strip-bearing-arrow') && dirFn.includes('CONFIG.DIRECTION_MIN_M')
+      // …and the map half is GONE, not merely switched off: no layer stack, no
+      // arrowhead divIcon, no constant left over from the cap that only it used.
+      const barOnly = !/direction-head|directionLayers|pointAhead|DIRECTION_MAX_M/.test(wayCode)
+      const legible = /border:\s*1px solid currentColor/.test(chipCss) &&
+        arrowCss.includes('transform') && px(arrowCss) >= 14 && px(chipCss) >= 10
       const barHands = /renderDirection\(selectedDevice, target, tint\)/.test(meetStripFn || '')
       const barClears = /renderDirection\(selectedDevice, null, null\)/.test(meetStripFn || '')
-      ok = Math.abs(nLat - 1000) < 5 && Math.abs(north.lng - lng) < 1e-9 &&
-        Math.abs(east.lat - lat) < 1e-9 && Math.abs(eLng - 1000) < 5 &&
-        north.lat > lat && south.lat < lat &&
-        cp(0) === 'N' && cp(22) === 'N' && cp(23) === 'NE' && cp(45) === 'NE' &&
+      ok = cp(0) === 'N' && cp(22) === 'N' && cp(23) === 'NE' && cp(45) === 'NE' &&
         cp(89) === 'E' && cp(180) === 'S' && cp(270) === 'W' && cp(315) === 'NW' &&
         cp(359) === 'N' && cp(-10) === 'N' &&
-        oneReading && barHands && barClears
-      why = `1 km north lands ${nLat.toFixed(1)} m up (${(north.lng - lng).toFixed(9)} off in longitude), 1 km east ${eLng.toFixed(1)} m across; ` +
-        `0/22/45/89/180/270/315/359 read ${cp(0)}/${cp(22)}/${cp(45)}/${cp(89)}/${cp(180)}/${cp(270)}/${cp(315)}/${cp(359)}; ` +
-        (oneReading ? 'one bearing drives the chip, the map arrow and the dot' : 'the chip and the map arrow are not driven by one bearing (or the stand-down distances are gone)') +
-        (barHands && barClears ? ', and the bar hands it the target it measures to and clears it when there is none' : ', but the bar never hands it a target (or never takes the arrow back)')
+        oneReading && barOnly && legible && barHands && barClears
+      why = `0/22/45/89/180/270/315/359 read ${cp(0)}/${cp(22)}/${cp(45)}/${cp(89)}/${cp(180)}/${cp(270)}/${cp(315)}/${cp(359)}; ` +
+        (oneReading ? 'one bearing drives the chip' : 'the chip is not driven by the bar\'s own bearing (or DIRECTION_MIN_M is gone)') +
+        (barOnly ? ', and it is the only place the reading is drawn' : ', but the map still draws a direction (a layer stack, an arrowhead divIcon, pointAhead, or the cap that only the line used)') +
+        (legible ? `, at ${px(arrowCss)}px for the arrow and ${px(chipCss)}px for the letters` : `, but it is not sized to read (arrow ${px(arrowCss)}px, chip ${px(chipCss)}px, ring ${/border:\s*1px solid currentColor/.test(chipCss) ? 'yes' : 'no'})`) +
+        (barHands && barClears ? ', handed the target it measures to and cleared when there is none' : ', but the bar never hands it a target (or never takes the arrow back)')
     }
-    check('the bar\'s bearing is ONE reading, drawn on the bar and on the map', ok, why)
+    check('the bearing is drawn ONCE, on the bar, at a size you can read', ok, why)
   }
   {
     const pickSrc = fnBody(wayCode, 'pickStripRef')
