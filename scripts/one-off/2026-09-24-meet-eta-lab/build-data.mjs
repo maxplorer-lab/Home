@@ -35,8 +35,7 @@
  * Read-only in every mode. There is nothing here that writes to a database.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -263,15 +262,20 @@ function buildDemo() {
 
 // ── real sources ────────────────────────────────────────────────────────
 function wranglerJson(sql, mode) {
-  const file = join(mkdtempSync(join(tmpdir(), "meet-lab-")), "q.sql");
-  writeFileSync(file, sql);
   // Run wrangler's own entry point under this node rather than `npx`: on
   // Windows `execFileSync("npx.cmd", ...)` fails with EINVAL (a .cmd needs a
-  // shell, and a shell reintroduces quoting problems with the temp path).
+  // shell, and a shell reintroduces quoting problems). Passing the SQL as
+  // `--command` keeps it a single argv element, so no shell quoting either.
+  //
+  // Do NOT go back to `--file` here: as of wrangler 4.133.0 that flag ingests
+  // the file and returns a one-row "Total queries executed" SUMMARY instead of
+  // the SELECT's rows, so this function silently reported zero pings -- the lab
+  // rendered an empty map and it looked like the database was empty. (For a
+  // migration, whose only point is the write, --file is still fine.)
   const wranglerJs = join(REPO, "node_modules", "wrangler", "bin", "wrangler.js");
   const stdout = execFileSync(
     process.execPath,
-    [wranglerJs, "d1", "execute", db, `--${mode}`, "--json", `--file=${file}`],
+    [wranglerJs, "d1", "execute", db, `--${mode}`, "--json", `--command=${sql}`],
     { cwd: REPO, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"] }
   );
   // Wrangler is chatty on stderr but the JSON body is the whole of stdout;
