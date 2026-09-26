@@ -337,21 +337,22 @@ dashboard.get('/', async (c) => {
             question asked of them is "how much money per session" — a
             comparison, not a list.
 
-            The colours are the ones this card already wore as a ruled list:
-            the money is GREEN — it is money in, and the same page prints every
-            other franc coming in as green (it was orange here, which is what
-            the palette uses for money going out) — and the session COUNT is
-            not money, so it takes no hue of its own. The tiles themselves
-            carry no colour; the figure is where the palette is spent. */}
+            The colours are the tile language in CHROME_CSS: BLUE is the session
+            COUNT (a count is not money, so it takes the one hue the money
+            palette does not own), GREEN is money that came in — the same green
+            every other franc coming in wears on this page (paid was orange
+            here once, which is what the palette uses for money going OUT), and
+            ORANGE is a balance still to settle, which the per-client tiles
+            below wear with the direction inside the figure. */}
         <p class="t-micro flex items-center gap-1 mb-2">
           <Icon name="calendar" className="w-[13px] h-[13px]" />{weekLabel}
         </p>
         <div class="grid grid-cols-2 gap-2 mb-3">
-          <div class="tile">
+          <div class="tile tile-tint text-blue-600 dark:text-blue-400">
             <p class="t-label">Sessions this week</p>
             <p class="t-value">{String(kineWeekDelivered?.total || 0)}</p>
           </div>
-          <div class="tile text-green-600 dark:text-green-400">
+          <div class="tile tile-tint text-green-600 dark:text-green-400">
             <p class="t-label">Paid this week</p>
             <p class="t-value truncate" title={mga(kineWeekPaid?.total || 0)}>{mga(kineWeekPaid?.total || 0)}</p>
           </div>

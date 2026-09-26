@@ -5375,20 +5375,19 @@ log('\n26. one design language: the tokens, the labels, and the front door')
     `${weekTiles} tile(s) in the Kiné week strip — what the week earned and what it delivered are back ` +
       'to a column of text, so the one tells you nothing about the other at a glance')
 
-  // A tile is a SURFACE, so it comes from the token set like every other one:
-  // `.tile` is the table's paper with a rule round it, and the COLOUR is spent on
-  // the figure inside — the shape this summary already had as a ruled list.
-  // A tile that painted itself (`bg-white`, `shadow-sm`, a pastel of its own) is
-  // the drift this catches; a tile that ALSO tinted its surface from the figure
-  // is the subtler version of it, a second colour table standing beside the
-  // palette, so that is named here too.
-  check('a tile is a token surface, and the colour stays on the figure',
-    /\.tile\s*\{[^}]*background:\s*var\(--paper\)/.test(homeCss) &&
-      !/\.tile-tint\b/.test(homeCss) &&
-      // …and on the page, the week's money keeps the green it has always had.
-      kineCard.includes('class="tile text-green-600 dark:text-green-400"'),
-    'tiles paint their own surface (or wear a tint of their own), or the week\'s money has lost its green — ' +
-      'either way the palette no longer decides what a figure means, and the dark theme no longer reaches it')
+  // The colour language of a tile, in one place (CHROME_CSS) and readable from
+  // the served page: the SURFACE says WHICH FACT a tile is (blue a count of
+  // sessions, green money in, orange a balance still to settle), the FIGURE
+  // says HOW IT IS DOING. A tile that mixes a hue of its own by hand is the
+  // drift this catches — the tone class is the only place a colour may live, so
+  // that the palette and the dark theme reach the tile at all.
+  check('each tile wears the colour of its own fact, mixed from its tone class',
+    /\.tile\s*[{][^}]*background:\s*var\(--paper\)/.test(homeCss) &&
+      /\.tile-tint\s*[{][^}]*color-mix\(in srgb, currentColor/.test(homeCss) &&
+      kineCard.includes('tile tile-tint text-blue-600 dark:text-blue-400') &&
+      kineCard.includes('tile tile-tint text-green-600 dark:text-green-400'),
+    'a tile paints a hue of its own again, or the week\'s two facts have lost their colours — ' +
+      'blue is the session count and green is the money it brought')
 
   // The per-client half, read from the component itself: three tiles, and the
   // palette spent on ONE of them — the balance, the fact that decides something.
@@ -5399,12 +5398,15 @@ log('\n26. one design language: the tokens, the labels, and the front door')
   const statsAt = layoutSrc.indexOf('export const KineClientStats')
   const statsBody = statsAt === -1 ? '' : layoutSrc.slice(statsAt, layoutSrc.indexOf('export const Btn', statsAt))
   const clientTiles = (statsBody.match(/class="tile|class=[^"]*tile/g) || []).length
-  const plainTiles = (statsBody.match(/<div class="tile">/g) || []).length
-  check("one client's three facts are three tiles, and only the balance carries colour",
-    clientTiles === 3 && plainTiles === 2 && /grid grid-cols-3 gap-2/.test(statsBody) &&
-      statsBody.includes('class={`tile ${dueCls}`}'),
-    `KineClientStats draws ${clientTiles} tile(s), ${plainTiles} of them plain — a client's sessions, ` +
-      'money and balance are no longer side by side, or the palette has moved off the balance')
+  check("one client's facts are three tiles — blue, green, orange — and the balance figure keeps the direction",
+    clientTiles === 3 && /grid grid-cols-3 gap-2/.test(statsBody) &&
+      statsBody.includes('tile tile-tint text-blue-600') &&
+      statsBody.includes('tile tile-tint text-green-600') &&
+      statsBody.includes('tile tile-tint text-orange-600') &&
+      statsBody.includes('class={`t-value ${dueCls}`}'),
+    `KineClientStats draws ${clientTiles} tile(s) — a client's sessions, money and balance are no longer ` +
+      'side by side, or a tile has lost the colour that says which fact it is, or the balance figure no ' +
+      'longer carries yellow paid-ahead / red unpaid / green settled')
 }
 
 // ─── summary ─────────────────────────────────────────────────────

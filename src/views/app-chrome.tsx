@@ -543,13 +543,19 @@ export const CHROME_CSS = `
      check counts it). A tile only ever appears INSIDE a .card, where the card
      has already said which panel matters and the comparison is the point.
 
-     The SURFACE carries no colour. A tile is the table's paper with a rule
-     round it, and the colour is spent on the FIGURE inside it — the same way
-     every other surface in this app spends it, and the same way the Kiné
-     summary's ruled list spent it when that was its shape (money in green, a
-     balance green / yellow / red, a count in ink). A tinted tile is a second
-     colour table standing beside the palette, and the two then have to be kept
-     saying the same thing. */
+     TWO axes of colour, and they answer two different questions:
+
+       * the SURFACE says WHICH FACT this tile is — blue a count of sessions,
+         green money that came in, orange the balance still to settle;
+       * the FIGURE says HOW THAT FACT IS DOING — a balance is yellow (they
+         have paid ahead, so the sessions are owed by us), red (delivered and
+         unpaid) or green (nothing outstanding).
+
+     Both come from the tone class on the element itself, through
+     color-mix(currentColor): no second colour table to keep in step, and dark
+     mode needs no second rule. Nothing here invents a hue the palette does not
+     already own — blue is the app's one non-money colour (a quantity), and it
+     is on the tile that is not money. */
   .tile {
     background: var(--paper);
     border: 1px solid var(--rule);
@@ -557,6 +563,10 @@ export const CHROME_CSS = `
     padding: .5rem .5rem .45rem;
     text-align: center;
     min-width: 0;
+  }
+  .tile-tint {
+    background: color-mix(in srgb, currentColor 10%, var(--paper));
+    border-color: color-mix(in srgb, currentColor 26%, var(--rule));
   }
 
   /* ── The type scale ────────────────────────────────────────────────

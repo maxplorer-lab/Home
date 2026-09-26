@@ -222,13 +222,24 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     Kiné summary on Home: it was three pastel boxes, then a ruled list of the
     same three facts, and a list is what a comparison looks like when nobody
     says which it is. So: a tile is a `.tile` from `CHROME_CSS` like every other
-    surface, it carries NO colour of its own — the palette is spent on the
-    FIGURE inside it, exactly as the ruled list spent it (green = money in, a
-    balance green / yellow / red, a count in ink) — and a tile only ever appears
-    INSIDE a `.card`, never as a row of panels competing with the anchor. Both
-    halves are guarded in smoke section 26: the week's two tiles in the served
-    page plus that they paint no colour, and the three tiles `KineClientStats`
-    draws.
+    surface, and a tile only ever appears INSIDE a `.card`, never as a row of
+    panels competing with the anchor. Both halves are guarded in smoke section
+    26: the week's two tiles in the served page, and the three tiles
+    `KineClientStats` draws.
+
+    **A tile carries TWO colours, and they answer two questions.** The SURFACE
+    says WHICH FACT it is; the FIGURE says HOW THAT FACT IS DOING. In the Kiné
+    summary that reads: **blue** sessions (a count — not money, so it takes the
+    one hue the money palette does not own), **green** paid (money in),
+    **orange** the balance still to settle, and INSIDE the balance tile the
+    figure keeps the palette's state colour — **yellow** they paid ahead (the
+    sessions are owed by us), **red** delivered and unpaid, **green** nothing
+    outstanding. Both come from the tone class on the element, mixed into the
+    surface with `color-mix(currentColor)`: one rule, so no second colour table
+    and nothing extra for dark mode. Section 26 reads the tone class off the
+    served page, which is what makes this a rule rather than a hope — the 2026-
+    09-26 review found the card had been stripped to ink and a single green, and
+    "there is no colour here" is not something a functional test can notice.
 
     **Dark mode has ONE signal: the `html.dark` class — never the OS.** The
     tokens are emitted once, under `html.dark`. This was written the other way
@@ -1362,7 +1373,8 @@ have their own separate repositories and their own history.
 | The sign-in page is slow to show its mark | `/logo-1024.png` (982KB) is back on the front door; it is `/icons/icon-192.png` (smoke section 26) |
 | Nothing on the home screen looks more important than anything else | the anchor/ledger structure was flattened: two `t-anchor`s, or a second `card-lg`, or a row of equal tiles added back beside the anchor (section 26 counts them) |
 | A summary of two or three figures reads as a column of text (the Kiné card on Home is the one that has shipped both ways) | the shapes were swapped: a COMPARISON (`.tile`s side by side inside one card) was set as a `.ledger` list, which makes the reader subtract instead of glance. See "A comparison is not a list" above; smoke section 26 counts the week's two tiles in the served page and the three in `KineClientStats` |
-| A row of tiles is louder than the card it sits in (coloured boxes where the same figures were ink) | a tile is wearing a colour of its own — `.tile` is the table's paper and a rule, nothing else. The colours this summary has always used belong to the FIGURES: green money in, a balance green / yellow / red, counts in ink. Smoke section 26 fails if `.tile-tint` comes back |
+| A row of tiles has gone grey/flat, and the figures cannot be told apart at a glance (the Kiné card on Home, 2026-09-26) | the tile colour language was dropped: `.tile-tint` mixes the SURFACE from the tile's own tone class, and each fact owns a hue — blue sessions, green money in, orange a balance to settle — while the FIGURE inside the balance tile keeps yellow paid-ahead / red unpaid / green settled. A tile with no tone class is ink, and a card of ink tiles is the list this became. Smoke section 26 reads both the class on the served page and the mix in `CHROME_CSS` |
+| A tile's colour means nothing (it is decoration) | the two axes were collapsed: the SURFACE says which FACT, the FIGURE says what STATE. A balance wearing the same hue as the money-in tile beside it, or a state colour promoted to the surface, loses one of the two answers — and a hue the money palette does not own (blue on a franc figure) is the same fault in the other direction. See "A tile carries TWO colours" above |
 | Half a screen is dark and half is light (a `bg-gray-100` box whose text is invisible) | the tokens are answering a different signal than the `dark:` utilities. They must answer the **`html.dark` class only** — a `@media (prefers-color-scheme: dark)` copy of the tokens is the bug, not the fix (probe it: an element with only `dark:bg-gray-700` is transparent without a `.dark` ancestor, grey-700 with one). Section 26 fails if the media copy comes back, or if a document loads `CHROME_CSS` without the bootstrap that sets the class |
 | A tab exists in one shape but not the other | `HOME_TABS` in `views/app-chrome.tsx` is the single list; the bottom bar and `HomeNav` both map over it |
 | A person who IS an admin cannot see the admin links on `/settings` (or an admin POST bounces back to `/settings`) | they are a Home admin whose Sompitra row predates the merge, so `users.is_admin` is 0 there. The card and the handlers must judge with `isSettingsAdmin()` — central role first, module flag as a fallback (rule 13, `CUTOVER.md` §1c) |

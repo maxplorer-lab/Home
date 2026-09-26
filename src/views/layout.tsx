@@ -232,24 +232,28 @@ export const KineClientStats: FC<{ delivered: number; paid: number; rate: number
   // the reader do the comparison, and the three pastel boxes that came before
   // it made the payment figure exactly as loud as the balance.
   //
-  // So: equal surfaces, unequal emphasis, and the colours are the ones this
-  // summary already used as a ruled list — sessions and paid in ink, the
-  // BALANCE in the palette (green balanced, yellow prepaid, red owed), on
-  // surfaces that carry none. Colour on the surface as well would be a second
-  // colour table beside that one.
+  // The tile's SURFACE says which fact it is, and the FIGURE says how it is
+  // doing — see the note on `.tile` in CHROME_CSS, which is the one place that
+  // colour language is written down:
+  //
+  //   blue   sessions    a count, not money
+  //   green  paid        money that came in
+  //   orange the balance money still to settle, in either direction
+  //   …and inside the balance tile the figure is yellow (paid ahead: the
+  //   sessions are owed by us), red (delivered and unpaid) or green (settled).
   return (
     <div class="grid grid-cols-3 gap-2">
-      <div class="tile">
+      <div class="tile tile-tint text-blue-600 dark:text-blue-400">
         <p class="t-label">Sessions</p>
         <p class="t-value">{delivered}</p>
       </div>
-      <div class="tile">
+      <div class="tile tile-tint text-green-600 dark:text-green-400">
         <p class="t-label">Paid</p>
         <p class="t-value truncate" title={mga(paid)}>{mga(paid)}</p>
       </div>
-      <div class={`tile ${dueCls}`}>
+      <div class="tile tile-tint text-orange-600 dark:text-orange-400">
         <p class="t-label">Due</p>
-        <p class="t-value">{dueVal}</p>
+        <p class={`t-value ${dueCls}`}>{dueVal}</p>
         <p class="t-micro leading-tight">{dueState}</p>
       </div>
     </div>
