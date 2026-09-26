@@ -2184,6 +2184,26 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     /<div id="map"><\/div>[\s\S]{0,400}?<div id="meet-strip"/.test(wayCode) && /#meet-strip \{[\s\S]{0,120}?flex-shrink: 0/.test(wayCode),
     'the strip is inside #map or overlays its corners again: the Layer button is bottom-left and the badges bottom-right')
 
+  // …and the bar is ONE sum with the furniture on it. The badge cards and the
+  // Layer/Home buttons are anchored to the app's bottom edge (which the bar
+  // occupies), the credit line is a margin inside the map (whose bottom edge IS
+  // the bar's top edge), so the three numbers are the bar's height plus one 4px
+  // hairline — the least that says "these are two pieces of the screen". They
+  // stood 20px clear of a 26px bar once, which read as an empty gap. And the
+  // ruler scales with the band: a 39px bar around a 14px line is a taller box,
+  // not a bigger bar.
+  {
+    const px = (re) => { const m = wayCode.match(re); return m ? parseInt(m[1], 10) : NaN }
+    const stripH = px(/#meet-strip \{[^}]*height:\s*([0-9]+)px/)
+    const trackH = px(/#meet-strip-track \{[^}]*height:\s*([0-9.]+)px/)
+    const badges = px(/#app\.has-meet-strip #badge-strip \{ bottom:\s*([0-9]+)px/)
+    const layer = px(/#app\.has-meet-strip #layer-box \{ bottom:\s*([0-9]+)px/)
+    const credit = px(/#app\.has-meet-strip \.leaflet-control-attribution \{ margin-bottom:\s*([0-9]+)px/)
+    check('the bar and everything sitting on it share one 4px hairline, and the ruler scales with it',
+      stripH >= 36 && badges === stripH + 4 && layer === stripH + 4 && credit === 4 && trackH >= stripH / 2,
+      `bar ${stripH}px, badges ${badges}px, Layer/Home ${layer}px, credit margin ${credit}px, ruler ${trackH}px — the two offsets are the bar's height + 4px and the credit's is 4px alone (it is measured from the bar's top edge), so the four numbers move together; and the ruler has to grow with the band rather than float in it`)
+  }
+
   // (4) Neither page can be verified by reading its text: a syntax error in an
   // inline script is a blank app, served happily, with a 200. By design there
   // is no build step, which makes this the only compile either page gets — and

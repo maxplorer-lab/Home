@@ -135,10 +135,16 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
    is still LEFT of that rung -- so 500 m apart fills half of a 1 km bar, and the
    shading grows as the two of them close. It is a FLEX SIBLING of #map rather than an overlay: the
    Layer button and the badge strip both live in the map's bottom corners, and a
-   full-width bar pinned there would sit on top of one of them. */
+   full-width bar pinned there would sit on top of one of them.
+
+   39px, half again the 26px it was. Part of that came out of the gap that used
+   to sit between the bar and the furniture above it -- see the ONE SUM note
+   under the gauge's rules: the badge cards, the Layer/Home buttons and the tile
+   attribution each hug this bar's top edge now, at the 4px that says "these are
+   two pieces of the screen" and no more. */
 #meet-strip {
     position: relative; /* the picker panel anchors to the bar it belongs to */
-    flex-shrink: 0; height: 26px; display: none; align-items: center; gap: 8px;
+    flex-shrink: 0; height: 39px; display: none; align-items: center; gap: 8px;
     padding: 0 12px; background: rgba(10, 10, 14, 0.94); backdrop-filter: blur(16px);
     border-top: 1px solid rgba(255, 255, 255, 0.1); font-size: 10px; color: #6b7280;
     z-index: 2000;
@@ -214,9 +220,14 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 .pick-row .pick-x { flex: 0 0 auto; font-size: 10px; }
 #meet-strip.live .who { color: #2ecc71; }
 /* Quarter ticks are a background gradient, so the ruler cannot drift out of
-   step with the fill and the dots the way hand-placed divs can. */
+   step with the fill and the dots the way hand-placed divs can.
+
+   21px = half again the 14px it was, and its radius with it, so the RULER grew
+   with the band around it rather than staying a thin line in a taller box: every
+   mark on it (the fill, the peer dot, the crossing) is positioned top:0/bottom:0
+   and therefore scales here, with no second place to keep in step. */
 #meet-strip-track {
-    position: relative; flex: 1; height: 14px; border-radius: 7px; overflow: hidden;
+    position: relative; flex: 1; height: 21px; border-radius: 10.5px; overflow: hidden;
     background-color: rgba(255, 255, 255, 0.06);
     background-image: linear-gradient(90deg, rgba(255,255,255,0.16) 1px, transparent 1px);
     background-size: 25% 100%;
@@ -235,10 +246,24 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 /* Everything else anchored to the app's bottom edge has to move up while the
    strip is there, or the badge cards and the tile attribution draw across it
    (they are positioned against #app, not #map). Scoped to the class so nothing
-   moves when there is no pair to show. */
-#app.has-meet-strip #badge-strip { bottom: 46px; }
-#app.has-meet-strip #layer-box { bottom: 46px; }
-#app.has-meet-strip .leaflet-control-attribution { margin-bottom: 30px; }
+   moves when there is no pair to show.
+
+   THE HAIRLINE IS 4px, and it is the SAME 4px in every rule here: the least
+   that still says "these are two pieces of the screen". The badge cards and the
+   Layer/Home buttons used to stand 20px clear of a 26px bar (46 = 26 + 20) and
+   the credit line 30px, which read as an empty gap with a map above it rather
+   than as furniture sitting on a bar.
+
+   The two offsets are not the same SUM, because they are measured from
+   different edges:
+     * #badge-strip / #layer-box are anchored to APP's bottom edge, which the
+       bar now occupies 39px of -- so they are 39 + 4 = 43px;
+     * the attribution is a margin INSIDE the map, and the map's bottom edge IS
+       the bar's top edge -- so it is 4px, and does not move when the bar does.
+   Change the bar's height above and only the first two follow it. */
+#app.has-meet-strip #badge-strip { bottom: 43px; }
+#app.has-meet-strip #layer-box { bottom: 43px; }
+#app.has-meet-strip .leaflet-control-attribution { margin-bottom: 4px; }
 
 /* ---- Layer toggle ---- */
 #layer-box { position: absolute; bottom: 16px; left: 12px; z-index: 1002; display: flex; flex-direction: column; gap: 4px; }
@@ -809,7 +834,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-26.2-superapp';
+const WAY_BUILD = '2026-09-26.3-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
