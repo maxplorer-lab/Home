@@ -196,6 +196,11 @@ export const Badge: FC<{ text: string; color?: string; children?: any }> = ({ te
 // `tone` is the FIGURE's colour, and it means what the money palette says it
 // means: green = money in, red = money out, teal = a period's net result,
 // orange = we owe, purple = owed to us.
+//
+// A LEDGER ROW is for facts the reader compares DOWN a list (the balances, one
+// amount per account). When the facts are meant to be compared ACROSS, and live
+// on one subject, they are `.tile`s instead — see `KineClientStats` below and
+// the note on `.tile` in CHROME_CSS.
 export const TintStat: FC<{ label: string; value: string; tone: string; sub?: string }> = ({ label, value, tone, sub }) => (
   <div class="flex items-baseline justify-between gap-3 py-2.5">
     <span class="min-w-0">
@@ -220,18 +225,33 @@ export const KineClientStats: FC<{ delivered: number; paid: number; rate: number
     dueState = 'owes · ' + mga(Math.abs(balance) * rate)
     dueVal = '-' + Math.abs(balance)
   }
-  // Three facts about one client, set as one line of a ledger: sessions in,
-  // money in, and where that leaves them. It used to be three pastel boxes,
-  // which made the payment figure as loud as the balance. The balance is the
-  // one that decides something, so it is the one that carries colour.
+  // Three facts about ONE client, as three tiles side by side: sessions in,
+  // money in, and where that leaves them. They are read against each other
+  // ("nine sessions, four paid for"), so they belong across a line and not
+  // down one — a flat "9 sessions · Ar 180,000 paid · −5 owes" sentence makes
+  // the reader do the comparison, and the three pastel boxes that came before
+  // it made the payment figure exactly as loud as the balance.
+  //
+  // So: equal surfaces, unequal emphasis, and the colours are the ones this
+  // summary already used as a ruled list — sessions and paid in ink, the
+  // BALANCE in the palette (green balanced, yellow prepaid, red owed), on
+  // surfaces that carry none. Colour on the surface as well would be a second
+  // colour table beside that one.
   return (
-    <div class="flex items-baseline gap-3 t-micro">
-      <span><span class="t-value text-[13px]">{delivered}</span> sessions</span>
-      <span><span class="t-value text-[13px]">{mga(paid)}</span> paid</span>
-      {/* The one fact that decides something sits at the far end of the line. */}
-      <span class={`ml-auto text-right font-semibold ${dueCls}`}>
-        {dueVal} <span class="font-normal">{dueState}</span>
-      </span>
+    <div class="grid grid-cols-3 gap-2">
+      <div class="tile">
+        <p class="t-label">Sessions</p>
+        <p class="t-value">{delivered}</p>
+      </div>
+      <div class="tile">
+        <p class="t-label">Paid</p>
+        <p class="t-value truncate" title={mga(paid)}>{mga(paid)}</p>
+      </div>
+      <div class={`tile ${dueCls}`}>
+        <p class="t-label">Due</p>
+        <p class="t-value">{dueVal}</p>
+        <p class="t-micro leading-tight">{dueState}</p>
+      </div>
     </div>
   )
 }

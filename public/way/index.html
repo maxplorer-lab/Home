@@ -162,6 +162,17 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
    and the dot already carry how FAR it is (green to amber within the rung); this is
    the only thing on the bar that says whether it is getting smaller. */
 #meet-strip .trend { flex: 0 0 auto; white-space: nowrap; font-size: 9px; color: #6b7280; }
+/* Which way the subject IS, between the bar and the numbers: it belongs to the bar
+   (how far) rather than to the scale, and it is hidden -- not blanked -- when the
+   bearing would be fix noise (see CONFIG.DIRECTION_MIN_M). The colour is set from
+   the page, like the fill's and the dot's, so the three arrive together. */
+#meet-strip .bearing { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; font-weight: 700; font-size: 9px; }
+/* Rotated about its own centre by renderDirection(): 0deg is north, so the glyph
+   can never read upside down the way a fixed arrow would. */
+#meet-strip .bearing .bearing-arrow { display: inline-block; font-size: 11px; line-height: 1; transition: transform 0.4s ease; }
+/* The head of the map arrow, sitting at the tip of its line. Centred, so the
+   rotation is about the point the line ends on. */
+.direction-head { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; font-size: 13px; line-height: 1; text-shadow: 0 0 5px rgba(0, 0, 0, 0.95); }
 /* ---- The picker panel (the bar's own list of people and places) ---- */
 /* Anchored to the bar it belongs to (hence #meet-strip being position: relative)
    and opening UPWARD, because the strip is the bottom row of the screen. Rows are
@@ -427,6 +438,14 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
         <span class="scale" id="meet-strip-scale"></span>
         <span class="trend" id="meet-strip-trend"></span>
         <span class="when" id="meet-strip-when"></span>
+
+        <!-- Which WAY the subject of the bar is -- the one thing "2.4 km" cannot
+             say. An arrow at the true bearing plus the compass point, so the
+             reading needs no interpreting of a shape. Set (or hidden) by
+             renderDirection(), which rotates this arrow and the map's from ONE
+             bearing. -->
+        <span class="bearing" id="meet-strip-bearing" style="display:none;"
+              title=""><span class="bearing-arrow" id="meet-strip-bearing-arrow">&#8593;</span><span id="meet-strip-bearing-text"></span></span>
 
         <!-- The picker: every person and place, nearest first from here. It lives
              INSIDE the bar so it can anchor to it (bottom: 100%) and so a tap on
@@ -705,6 +724,28 @@ const CONFIG = {
     // 5 s cadence swings the range by a few metres, which is this size.
     MEET_STRIP_TREND_KMH: 3,
 
+    // ── The bar's DIRECTION half ─────────────────────────────────
+    // The bar says how FAR the subject is, which is only half of "where is it".
+    // This is the other half: one bearing, drawn twice -- as a chip on the bar
+    // (an arrow at the true angle plus the compass point spelled out) and as an
+    // arrow on the map, from the device's own dot. Both come from ONE
+    // bearingDegrees() call, because a chip saying NE over a line pointing NNW
+    // would be two answers to one question.
+    //
+    // Under this separation the bearing is fix noise, not a heading: two fixes
+    // metres apart swing it by tens of degrees. The bar keeps measuring (20 m
+    // apart is a true distance, and it should say so); only the DIRECTION stands
+    // down, because "north" between two people in one kitchen is not
+    // information.
+    DIRECTION_MIN_M: 50,
+    // How long the arrow is DRAWN, from the device. It is a heading, not a
+    // route: inside this the line reaches the subject itself (its dot or its
+    // fence is on screen anyway), and past it the line stops here and keeps
+    // pointing -- which is the only honest shape for a fence 300 km away. In
+    // METRES rather than pixels on purpose: it is a statement about the world,
+    // and it must not change shape because somebody zoomed the map.
+    DIRECTION_MAX_M: 1000,
+
     // ── Playback (VISUAL ONLY) ───────────────────────────────────
     // The map is drawn from a cursor that trails real time by
     // PLAYBACK_LAG_SECONDS, so a ping is always already in hand by the time
@@ -756,7 +797,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-25.3-superapp';
+const WAY_BUILD = '2026-09-25.4-superapp';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -837,6 +878,7 @@ let deviceControlState = {};
 
 let markerLayers = {};
 let tipLayers = {};
+let directionLayers = [];    // the map arrow to the bar's subject: its line + its head
 let tipClassByDevice = {};   // devId -> the tip-dot class currently drawn
 let markerPositions = {};    // devId -> where its marker actually is (playback clock)
 let trailState = {};         // devId -> append-only trail drawing state
@@ -948,6 +990,25 @@ function bearingDegrees(lat1, lon1, lat2, lon2) {
               Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
     return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
+/** The point `m` metres from (lat, lng) along a true bearing. A flat-earth step,
+ *  which is far more than good enough at the ranges this is drawn at (a few
+ *  centimetres of error over a kilometre, under the width of the line). */
+function pointAhead(lat, lng, brgDeg, m) {
+    const rad = function(d) { return d * Math.PI / 180; };
+    const dLat = (m * Math.cos(rad(brgDeg))) / 111320;
+    const dLng = (m * Math.sin(rad(brgDeg))) / (111320 * Math.cos(rad(lat)) || 1);
+    return { lat: lat + dLat, lng: lng + dLng };
+}
+
+/** A bearing (0 = north, clockwise) as one of the eight compass points. The words
+ *  are for the chip on the bar: an arrow is a shape, "NE" is somewhere to aim,
+ *  and the two together cannot be misread as anything else. */
+const COMPASS_POINTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+function compassPoint(brgDeg) {
+    const i = Math.round(((brgDeg % 360) + 360) % 360 / 45) % 8;
+    return COMPASS_POINTS[i];
+}
+
 function angularDiff(a, b) {
     const d = Math.abs(a - b) % 360;
     return d > 180 ? 360 - d : d;
@@ -2504,6 +2565,93 @@ function meetStripTarget(deviceId, preferId) {
     return best;
 }
 
+// ── The bar's direction half ────────────────────────────────────
+// The bar answers "how far is Home / Niri"; this answers "which way", which is
+// the other half of the same question and the only place on the screen it can be
+// answered from. It is drawn TWICE from ONE bearing:
+//
+//   * a chip on the bar -- an arrow rotated to the true angle, plus the compass
+//     point spelled out, tinted with the bar's own closeness colour, so the
+//     direction arrives in the same colour language as the fill and the dot;
+//   * an arrow on the map, from the DEVICE's drawn position, dashed, with a head
+//     at the tip.
+//
+// THREE THINGS ABOUT IT ARE DELIBERATE, and each one is a way of lying that this
+// refuses:
+//
+//   * The line starts at `markerPositions` -- the playback cursor the dot rides
+//     -- and not at the raw live ping, because an arrow that starts somewhere
+//     other than the dot reads as two devices. The bearing is therefore a
+//     heading from where the device is DRAWN, which on Live pace is the same
+//     thing and on Smooth is the honest reading of the same dot.
+//   * The bearing is a straight line of CONSTANT bearing (pointAhead), not a
+//     route: nothing here knows about roads, and an arrow that bent would be
+//     promising one.
+//   * Under CONFIG.DIRECTION_MIN_M the chip and the arrow both stand down (see
+//     the constant). The bar keeps measuring; only the direction is withheld.
+
+function clearDirection() {
+    if (!map) return;
+    directionLayers.forEach(function(l) { map.removeLayer(l); });
+    directionLayers = [];
+}
+
+/** Set BOTH halves of the direction from one bearing, or clear them both when
+ *  there is nothing honest to point at (no subject, no fix for it, or the two of
+ *  them closer than CONFIG.DIRECTION_MIN_M). `tint` is the bar's own closeness
+ *  colour, already computed by the caller, so the chip, the map arrow, the dot
+ *  and the fill are one colour family for one reading. */
+function renderDirection(deviceId, target, tint) {
+    const chip = document.getElementById('meet-strip-bearing');
+    const mine = markerPositions[deviceId] ||
+        (latestPing[deviceId] ? { lat: latestPing[deviceId].latitude, lng: latestPing[deviceId].longitude } : null);
+    const hasPoint = !!target && typeof target.lat === 'number' && typeof target.lng === 'number';
+    const usable = !!mine && hasPoint && typeof target.dist === 'number' &&
+        target.dist >= CONFIG.DIRECTION_MIN_M;
+    if (!usable) {
+        if (chip) chip.style.display = 'none';
+        clearDirection();
+        return;
+    }
+
+    const brg = bearingDegrees(mine.lat, mine.lng, target.lat, target.lng);
+    const point = compassPoint(brg);
+    const paint = 'rgb(' + (tint || '56,189,248') + ')';
+
+    if (chip) {
+        // The arrow is rotated about its own centre, so 0deg is north and the
+        // glyph is never mirrored; the letters beside it are what makes the
+        // bearing readable without turning the phone.
+        chip.style.display = 'flex';
+        chip.style.color = paint;
+        document.getElementById('meet-strip-bearing-arrow').style.transform = 'rotate(' + brg.toFixed(1) + 'deg)';
+        document.getElementById('meet-strip-bearing-text').textContent = point;
+        chip.title = target.name + ' is ' + Math.round(brg) + '\u00b0 (' + point + ') from ' + deviceId +
+            ' \u00b7 the arrow on the map starts at ' + deviceId + '\'s dot';
+    }
+
+    if (!map) return;
+    clearDirection();
+    const tip = pointAhead(mine.lat, mine.lng, brg, Math.min(target.dist, CONFIG.DIRECTION_MAX_M));
+    directionLayers = [
+        L.polyline([[mine.lat, mine.lng], [tip.lat, tip.lng]], {
+            color: paint, weight: 2, opacity: 0.8, dashArray: '2, 8', interactive: false
+        }).addTo(map),
+        // The head is a MARKER, not a polyline decoration: Leaflet polylines have
+        // no arrowhead, and the tip is also the one thing that has to stay
+        // readable when the line's far end is off screen.
+        L.marker([tip.lat, tip.lng], {
+            icon: L.divIcon({
+                className: '',
+                html: '<div class="direction-head" style="color:' + paint + ';transform: rotate(' +
+                    (brg - 90).toFixed(1) + 'deg)">\u27a4</div>',
+                iconSize: [18, 18], iconAnchor: [9, 9]
+            }),
+            interactive: false, keyboard: false
+        }).addTo(map)
+    ];
+}
+
 function renderMeetStrip(eta) {
     const el = document.getElementById('meet-strip');
     if (!el) return;
@@ -2528,7 +2676,13 @@ function renderMeetStrip(eta) {
         document.getElementById('app').classList.toggle('has-meet-strip', show);
         if (map) setTimeout(function() { map.invalidateSize(); }, 0);
     }
-    if (!show) return;
+    if (!show) {
+        // Nothing to point at: the chip goes and the map arrow goes with it. The
+        // strip is a sibling of the map, so a hidden bar must not leave a line
+        // drawn on it.
+        renderDirection(selectedDevice, null, null);
+        return;
+    }
 
     // Nothing to measure to at all: the bar says so and stays, because this is the
     // only way into the list of people and places.
@@ -2542,6 +2696,7 @@ function renderMeetStrip(eta) {
         document.getElementById('meet-strip-fill').style.width = '0%';
         el.classList.remove('live');
         el.title = 'Nothing has a position to measure to yet — tap the name to pick a person or place';
+        renderDirection(selectedDevice, null, null);
         return;
     }
 
@@ -2577,6 +2732,7 @@ function renderMeetStrip(eta) {
         document.getElementById('meet-strip-fill').style.width = '0%';
         el.title = selectedDevice + ' → ' + target.name + ' · nothing to measure to: that ' +
             (target.kind === 'fence' ? 'place is not in your list' : 'device has not reported since you picked it');
+        renderDirection(selectedDevice, null, null);
         return;
     }
 
@@ -2589,6 +2745,10 @@ function renderMeetStrip(eta) {
     // and the mark cannot drift apart and say two different things.
     const headPct = pct(target.dist);
     const tint = meetStripTint(meetStripCloseness(target.dist, meetStripScaleIdx));
+    // The direction half of the SAME reading: one bearing, from this device to
+    // this subject, drawn on the bar and on the map together -- and in the tint
+    // the fill and the dot are already wearing.
+    renderDirection(selectedDevice, target, tint);
 
     document.getElementById('meet-strip-scale').textContent = meetStripScaleLabel(scale);
     const dot = document.getElementById('meet-strip-peer');
@@ -3599,6 +3759,9 @@ function handleSnapshot(data) {
     devicePings = {}; latestPing = {}; todayDist = {};
     DEVICES.forEach(function(d) { devicePings[d] = []; todayDist[d] = 0; });
     clearAllStationaryDots();
+    // A snapshot is the whole world again, so an arrow drawn from the previous
+    // one must not survive it: the positions it pointed from are gone.
+    clearDirection();
 
     // In-flight approach pulses ride the snapshot too (they are the DO's live
     // state), re-timed from the age the DO reports -- reloading mid-approach
@@ -4086,6 +4249,7 @@ function resetToday() {
     });
     redrawAllTracks();   // empties every trail state, ready for the new day
     clearAllStationaryDots();
+    clearDirection();    // the bar's subject has no fix in the new day until one arrives
     renderBadges();
     if (selectedDevice) updateSpeedoHUD();
 }

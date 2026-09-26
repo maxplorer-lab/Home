@@ -211,6 +211,25 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     screen. Section 26 also *measures* the token contrast floors (6:1 for
     `--ink-2`, 4.5:1 for `--ink-3`, light and dark) rather than trusting a hex.
 
+    **A comparison is not a list.** Two shapes exist for a set of figures, and
+    which one is right is decided by how they are READ. A `.ledger` row (label
+    left, figure right, a hairline between rows) is for facts compared DOWN a
+    column — the balances, one account per row, where the label has to carry the
+    direction in words. A `.tile` (a small surface holding ONE fact) is for
+    facts compared ACROSS, about one subject — a Kiné client's sessions / paid /
+    due, or the week's sessions against the week's money. Both are legitimate;
+    the bug is applying one to the other's job, which is what happened to the
+    Kiné summary on Home: it was three pastel boxes, then a ruled list of the
+    same three facts, and a list is what a comparison looks like when nobody
+    says which it is. So: a tile is a `.tile` from `CHROME_CSS` like every other
+    surface, it carries NO colour of its own — the palette is spent on the
+    FIGURE inside it, exactly as the ruled list spent it (green = money in, a
+    balance green / yellow / red, a count in ink) — and a tile only ever appears
+    INSIDE a `.card`, never as a row of panels competing with the anchor. Both
+    halves are guarded in smoke section 26: the week's two tiles in the served
+    page plus that they paint no colour, and the three tiles `KineClientStats`
+    draws.
+
     **Dark mode has ONE signal: the `html.dark` class — never the OS.** The
     tokens are emitted once, under `html.dark`. This was written the other way
     round first (a second copy inside `@media (prefers-color-scheme: dark)`),
@@ -1259,6 +1278,23 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       incomplete at the same point); the real tree stays green under M10, so the
       control is the only thing that notices.
 
+40. **The FleetDO spends 4-5 ROWS WRITTEN on every ping that reaches it, stored or
+    not — so the free plan's 100,000 rows/day is spent by the phone's UPLOAD RATE,
+    not by how much anyone drives.** Four of them are bookkeeping on any ping that
+    arrives, before persistence is even considered: one `sql.exec` for `received`,
+    one for `accepted`, one for the outcome (`drawn`/`collapsed`/`paused`), and the
+    `device_state` UPSERT. The fifth is the `pending_sync` row, and a drawn ping
+    costs one more when the nightly flush deletes it. The pings that never reach D1
+    at all — *collapsed*: parked, or inside a fence — are 4 rows each, so
+    `gps_pings` shows the journeys and none of the spend; the cost is read from the
+    diagnostics ledger instead. That puts the ceiling near **20,000-25,000
+    pings/day**, and no amount of pruning moves it: a phone left at a 2 s interval
+    with no minimum distance empties it in ~14 hours while parked. `recordingPaused`
+    does NOT reduce this (it gates the `pending_sync` row and nothing else), and
+    neither does the accuracy or glitch gate, which are counted before they drop.
+    `DB-REDESIGN.md` §1c's "comfortable" estimate assumed ONE row per ping per side;
+    that is why it was wrong.
+
 ## Smoke test (local, after any identity change)
 
 ```bash
@@ -1325,6 +1361,8 @@ have their own separate repositories and their own history.
 | Text renders in a system face on one document (the "Home" wordmark is the tell) | that document does not include `CHROME_CSS`: the brand `body { font-family }` rule lives there, not in `<BrandFontLinks />` — which is exactly how the sign-in, claim and change-password screens shipped in Segoe UI while the font request was sitting in their `<head>` |
 | The sign-in page is slow to show its mark | `/logo-1024.png` (982KB) is back on the front door; it is `/icons/icon-192.png` (smoke section 26) |
 | Nothing on the home screen looks more important than anything else | the anchor/ledger structure was flattened: two `t-anchor`s, or a second `card-lg`, or a row of equal tiles added back beside the anchor (section 26 counts them) |
+| A summary of two or three figures reads as a column of text (the Kiné card on Home is the one that has shipped both ways) | the shapes were swapped: a COMPARISON (`.tile`s side by side inside one card) was set as a `.ledger` list, which makes the reader subtract instead of glance. See "A comparison is not a list" above; smoke section 26 counts the week's two tiles in the served page and the three in `KineClientStats` |
+| A row of tiles is louder than the card it sits in (coloured boxes where the same figures were ink) | a tile is wearing a colour of its own — `.tile` is the table's paper and a rule, nothing else. The colours this summary has always used belong to the FIGURES: green money in, a balance green / yellow / red, counts in ink. Smoke section 26 fails if `.tile-tint` comes back |
 | Half a screen is dark and half is light (a `bg-gray-100` box whose text is invisible) | the tokens are answering a different signal than the `dark:` utilities. They must answer the **`html.dark` class only** — a `@media (prefers-color-scheme: dark)` copy of the tokens is the bug, not the fix (probe it: an element with only `dark:bg-gray-700` is transparent without a `.dark` ancestor, grey-700 with one). Section 26 fails if the media copy comes back, or if a document loads `CHROME_CSS` without the bootstrap that sets the class |
 | A tab exists in one shape but not the other | `HOME_TABS` in `views/app-chrome.tsx` is the single list; the bottom bar and `HomeNav` both map over it |
 | A person who IS an admin cannot see the admin links on `/settings` (or an admin POST bounces back to `/settings`) | they are a Home admin whose Sompitra row predates the merge, so `users.is_admin` is 0 there. The card and the handlers must judge with `isSettingsAdmin()` — central role first, module flag as a fallback (rule 13, `CUTOVER.md` §1c) |

@@ -307,13 +307,21 @@ dashboard.get('/', async (c) => {
         </Card>
       )}
 
-      {/* ── Two ledgers side by side on a desktop, stacked on a phone ──
-          Balances and the Kiné week are both "label left, figure right, a
-          hairline between rows" — the shape of the thing itself. The figures
-          keep the money palette (purple = owed to us, orange = we owe, teal =
-          net) and the labels say what they mean in words: "Uncollected Dues"
-          and a bare "Dues" sat two centimetres apart and meant opposite
-          directions. */}
+      {/* ── Two panels side by side on a desktop, stacked on a phone ──
+          The two carry DIFFERENT shapes on purpose, because they are read
+          differently.
+
+          Balances is a ledger: "label left, figure right, a hairline between
+          rows" — three different accounts read down a list, where the label has
+          to carry the direction in words ("Uncollected Dues" and a bare "Dues"
+          sat two centimetres apart and meant opposite ways).
+
+          The Kiné summary is a comparison: its figures are read ACROSS, against
+          each other and against the week (sessions in, money in, money still
+          owed), so they are tiles side by side inside the one card. Both wear
+          the same money palette — purple = owed to us, orange = we owe, teal =
+          a period's net, green = money in — so the colour means one thing on
+          the page however the figures are arranged. */}
       <div class="grid gap-4 mb-4 md:grid-cols-2">
         <Card title="Balances" icon="swap" className="min-w-0">
           <div class="ledger">
@@ -324,31 +332,46 @@ dashboard.get('/', async (c) => {
         </Card>
 
         <Card title="Kiné Summary" icon="pulse" className="min-w-0">
-        {/* Weekly totals (current SAT–FRI week), as ledger rows: a session
-            count and the money it earned. The money is GREEN — it is money in,
-            and the same page prints every other franc coming in as green; it
-            was orange here, which is what the palette uses for money going
-            out. */}
-        <p class="t-micro flex items-center gap-1 mb-1">
+        {/* Weekly totals (current SAT–FRI week) as TWO TILES: the sessions
+            delivered and the money they brought, side by side, because the
+            question asked of them is "how much money per session" — a
+            comparison, not a list.
+
+            The colours are the ones this card already wore as a ruled list:
+            the money is GREEN — it is money in, and the same page prints every
+            other franc coming in as green (it was orange here, which is what
+            the palette uses for money going out) — and the session COUNT is
+            not money, so it takes no hue of its own. The tiles themselves
+            carry no colour; the figure is where the palette is spent. */}
+        <p class="t-micro flex items-center gap-1 mb-2">
           <Icon name="calendar" className="w-[13px] h-[13px]" />{weekLabel}
         </p>
-        <div class="ledger mb-3">
-          <TintStat label="Sessions this week" sub="delivered" value={String(kineWeekDelivered?.total || 0)} tone="" />
-          <TintStat label="Paid this week" value={mga(kineWeekPaid?.total || 0)} tone="text-green-600 dark:text-green-400" />
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <div class="tile">
+            <p class="t-label">Sessions this week</p>
+            <p class="t-value">{String(kineWeekDelivered?.total || 0)}</p>
+          </div>
+          <div class="tile text-green-600 dark:text-green-400">
+            <p class="t-label">Paid this week</p>
+            <p class="t-value truncate" title={mga(kineWeekPaid?.total || 0)}>{mga(kineWeekPaid?.total || 0)}</p>
+          </div>
         </div>
 
-        {/* Per-client active summary */}
+        {/* Per-client active summary — one block per client, its three figures
+            as the three tiles above (see `KineClientStats`). Home keeps the
+            client's OWN arithmetic and nothing else: opening them is /kine's
+            job, and a name here is a label, not yet a link. */}
         {kineClients.results.length === 0
-          ? <p class="t-micro text-center py-2">No active clients yet</p>
+          ? <p class="t-micro text-center py-3">No active clients yet</p>
           : (
-            <div class="ledger">
+            <div class="space-y-3">
               {kineClients.results.map(client => {
                 const delivered = client.delivered ?? 0
                 const paid      = client.paid ?? 0
                 const rate      = client.session_rate ?? client.default_rate ?? 0
                 return (
-                  <div class="py-2">
-                    <p class="text-[13.5px] font-semibold mb-1">{client.customer_name}</p>
+                  <div>
+                    <p class="text-[13.5px] font-semibold mb-1.5 truncate">{client.customer_name}</p>
                     <KineClientStats delivered={delivered} paid={paid} rate={rate} />
                   </div>
                 )

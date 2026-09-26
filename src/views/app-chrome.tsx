@@ -529,6 +529,36 @@ export const CHROME_CSS = `
      so the rows read as one ruled column instead of N boxes. */
   .ledger > * + * { border-top: 1px solid var(--rule); }
 
+  /* ── A comparison, of two or three figures ─────────────────────────
+     A .tile is a small surface for ONE fact, and it exists to be read AGAINST
+     ITS NEIGHBOURS: a client's sessions / paid / due, or this week's sessions
+     against this week's money. Side by side they answer "which of these is
+     bigger" in one glance, which is the question the Kiné summary is actually
+     asked; down a column they answer it by arithmetic.
+
+     It is deliberately NOT a page-level surface. The home screen leads with
+     one anchor figure and the rest of it is ruled rows — a row of equal tiles
+     BESIDE that anchor is what flattened the page before (AGENTS: "nothing on
+     the home screen looks more important than anything else" — and the anchor
+     check counts it). A tile only ever appears INSIDE a .card, where the card
+     has already said which panel matters and the comparison is the point.
+
+     The SURFACE carries no colour. A tile is the table's paper with a rule
+     round it, and the colour is spent on the FIGURE inside it — the same way
+     every other surface in this app spends it, and the same way the Kiné
+     summary's ruled list spent it when that was its shape (money in green, a
+     balance green / yellow / red, a count in ink). A tinted tile is a second
+     colour table standing beside the palette, and the two then have to be kept
+     saying the same thing. */
+  .tile {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: var(--r-row);
+    padding: .5rem .5rem .45rem;
+    text-align: center;
+    min-width: 0;
+  }
+
   /* ── The type scale ────────────────────────────────────────────────
      Three jobs, three treatments, and money is the loudest of them:
 

@@ -2059,6 +2059,55 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     }
     check('the picker lists every person and place, nearest first, with the pick marked', ok, why)
   }
+  // ---- The bar's DIRECTION half --------------------------------------------
+  // "2.4 km" is half of "where is it": the other half is WHICH WAY, and it is
+  // drawn twice from ONE bearing -- the chip on the bar and the arrow on the map.
+  // Two things are worth RUNNING rather than admiring, because both are quiet
+  // when they are wrong: that the two halves really are one reading, and that the
+  // bearing maths is right (a compass point is a rounding rule, and pointAhead has
+  // to land north when it is asked for north).
+  {
+    const dirFn = fnBody(wayCode, 'renderDirection')
+    const pointsSrc = (wayCode.match(/const COMPASS_POINTS = \[[^\]]*\]/) || [])[0]
+    const compassDecl = stripDecl('compassPoint')
+    const aheadDecl = stripDecl('pointAhead')
+    let dirRun = null
+    if (pointsSrc && compassDecl && aheadDecl) {
+      try {
+        dirRun = new Function(pointsSrc + '\n' + [compassDecl, aheadDecl].join('\n') +
+          '\nreturn { compassPoint, pointAhead };')()
+      } catch (e) { dirRun = null }
+    }
+    let ok = false, why = 'renderDirection / compassPoint / pointAhead are not in the page'
+    if (dirFn && dirRun) {
+      const lat = -18.9137, lng = 47.5361
+      // The page's own metres-per-degree (111320), NOT the fixture's 110540: the
+      // point of this half is that the two agree on where "1 km north" is.
+      const north = dirRun.pointAhead(lat, lng, 0, 1000)
+      const east = dirRun.pointAhead(lat, lng, 90, 1000)
+      const south = dirRun.pointAhead(lat, lng, 180, 1000)
+      const nLat = (north.lat - lat) * 111320
+      const eLng = (east.lng - lng) * 111320 * Math.cos(lat * Math.PI / 180)
+      const cp = dirRun.compassPoint
+      const oneReading = dirFn.includes('bearingDegrees(') && dirFn.includes('markerPositions[') &&
+        dirFn.includes('meet-strip-bearing-arrow') && dirFn.includes('direction-head') &&
+        dirFn.includes('CONFIG.DIRECTION_MIN_M') && dirFn.includes('CONFIG.DIRECTION_MAX_M')
+      const barHands = /renderDirection\(selectedDevice, target, tint\)/.test(meetStripFn || '')
+      const barClears = /renderDirection\(selectedDevice, null, null\)/.test(meetStripFn || '')
+      ok = Math.abs(nLat - 1000) < 5 && Math.abs(north.lng - lng) < 1e-9 &&
+        Math.abs(east.lat - lat) < 1e-9 && Math.abs(eLng - 1000) < 5 &&
+        north.lat > lat && south.lat < lat &&
+        cp(0) === 'N' && cp(22) === 'N' && cp(23) === 'NE' && cp(45) === 'NE' &&
+        cp(89) === 'E' && cp(180) === 'S' && cp(270) === 'W' && cp(315) === 'NW' &&
+        cp(359) === 'N' && cp(-10) === 'N' &&
+        oneReading && barHands && barClears
+      why = `1 km north lands ${nLat.toFixed(1)} m up (${(north.lng - lng).toFixed(9)} off in longitude), 1 km east ${eLng.toFixed(1)} m across; ` +
+        `0/22/45/89/180/270/315/359 read ${cp(0)}/${cp(22)}/${cp(45)}/${cp(89)}/${cp(180)}/${cp(270)}/${cp(315)}/${cp(359)}; ` +
+        (oneReading ? 'one bearing drives the chip, the map arrow and the dot' : 'the chip and the map arrow are not driven by one bearing (or the stand-down distances are gone)') +
+        (barHands && barClears ? ', and the bar hands it the target it measures to and clears it when there is none' : ', but the bar never hands it a target (or never takes the arrow back)')
+    }
+    check('the bar\'s bearing is ONE reading, drawn on the bar and on the map', ok, why)
+  }
   {
     const pickSrc = fnBody(wayCode, 'pickStripRef')
     const offSrc = fnBody(wayCode, 'deactivateStripRef')
@@ -5306,6 +5355,56 @@ log('\n26. one design language: the tokens, the labels, and the front door')
     anchors === 1 && panels === 1 && /class="ledger"/.test(markup),
     `t-anchor x${anchors}, card-lg x${panels} — the home page has drifted from one anchor figure plus a ledger, ` +
       'so nothing on it is ranked any more')
+
+  // ── the Kiné summary compares its figures, it does not list them ──
+  // "Nine sessions, four paid for, five owed" is read ACROSS the three facts,
+  // and so is this week's session count against this week's francs. Down a
+  // column that comparison becomes arithmetic the reader has to do; the two
+  // shapes have both shipped here (three pastel boxes, then a ruled list of the
+  // same three facts), so the shape is held by a check now.
+  // Scoped to the WEEK strip (the two tiles a household with no clients still
+  // has): counted page-wide, a check like this would stay green on the
+  // per-client tiles alone while the week above them had gone back to a list.
+  const kineCard = markup.slice(markup.indexOf('Kiné Summary'), markup.indexOf('Cash Flow'))
+  const weekAt = kineCard.indexOf('grid grid-cols-2 gap-2')
+  const clientsAt = kineCard.indexOf('grid grid-cols-3 gap-2')
+  const weekStrip = weekAt === -1 ? '' : kineCard.slice(weekAt, clientsAt > weekAt ? clientsAt : weekAt + 900)
+  const weekTiles = (weekStrip.match(/class="tile/g) || []).length
+  check('the Kiné summary sets the week as two tiles side by side in its card',
+    weekTiles === 2,
+    `${weekTiles} tile(s) in the Kiné week strip — what the week earned and what it delivered are back ` +
+      'to a column of text, so the one tells you nothing about the other at a glance')
+
+  // A tile is a SURFACE, so it comes from the token set like every other one:
+  // `.tile` is the table's paper with a rule round it, and the COLOUR is spent on
+  // the figure inside — the shape this summary already had as a ruled list.
+  // A tile that painted itself (`bg-white`, `shadow-sm`, a pastel of its own) is
+  // the drift this catches; a tile that ALSO tinted its surface from the figure
+  // is the subtler version of it, a second colour table standing beside the
+  // palette, so that is named here too.
+  check('a tile is a token surface, and the colour stays on the figure',
+    /\.tile\s*\{[^}]*background:\s*var\(--paper\)/.test(homeCss) &&
+      !/\.tile-tint\b/.test(homeCss) &&
+      // …and on the page, the week's money keeps the green it has always had.
+      kineCard.includes('class="tile text-green-600 dark:text-green-400"'),
+    'tiles paint their own surface (or wear a tint of their own), or the week\'s money has lost its green — ' +
+      'either way the palette no longer decides what a figure means, and the dark theme no longer reaches it')
+
+  // The per-client half, read from the component itself: three tiles, and the
+  // palette spent on ONE of them — the balance, the fact that decides something.
+  // (The live page cannot carry this check: a household with no active clients
+  // renders none of them.)
+  let layoutSrc = ''
+  try { layoutSrc = readFileSync(new URL('../src/views/layout.tsx', import.meta.url), 'utf8') } catch (e) {}
+  const statsAt = layoutSrc.indexOf('export const KineClientStats')
+  const statsBody = statsAt === -1 ? '' : layoutSrc.slice(statsAt, layoutSrc.indexOf('export const Btn', statsAt))
+  const clientTiles = (statsBody.match(/class="tile|class=[^"]*tile/g) || []).length
+  const plainTiles = (statsBody.match(/<div class="tile">/g) || []).length
+  check("one client's three facts are three tiles, and only the balance carries colour",
+    clientTiles === 3 && plainTiles === 2 && /grid grid-cols-3 gap-2/.test(statsBody) &&
+      statsBody.includes('class={`tile ${dueCls}`}'),
+    `KineClientStats draws ${clientTiles} tile(s), ${plainTiles} of them plain — a client's sessions, ` +
+      'money and balance are no longer side by side, or the palette has moved off the balance')
 }
 
 // ─── summary ─────────────────────────────────────────────────────
