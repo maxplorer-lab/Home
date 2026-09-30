@@ -92,10 +92,11 @@ what is owed to us**, and every amount is tabular so columns line up. Cash on
 hand is the one deliberate exception — it is a *health reading* rather than a
 direction, so it uses Sompitra's balance scale (red under zero, then yellow,
 blue, green as the balance grows), printed at the 700 step in light mode because
-a 30px figure in `yellow-500` on white is 2.3:1. Kiné counts sessions, not
-money, so its delivered count is ink and its payments are green like every other
-franc arriving (they used to be orange — the colour of money going *out* — on
-the same screen that printed income in green). `npm run smoke` section 18 fails
+a 30px figure in `yellow-500` on white is 2.3:1. Kiné counts sessions, so its delivered figure is a count and its payments are
+green like every other franc arriving; its balance is francs — billed minus
+paid, exact — and both screens read the one ledger module, so Home's figure and
+/kine's can no longer differ (the payments used to be orange — the colour of money going *out* — on the
+same screen that printed income in green). `npm run smoke` section 18 fails
 if a money colour drifts — it reads the **served pages**, so a blue "Net" or a
 blue "owed to us" cannot come back unnoticed.
 
@@ -288,15 +289,63 @@ position reaches the map half a minute later — so the pace is a **switch**, in
 newest ping the moment it lands. It is per device, remembered on that phone, and
 changes nothing about what W.A.Y records, stores or notifies.
 
-**The background has one definition** — `public/shared/basemaps.js` — read by
-this map *and* by the public live share, so neither page names a tile server of
-its own. **LITE** (the default) is Esri's neutral grey canvas, which lets
-markers, tracks and fences stand out; **STREETS** adds place names for when you
-are looking at somewhere you do not know. The share always gets **STREETS**,
-with no switch to make. This is not fussiness: the share used to point straight
+**The background has one definition** — `public/shared/basemaps.js`, and one
+place that turns a key into layers, `public/shared/basemap-layer.js` — read by
+this map *and* by the public live share, so neither page names a map host of its
+own. Both keys are drawn by MapLibre from OpenFreeMap's vector tiles: keyless, no
+registration, no request limit, and a style that is a file we can change.
+**LITE** (the default) is the pale canvas, which lets markers, tracks and fences
+stand out; **STREETS** — the map to switch to when you are looking at somewhere
+you do not know — asks for a denser label set than upstream prints
+(`public/shared/basemap-style.js`: minor street names and neighbourhood places
+from one zoom earlier), so schools, shops and institutions are labelled, not just
+roads. Buildings print **flat** on both keys, and one more thing that file owns is
+why: upstream's labelled style raises buildings into 3D from z14, and an extrusion
+is the heaviest thing a style can ask a phone to draw. Dropping it costs no
+download — the building data is in the tiles the flat footprints already need —
+and the flat layer that takes the footprints over is uncapped so they do not
+disappear above z14. The share always gets **STREETS**, with no switch to make.
+
+A style can be tuned exactly right and still paint nothing, so the suite does not
+stop at the JSON: it fetches one real tile at the household's own view — the
+centre the page declares, at the zoom the tile source calls its deepest — and
+fails when that tile is empty or has no `building`/`transportation`/`place` in it,
+with an empty-area tile fetched alongside so the requirement is shown able to
+fail. Probing it turned up the trap it now guards: a vector request past a
+source's native zoom is answered `200` with a zero-byte body, so a map that asks
+a host for street-zoom tiles instead of overzooming the deepest real ones draws
+an empty map while every status check stays green.
+
+Those upstream files — the two style JSONs, their TileJSON and the sample tiles —
+are not fetched on every run. The suite judges a **record** of them,
+`scripts/fixtures/basemaps/`, taken from the real servers by
+`npm run basemaps:record` (which prints a per-URL diff, so refreshing upstream is
+the moment a change becomes visible rather than a surprise on somebody's phone).
+So a red means upstream or this repo changed, never that the machine was offline —
+and the same judgment runs in CI as `npm run audit:basemaps`, with no dev server,
+no database and no network.
+
+That density is the point, and it took two tries to learn. Commercial rasters
+failed this household for a reason no choice of raster could fix: around here
+they print the same road network as the plain canvas and thin out as you zoom in
+("just a colored version of the lite basemap", then, with a better raster,
+"you just bolded the street names, and very few places"). Label density is a
+decision made *inside* a style — so the map now draws a style, and that decision
+is ours. This is not fussiness: the share used to point straight
 at OpenStreetMap's standard tiles, and in September 2026 that volunteer-run
 server began refusing this app — blank tiles on the page that mattered, while
 the household map (already on Esri) looked perfect.
+
+**The map's arithmetic has one definition too**, and it is a small family of
+files rather than page text: `public/shared/geo.js` (how far, which way, the
+eight cardinals), `meet.js` (the single "are these two about to cross" verdict
+that both the pill and the distance bar ask), `meet-strip.js` (the bar's ruler,
+and what it measures to) and `trip-legs.js` (what counts as a stored point, and
+what a day adds up to). The page loads them with plain `<script>` tags and keeps
+the names it always used; the public share measures with the same geometry. Two
+reasons, both of which have already cost us once: a rule that lives inside one
+page can only be tested by rebuilding it in test code, and a second copy of a
+rule is a second opinion waiting to disagree.
 
 **Approaching home sends up a flare.** The "about a minute / 30 seconds away"
 push is easy to miss, and being at the gate is not — so the same thresholds that
@@ -403,6 +452,8 @@ npm run verify                                 # both, in order
 npm run audit:remote                           # the four REMOTE dbs vs migrations-* (read-only)
 npm run audit:module-state                     # request state in module scope, in src/ (read-only)
 npm run audit:do-state                         # request data parked on a DO's `this` (read-only)
+npm run audit:rules                            # the docs' declared guards + § citations (read-only)
+npm run audit:laoka-types                      # every .js under src/, one declared relaxation (read-only)
 npm run deploy:dry-run                         # builds + resolves bindings
 ```
 
@@ -431,9 +482,34 @@ that request's data into another's turn. It reads the Durable Objects named in
 reason it is object state, which is how `FleetDO`'s two caches, four keyed Maps
 and one deliberately-exempt diagnostics slot stay accounted for.
 
-The type gate and those two audits are also the checks GitHub runs for you:
+`npm run audit:rules` asks the same kind of question about the DOCS. Every
+numbered rule in `AGENTS.md` declares its guards in the rule → guard map, and
+this audit resolves each declaration — a smoke section that must exist (with an
+optional check fragment inside it), an `audit:` script whose file must exist, or
+a driver path — then fails a rule with no row, a rule whose prose names a guard
+its rows omit, a `§` citation anywhere in the repo that points at no section or
+names no document, and a smoke section that is neither claimed by a rule nor
+declared as guarding none. The point is the one a sentence cannot survive:
+rename a smoke section or move a driver and prose still reads as a promise,
+while a declared name fails. `npm run smoke` §28 runs the same scan with controls
+that prove it can still go red.
+
+`npm run audit:laoka-types` is the other half of the type gate, and it exists
+because `npm run check` stops at the file extension: `checkJs` is off, so every
+`.js` file under `src/` — Laoka's vendored seventeen, 3228 lines — sat inside
+`include: ["src"]` and outside the gate, parsed and never looked at. This pass
+runs the same compiler over every `.js`/`.mjs`/`.cjs` under `src/` with exactly
+one relaxation, `noImplicitAny`, and it pins that relaxation: it asserts its own
+effective option set and refuses to answer if any other flag moved, so a fault
+is fixed by typing the value, never by loosening a check. Full strictness on
+those files reports 321 faults, 285 of them unannotated parameters; with the
+relaxation ten remained, all fixed — and one of them was a real find (two admin
+handlers that could return no response at all). `npm run smoke` §29 runs the
+same pass with controls that prove it can still fail.
+
+The type gate and those four audits are also the checks GitHub runs for you:
 `.github/workflows/gates.yml` runs on every pull request and every push to
-`main`, and carries a second job running the two falsification drivers — an audit
+`main`, and carries a second job running the four falsification drivers — an audit
 nobody has seen fail is not a gate, and an analyzer that has been quietly
 disarmed prints a clean tree for the rest of the project's life. None of it needs
 a server, a database, a secret or the network beyond `npm ci`; `npm run smoke`

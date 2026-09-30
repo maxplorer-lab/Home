@@ -5,6 +5,9 @@ import { PressFeedbackStyle, PressFeedbackScript } from './feedback'
 // paid are francs, and they read as francs ("Ar 45,000"), not as a bare number
 // with "MGA" stuck on the end.
 import { mga } from '../lib/utils'
+// The same rule the routes call: the tiles render the ledger's figures, they
+// do not recompute them (see src/kine/ledger.ts).
+import type { ClientLedger } from '../kine/ledger'
 // The one app chrome (header + tab bar) — shared with the module shells.
 import { CHROME_CSS, TAILWIND_CONFIG, CHAT_UNREAD_SCRIPT, HomeHeader, HomeTabBar, SOMPITRA_SECTIONS, SHELL_WIDTH, BrandFontLinks, Icon, tabColorFor, tabInkFor } from './app-chrome'
 
@@ -211,20 +214,31 @@ export const TintStat: FC<{ label: string; value: string; tone: string; sub?: st
   </div>
 )
 
-export const KineClientStats: FC<{ delivered: number; paid: number; rate: number }> = ({ delivered, paid, rate }) => {
-  const balance = rate > 0 ? Math.round(paid / rate) - delivered : 0
+/** The balance as a session count, for the tile's caption only — the ledger's
+    `sessionBalance`, rounded to at most one decimal. */
+function sessionWord(sessions: number): string {
+  const n = Math.abs(sessions)
+  const label = Number.isInteger(n) ? String(n) : n.toFixed(1)
+  return `${label} session${n === 1 ? '' : 's'}`
+}
+
+export const KineClientStats: FC<{ ledger: ClientLedger }> = ({ ledger }) => {
   let dueCls = 'text-green-600 dark:text-green-400'
   let dueState = 'balanced'
-  let dueVal = '0'
-  if (balance > 0) {
-    dueCls = 'text-yellow-700 dark:text-yellow-400'
-    dueState = 'prepaid · ' + mga(balance * rate)
-    dueVal = '+' + balance
-  } else if (balance < 0) {
+  if (ledger.state === 'owes') {
     dueCls = 'text-red-600 dark:text-red-400'
-    dueState = 'owes · ' + mga(Math.abs(balance) * rate)
-    dueVal = '-' + Math.abs(balance)
+    dueState = 'owes · ' + sessionWord(ledger.sessionBalance)
+  } else if (ledger.state === 'prepaid') {
+    dueCls = 'text-yellow-700 dark:text-yellow-400'
+    dueState = 'prepaid · ' + sessionWord(ledger.sessionBalance)
   }
+  // The figure is MONEY — the ledger's exact answer, the same one /kine's
+  // cards and the payment form print. The sessions it is worth are the
+  // caption, never a second computation: Kiné's truth is francs, and a
+  // rounded session count is exactly how Home and /kine came to disagree
+  // (Ar 10,000/session, 3 delivered, 25,000 paid read "balanced" here while
+  // /kine said "Due 5,000").
+  const dueVal = ledger.balance === 0 ? '0' : mga(Math.abs(ledger.balance))
   // Three facts about ONE client, as three tiles side by side: sessions in,
   // money in, and where that leaves them. They are read against each other
   // ("nine sessions, four paid for"), so they belong across a line and not
@@ -245,11 +259,11 @@ export const KineClientStats: FC<{ delivered: number; paid: number; rate: number
     <div class="grid grid-cols-3 gap-2">
       <div class="tile tile-tint text-blue-600 dark:text-blue-400">
         <p class="t-label">Sessions</p>
-        <p class="t-value">{delivered}</p>
+        <p class="t-value">{ledger.delivered}</p>
       </div>
       <div class="tile tile-tint text-green-600 dark:text-green-400">
         <p class="t-label">Paid</p>
-        <p class="t-value truncate" title={mga(paid)}>{mga(paid)}</p>
+        <p class="t-value truncate" title={mga(ledger.paid)}>{mga(ledger.paid)}</p>
       </div>
       <div class="tile tile-tint text-orange-600 dark:text-orange-400">
         <p class="t-label">Due</p>

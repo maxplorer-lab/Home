@@ -12,7 +12,11 @@
 // Cached: static assets only (icons, images, CSS, fonts, scripts), which
 // are identical for everyone and are exactly what makes a cold start on
 // a phone feel instant.
-const CACHE = 'home-v2';
+// Bump this whenever a cached asset's BEHAVIOUR changes in place — a /shared/*.js
+// module rewritten at the same URL, say. Entries are keyed by URL, so a new file
+// evicts itself and a rewrite does not: without a bump the load right after such
+// a change runs the previous module, and the one after it is correct.
+const CACHE = 'home-v3';
 const PRECACHE = [
   '/manifest.webmanifest',
   '/favicon.ico',

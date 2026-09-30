@@ -105,10 +105,10 @@ export interface ServiceContract {
   start_date: string
   end_date: string | null
   created_at: string
-  // joined
+  // joined — the names the Kiné ledger reads (src/kine/ledger.ts)
   customer_name?: string
-  delivered_count?: number
-  paid_amount?: number
+  delivered?: number
+  paid?: number
 }
 
 export interface AttendanceTick {

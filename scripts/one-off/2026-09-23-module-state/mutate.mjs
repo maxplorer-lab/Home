@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// ─── Module scope: proof that §24 can fail ───────────────────────────
+// ─── Module scope: proof that smoke §24 can fail ───────────────────────────
 // Falsification driver for the guards `npm run smoke` §24 grew on 2026-09-23.
 // It extracts that section, mutates ONE thing at a time, and asks of each
 // mutation: does the check that exists for it actually go red?
 //
-// Why this section needs one more than most. §24 is the only section that
+// Why this section needs one more than most. smoke §24 is the only section that
 // guards a CHECK rather than a behaviour, and the failure mode of such a guard
 // is silence: a scan whose input empties (wrong folder, unresolvable
 // typescript, a set of `SyntaxKind` NAMES compared against `node.kind` NUMBERS)
@@ -15,7 +15,7 @@
 //
 //   node scripts/one-off/2026-09-23-module-state/mutate.mjs [M1 M4 …]
 //
-// Needs NO running dev server: every §24 check is a source read plus an
+// Needs NO running dev server: every smoke §24 check is a source read plus an
 // in-memory parse. Leaves the tree byte-identical, or it says so.
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -40,11 +40,11 @@ function writeKeepingEol(p, text) {
   write(p, crlf ? text.replace(/\n/g, '\r\n') : text)
 }
 
-// ── extract §24 out of the shipping suite ────────────────────────────
+// ── extract smoke §24 out of the shipping suite ────────────────────────────
 const smoke = normalized('scripts/smoke.mjs')
 const start = smoke.indexOf('// ─── 24. no request data lives in module scope')
-// The NEXT section banner, not `// ─── summary`: §25 was added after this one
-// and slices into the same region, so ending at the summary would run §25's
+// The NEXT section banner, not `// ─── summary`: smoke §25 was added after this one
+// and slices into the same region, so ending at the summary would run smoke §25's
 // checks here without any of their bindings and die with
 // `scanDoState is not defined` — which is a driver fault, not a section one.
 const end = smoke.indexOf('// ─── 25. no request data parked on a DO')

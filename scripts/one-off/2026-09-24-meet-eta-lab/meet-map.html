@@ -20,6 +20,11 @@
   If the two views ever disagree, that is a bug in one of them, not a wet-lab
   result.
 
+  2026-09-30 — the keys in /shared/basemaps.js became VECTOR styles, so the raster
+  path at the bottom of this file (L.tileLayer(base.url)) no longer draws anything:
+  this lab's subject was the meet maths, and its background was a stand-in. Read the
+  app's own maps for a background; this file is kept for the maths it exercised.
+
   Serve it with the repo's own /shared/basemaps.js reachable (see 00-README.md)
   -- the basemap module is shared by both real maps precisely so that no page
   carries its own tile URL. This page refuses to guess one.

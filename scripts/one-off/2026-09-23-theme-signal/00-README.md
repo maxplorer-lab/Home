@@ -1,7 +1,7 @@
 # One theme signal (2026-09-23)
 
 **Status: fixed, guarded, falsified. No SQL, no config, no new secret.** Three
-files changed: the token block in `views/app-chrome.tsx`, the §26 guards in
+files changed: the token block in `views/app-chrome.tsx`, the smoke §26 guards in
 `scripts/smoke.mjs`, and the two docs that asserted the old premise.
 
 ## What was wrong

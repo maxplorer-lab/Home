@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// ─── Durable Object state: proof that §25 can fail ───────────────────
+// ─── Durable Object state: proof that smoke §25 can fail ───────────────────
 // Falsification driver for the guards `npm run smoke` §25 grew on 2026-09-23.
 // It extracts that section, mutates ONE thing at a time, and asks of each
 // mutation: does the check that exists for it actually go red?
 //
-// Why §25 needs one more than most: the thing being guarded is an ANALYZER, and
+// Why smoke §25 needs one more than most: the thing being guarded is an ANALYZER, and
 // an analyzer's failure mode is a permanently green verdict. Three separate
 // versions of that were written while building this pair of tools — a set of
 // `SyntaxKind` NAMES compared against `node.kind` NUMBERS (module-state), a
@@ -16,7 +16,7 @@
 //
 //   node scripts/one-off/2026-09-23-do-state/mutate.mjs [M1 M4 …]
 //
-// Needs NO running dev server: every §25 check is a source read plus an
+// Needs NO running dev server: every smoke §25 check is a source read plus an
 // in-memory parse. Leaves the tree byte-identical, or it says so.
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -41,7 +41,7 @@ function writeKeepingEol(p, text) {
   write(p, crlf ? text.replace(/\n/g, '\r\n') : text)
 }
 
-// ── extract §25 out of the shipping suite ────────────────────────────
+// ── extract smoke §25 out of the shipping suite ────────────────────────────
 const smoke = normalized('scripts/smoke.mjs')
 const start = smoke.indexOf('// ─── 25. no request data parked on a DO')
 const end = smoke.indexOf('// ─── summary')

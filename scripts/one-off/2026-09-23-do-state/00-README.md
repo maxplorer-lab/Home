@@ -55,7 +55,7 @@ readable without a live tail.
 
 Rather than refactor a debug slot that works, the audit *records* that: the
 registry entry names the single method allowed to read the field. So the claim
-"it decides nothing" is now checkable — the day another method reads it, §25 goes
+"it decides nothing" is now checkable — the day another method reads it, smoke §25 goes
 red, because that is the moment the value starts deciding something and belongs in
 a parameter like any other request data. Three checks in the section hold the
 whole family to that standard:
@@ -78,7 +78,7 @@ does not parse, which would leave the whole section checking nothing.
 
 ## Three analyzer bugs caught while building it
 
-Each of these made the scan report a **permanently green tree**, which is why §25
+Each of these made the scan report a **permanently green tree**, which is why smoke §25
 carries controls rather than only a verdict:
 
 1. **Kind NAMES vs kind NUMBERS.** The module-state analyzer built its set of
@@ -136,7 +136,7 @@ CLI and smoke §25), so both agreed on the wrong answer.
 
 The fix collects declarations and assignments in ONE pass before the rule runs,
 which also makes the classification complete (`isThisField` is built from that
-same set). The guard is a §25 control over a synthetic class whose only fields
+same set). The guard is a smoke §25 control over a synthetic class whose only fields
 are assigned in JavaScript, and **M10** reverts the ordering. The real tree stays
 green under M10 — every field it reports is a declaration — so the control is the
 only thing that notices. M10 makes the collection not happen at all; the ordering

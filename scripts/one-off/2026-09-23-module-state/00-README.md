@@ -64,12 +64,12 @@ Three surfaces:
 | `npm run smoke` §24 | the same scan, plus the controls below, plus the instance pinned by name |
 | `src/` only | `public/` keeps timers, drag state and in-flight flags in module scope deliberately: one page, one user, one thread |
 
-### Why §24 has controls, not just a scan
+### Why smoke §24 has controls, not just a scan
 
 A source scan's failure mode is **silence**: wrong folder, unresolvable
 `typescript`, or a set of `SyntaxKind` NAMES compared against `node.kind` NUMBERS,
 and it reports a green tree for the rest of the project's life. That third bug was
-actually written while building this and caught by a probe file — which is why §24
+actually written while building this and caught by a probe file — which is why smoke §24
 requires the analyzer to (a) notice a synthetic reassigned `let` **and** a mutated
 `Map` it is not currently looking at, and (b) stay quiet about a read-only
 constant, before its clean verdict on `src/` is worth anything.
@@ -80,7 +80,7 @@ constant, before its clean verdict on `src/` is worth anything.
 node scripts/one-off/2026-09-23-module-state/mutate.mjs
 ```
 
-**No dev server needed** — every §24 check is a source read plus an in-memory
+**No dev server needed** — every smoke §24 check is a source read plus an in-memory
 parse. 6/6 caught on the shipping source; the tree is restored (hash-verified) or
 the run says `TREE NOT RESTORED`.
 

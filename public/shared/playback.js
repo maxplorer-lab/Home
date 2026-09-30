@@ -203,7 +203,7 @@
       holdUntil: function (ms) { heldUntil = ms; },
       isHeld: function (nowMs) { return nowMs < heldUntil; },
 
-      /** @param target {lat,lng} the device's drawn position this frame. */
+      /** @param {{lat: number, lng: number}} target the device's drawn position this frame. */
       update: function (nowMs, target) {
         var map = getMap();
         if (!map || !target) return;

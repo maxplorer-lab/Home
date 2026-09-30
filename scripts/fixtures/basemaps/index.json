@@ -1,0 +1,58 @@
+{
+  "recordedAt": "2026-09-30T11:15:54.068Z",
+  "hosts": [
+    "tiles.openfreemap.org"
+  ],
+  "entries": [
+    {
+      "url": "https://tiles.openfreemap.org/styles/positron",
+      "kind": "style",
+      "view": null,
+      "file": "tiles_openfreemap_org_styles_positron.json",
+      "bytes": 25153,
+      "sha256": "a0f5b8487480a47ba5a5eaf25e165a19789dfa422f9ef9442f04da79c7d216db",
+      "status": 200,
+      "contentType": "application/json"
+    },
+    {
+      "url": "https://tiles.openfreemap.org/planet",
+      "kind": "tilejson",
+      "view": null,
+      "file": "tiles_openfreemap_org_planet.json",
+      "bytes": 19254,
+      "sha256": "a446bd7e3dee7a904e6eaeb036fe318fb46913c3b7b16affea326e322d6189dc",
+      "status": 200,
+      "contentType": "application/json"
+    },
+    {
+      "url": "https://tiles.openfreemap.org/planet/20260927_080001_pt/14/10355/9068.pbf",
+      "kind": "tile",
+      "view": "household@14",
+      "file": "tiles_openfreemap_org_planet_20260927_080001_pt_14_10355_9068_pbf.pbf",
+      "bytes": 271039,
+      "sha256": "1c26200fca9885facd524969a7b2a30933772c8850c6c49e2a721e4feaf86471",
+      "status": 200,
+      "contentType": "application/vnd.mapbox-vector-tile"
+    },
+    {
+      "url": "https://tiles.openfreemap.org/styles/liberty",
+      "kind": "style",
+      "view": null,
+      "file": "tiles_openfreemap_org_styles_liberty.json",
+      "bytes": 43079,
+      "sha256": "6010998863b4876911ac9a2d62c9a28d97c8877f6d20cd158b74808572257b60",
+      "status": 200,
+      "contentType": "application/json"
+    },
+    {
+      "url": "https://tiles.openfreemap.org/planet/20260927_080001_pt/14/11832/9624.pbf",
+      "kind": "tile",
+      "view": "empty@14",
+      "file": "tiles_openfreemap_org_planet_20260927_080001_pt_14_11832_9624_pbf.pbf",
+      "bytes": 58,
+      "sha256": "85349a76d125f4a2d51fb2e6ff293b7ed5027fd4c678243ff9075a11b7cb8b18",
+      "status": 200,
+      "contentType": "application/vnd.mapbox-vector-tile"
+    }
+  ]
+}

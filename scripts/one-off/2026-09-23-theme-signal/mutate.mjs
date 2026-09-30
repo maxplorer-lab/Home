@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// ─── One theme signal: proof that §26 can fail ────────────────────────
+// ─── One theme signal: proof that smoke §26 can fail ────────────────────────
 // Falsification driver for the two guards `npm run smoke` §26 grew on
 // 2026-09-23, when the tokens stopped answering the OS as well as the class.
 //
 // Why these two need one. The first guard FORBIDS something, and a check whose
 // subject is an absence passes just as hard when it is looking in the wrong
-// place — so it is paired with a positive control inside §26 (a synthetic
+// place — so it is paired with a positive control inside smoke §26 (a synthetic
 // source that must be flagged). The second guard asserts a bootstrap exists in
 // three documents; if its list ever empties it reports a clean app forever.
 // Each mutation below attacks one of them, alone:
@@ -15,7 +15,7 @@
 //
 //   node scripts/one-off/2026-09-23-theme-signal/mutate.mjs
 //
-// Needs a RUNNING dev server, because §26 reads the served documents rather than
+// Needs a RUNNING dev server, because smoke §26 reads the served documents rather than
 // the sources — set BASE_URL (default http://127.0.0.1:8793). It runs the whole
 // suite per mutation, so allow ~2× a normal run. Leaves the tree byte-identical,
 // or it says so.

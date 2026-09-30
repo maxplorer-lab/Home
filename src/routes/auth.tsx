@@ -10,8 +10,9 @@ import {
   findHomeUserByName, verifyPassword, createHomeSession, destroyHomeSession,
   getHomeUserFromCookie, setHomePassword, createHomeUser,
   mintModuleCookies, pepperConfigured, tooManyAttempts, noteAttempt, clearAttempts,
-  isSecureRequest, clearCookieValue, sha256Hex, validPassword,
+  sha256Hex, validPassword,
 } from '../identity'
+import { isSecureRequest, clearCookieValue } from '../lib/cookies'
 import type { Env } from '../env'
 
 const auth = new Hono<{ Bindings: Env }>()

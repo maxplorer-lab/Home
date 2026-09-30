@@ -8,8 +8,8 @@ every number box in the app typed rather than nudged. Rule 35 and rule 37 in
 | File | What it is |
 | --- | --- |
 | `mutate.mjs` | **The one to run.** The mutation driver: it extracts sections 22 and 23 out of `scripts/smoke.mjs`, applies one plausible fault at a time, and reports which check each one turns red. A guard that cannot go red is decoration, so this is how a change to the pantry or to the entry rule is verified — 30 mutations, ~5 s each. |
-| `section22.mjs` | The text the new §22 was written as, before it was spliced into the suite. **Stale by design: do not edit it and do not run it** — the shipping copy is `scripts/smoke.mjs`, and a second copy of a guard is exactly how two guards drift apart. Kept as the record of what was installed. |
-| `splice.mjs` | The one-shot that replaced §22 in `scripts/smoke.mjs`. It refuses to write unless both banners appear exactly once. Already used; kept for the same reason. |
+| `section22.mjs` | The text the new smoke §22 was written as, before it was spliced into the suite. **Stale by design: do not edit it and do not run it** — the shipping copy is `scripts/smoke.mjs`, and a second copy of a guard is exactly how two guards drift apart. Kept as the record of what was installed. |
+| `splice.mjs` | The one-shot that replaced smoke §22 in `scripts/smoke.mjs`. It refuses to write unless both banners appear exactly once. Already used; kept for the same reason. |
 
 ## Running the driver
 

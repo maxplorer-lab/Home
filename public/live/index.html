@@ -14,6 +14,7 @@
      in Home is nudged" holds for every document the Worker serves. -->
 <script src="/shared/number-entry.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
   :root { --accent: #16a34a; --ink: #0f172a; --muted: #64748b; --card: #ffffff; --line: #e2e8f0; }
   @media (prefers-color-scheme: dark) {
@@ -177,7 +178,19 @@
      does NOT name a tile server of its own: the hardcoded OSM URL that used to
      sit below is what got this app blocked (2026-09-20). -->
 <script src="/shared/basemaps.js"></script>
+<script src="/shared/basemap-style.js"></script>
+<script src="/shared/basemap-layer.js"></script>
+<!-- The geometry, ALSO shared with the household's map: this page used to carry
+     its own haversine (distanceM), the same law written a second way — one in the
+     asin form here, one in the atan2 form there. A share that measures
+     differently from the map is a second opinion about the same road. -->
+<script src="/shared/geo.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- The vector half of the one background: MapLibre draws the style, the
+     wrapper draws it as a Leaflet layer so the trail, the cursor and the
+     marker stay Leaflet layers. Same pins as the household map's page. -->
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <script>
 (function () {
   'use strict';
@@ -308,12 +321,10 @@
   var ADDRESS_MAX_AGE_M = 400;
   var address = null;   // { lat, lon, at, lines: [primary, secondary] }
 
+  // One line on purpose: the geometry is HomeGeo's (/shared/geo.js), so this page
+  // and the household's map cannot answer "how far" differently.
   function distanceM(lat1, lon1, lat2, lon2) {
-    var R = 6371000, rad = Math.PI / 180;
-    var dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
-    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    return 2 * R * Math.asin(Math.sqrt(a));
+    return HomeGeo.distanceMeters(lat1, lon1, lat2, lon2);
   }
 
   // Nominatim's address object -> two lines: the street (with its number when
@@ -475,24 +486,23 @@
       // One background and no switch: this view has no layer menu, no
       // satellite, no hillshade. The household's map is the one with a choice
       // to make; an outsider gets the map that always works — the labelled
-      // street raster, from the shared basemap module rather than a URL typed
-      // here. A tile server named in this file is how /live ended up asking
-      // OpenStreetMap's donated hardware for tiles until it blocked the app
-      // (see /shared/basemaps.js), and the fix is not "a nicer URL": it is
-      // having no URL of our own to get wrong.
-      var base = window.HomeBasemaps && window.HomeBasemaps.streets;
-      if (base) {
-        L.tileLayer(base.url, {
-          maxZoom: 19, maxNativeZoom: base.maxNativeZoom, attribution: base.attribution
-        }).addTo(map);
+      // background, drawn by the SAME call the household map makes
+      // (/shared/basemap-layer.js), so what the two draw cannot drift apart and
+      // no tile host is named in this file. A host named here is how /live ended
+      // up asking OpenStreetMap's donated hardware for tiles until it blocked
+      // the app (see /shared/basemaps.js), and the fix is not "a nicer URL": it
+      // is having no URL of our own to get wrong. `HomeBasemaps.streets` is the
+      // key by name, and smoke §9 asserts it is this one.
+      if (window.HomeBasemapLayer && window.HomeBasemaps && window.HomeBasemaps.streets) {
+        HomeBasemapLayer.show('streets', map);
       } else {
-        // It is a separate request, so it can fail on its own — and a silent
-        // grey square reads as "she has not moved". The footer cannot carry
-        // this: it is rebuilt from live state on every poll. `npm run smoke`
-        // asserts the module is actually served, which is the check that
-        // catches the real cause (a missing asset), so this is for the person
-        // holding the phone when that happens.
-        console.error('HomeBasemaps is missing: /shared/basemaps.js did not load, so the map has no background');
+        // The modules are separate requests, so one can fail on its own — and a
+        // silent grey square reads as "she has not moved". The footer cannot
+        // carry this: it is rebuilt from live state on every poll. `npm run
+        // smoke` asserts the modules are actually served, which is the check
+        // that catches the real cause (a missing asset), so this is for the
+        // person holding the phone when that happens.
+        console.error('HomeBasemapLayer or HomeBasemaps is missing: /shared/{basemaps,basemap-layer}.js did not load, so the map has no background');
       }
       // The device starts in the MIDDLE of the screen, which is the position
       // the camera's cycle assumes at its start.

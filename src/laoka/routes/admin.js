@@ -23,7 +23,15 @@ function base64ToBytes(b64) {
   return out;
 }
 
-// Returns { ok: true, image, imageType } or { ok: false, response }.
+/** Read the picture out of a request body: `{ ok: true, image, imageType }` or
+ * `{ ok: false, response }`. The prose said so already; DECLARING it is what
+ * makes the union discriminate — inferred, `ok` widens to `boolean`, so
+ * `if (!pic.ok) return pic.response` narrowed nothing and `pic.response` read as
+ * `Response | undefined`. That is how two handlers here came to be typed
+ * `Promise<Response | undefined>`: a route that can return no response at all.
+ * The type pass found it on its first run (rule 45).
+ * @returns {{ ok: true, image: string | null | undefined, imageType: string | null | undefined } | { ok: false, response: Response }}
+ */
 function readImage(body) {
   if (body.image === undefined) return { ok: true, image: undefined, imageType: undefined };
   const raw = toStr(body.image);

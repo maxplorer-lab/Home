@@ -10,9 +10,13 @@ modules themselves are the original standalone apps, barely modified.
 
 ```
 src/
-  index.tsx          merged Worker entry: mounts, repair middleware, cron
+  index.tsx          merged Worker entry: mounts, the module-API repair
+                     adapter, cron
   identity.ts        ⭐ central login, password hashing, provisioning,
-                     module-cookie minting, auto-repair helpers
+                     module-cookie minting
+  lib/session-repair.ts ⭐ THE session-repair rule (returns a plan, never a
+                     response)
+  lib/cookies.ts     the one cookie parser / Set-Cookie vocabulary
   env.ts             all bindings (HOME_DB, DB, WAY_DB, LAOKA_DB, FLEET_DO,
                      LOBBY, ASSETS, secrets)
   routes/            Sompitra pages (auth.tsx also holds /bootstrap,
@@ -45,6 +49,10 @@ npm run verify         # check + smoke — what "tested locally" means here
 npm run audit:remote   # REMOTE schema vs migrations-* (read-only, exits 1 on a gap)
 npm run audit:module-state # module-scope request state in src/ (read-only; rule 38)
 npm run audit:do-state   # request data on a DO's `this` (read-only; rule 39)
+npm run audit:rules      # every declared guard and § citation resolves (rule 44)
+npm run audit:laoka-types # every .js under src/ typechecks (read-only; rule 45)
+npm run audit:basemaps   # the RECORDED basemap upstream still satisfies its rules (rule 41)
+npm run basemaps:record  # re-record it from the real tile host (prints what changed)
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
 npm run deploy         # wrangler deploy (see rule 17 first)
@@ -67,18 +75,59 @@ compiler and fails if any module-scope binding is written from inside a function
 normal `npm run verify` covers it; the standalone command is for looking at the
 answer without a server up, and for CI.
 
+`npm run audit:rules` reads the rule → guard map in this file and the `§`
+citations everywhere else, and answers whether the docs still promise guards
+that exist: it resolves every row (a smoke section, optionally with a check
+fragment it must contain; an `audit:` script whose file must exist; a driver
+path), fails a rule with no row, a rule whose prose names a guard its rows omit,
+a citation that does not resolve or names no document, and a smoke section that
+is neither claimed by a row nor declared as guarding no rule. Read-only, no
+server, and smoke §28 runs the same scan — with the controls that prove it can
+still fail — so a normal `npm run verify` covers it too.
+
+`npm run audit:basemaps` is smoke §9's third-party half with no server and no
+network. The style JSON, its TileJSON and the sample tile it judges all belong to
+somebody else's server, so they are not fetched live: a RECORD of them lives in
+`scripts/fixtures/basemaps/` and the walk reads that. The record is written by
+`npm run basemaps:record` — the only thing here that talks to the tile host on
+purpose, and it prints a per-URL diff (same / changed / new / removed, by sha256)
+plus the judgment, so refreshing upstream is the moment a change becomes visible
+instead of a surprise on somebody's phone. Past 120 days the copy is reported as
+stale rather than judged, because a guard answered by a copy has to know its copy
+is old. The audit refuses to touch the recorded hosts at all, so a check that
+quietly went back to the network fails instead of passing on a good day. Smoke §9
+runs the same walk and judgment against the same record, and `SMOKE_LIVE=1 npm run
+smoke` asks the real servers when that is the question.
+
+`npm run audit:laoka-types` is the other half of the type gate. `npm run check`
+is `strict` over `include: ["src"]` with `checkJs: false`, so every `.js` file
+under `src/` — Laoka's seventeen vendored files — was parsed and never looked
+at. This pass runs the same compiler over every `.js`/`.mjs`/`.cjs` under
+`src/` with exactly one relaxation, `noImplicitAny`, and pins that relaxation:
+it asserts its own effective option set and refuses to answer if any other flag
+moved. Also read-only, also no server, also green in a normal `npm run verify`
+via smoke §29.
+
 `npm run audit:do-state` is its sibling one level down: it reads the Durable
 Objects named in `wrangler.jsonc` and asserts that every field on `this` is
 declared in `DO_STATE_POLICY` (scripts/lib/do-state.mjs) with the reason it is
 object state, and that each field's writes match its declaration. Also read-only,
 also no server, also green in a normal `npm run verify` via smoke §25.
 
-The type gate and both audits are also **the CI gate**:
-`.github/workflows/gates.yml` runs `npm run check`, `npm run audit:module-state`
-and `npm run audit:do-state` on every pull request and on every push to `main` —
-none of the three needs a server, a database, a secret or the network. A second
-job runs the two falsification drivers (`scripts/one-off/2026-09-23-*/mutate.mjs`)
-for the reason above: an audit that has been quietly disarmed prints a clean tree
+The type gate and every audit are also **the CI gate**:
+`.github/workflows/gates.yml` runs `npm run check`, `npm run audit:module-state`,
+`npm run audit:do-state`, `npm run audit:rules`, `npm run audit:laoka-types` and
+`npm run audit:basemaps`
+on every pull request and on every push to `main` — none of the six needs a
+server, a database, a secret or the network. (The basemap one is the odd member
+and the reason the record exists: its subject is somebody else's tile host, so it
+reads a copy of it from `scripts/fixtures/basemaps/` rather than the live server.)
+A second job runs the five falsification drivers
+(`scripts/one-off/2026-09-23-*/mutate.mjs`,
+`scripts/one-off/2026-09-27-rule-guards/mutate.mjs`,
+`scripts/one-off/2026-09-27-laoka-types/mutate.mjs` and
+`scripts/one-off/2026-09-30-basemap-record/mutate.mjs`) for the reason above: an
+audit that has been quietly disarmed prints a clean tree
 for the rest of the project's life, so the gate has to be shown failing. `npm run
 smoke` is deliberately NOT there — it wants a running `wrangler dev`, a seeded
 local D1 and a resolved session, which makes it a local step (`npm run verify`),
@@ -105,8 +154,8 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
 1. **Mount order in `src/index.tsx`**: module mounts MUST be registered
    before Sompitra's routes — its `use('*', requireAuth)` catches everything.
 2. **Cookie retries must join with `"; "`, never `Headers.append`** (which
-   joins with `", "` and produces unreadable Cookie headers). See
-   `withRepair` in `src/index.tsx`.
+   joins with `", "` and produces unreadable Cookie headers). The join lives
+   in the repair plan (`src/lib/session-repair.ts`); no adapter builds one.
 3. **Response headers are immutable** once a handler returns; mint fresh
    `new Response(res.body, res)` before touching headers.
 4. **Post-`next()` header mutation in Hono must use
@@ -949,7 +998,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     code — and the 25-row window persists across runs, so a guard must compare
     before/after rather than scan that history. Never fix a casing problem on the
     phone: the server accepting both spellings and storing one is the durable fix
-    (`scripts/one-off/2026-09-20-rename-niri-to-Niri/`, §1f).
+    (`scripts/one-off/2026-09-20-rename-niri-to-Niri/`, CUTOVER §1f).
     The **human** door leaked the same way, and it is the one that bit on
     2026-09-22: `/ws` stamped the DO with the *token's* spelling, so Niri's
     pre-rename session kept writing `niri` onto chat rows — her own bubbles
@@ -962,7 +1011,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     reaction toggle reuses an existing key that differs only by case, so one
     person is never counted twice. The pages fold too (`sameName` in /chat), so
     history written before the fix still reads as theirs — and its sender field
-    stays the account's own spelling from then on. Guarded in §19 ("a socket
+    stays the account's own spelling from then on. Guarded in smoke §19 ("a socket
     opened with the pre-rename casing…", "…the push lookup folds case…") plus the
     source reads beside them; falsified by
     `scripts/one-off/2026-09-22-one-spelling/mutate.mjs` — N1, N2, N3, N4, N6 are
@@ -1089,7 +1138,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
 
     Both hand-offs land on the SAME Sompitra form and follow rule 36. Smoke §22
     pins every clause above; `scripts/one-off/2026-09-21-pantry-stock/mutate.mjs`
-    runs 52 mutations (§22 and §23, one per guard, ~40 s each) and reports which
+    runs 52 mutations (smoke §22 and smoke §23, one per guard, ~40 s each) and reports which
     check each one turns red — run it after touching this feature, because a
     guard that cannot go red is decoration. The driver takes ids, so it fits in
     one sitting: `... mutate.mjs M1 M2 …` (52 at once runs well past half an
@@ -1101,13 +1150,13 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
 
     This batch's own guards (the item editor, the dashboard card, the shell's
     `?tab`) are falsified by `scripts/one-off/2026-09-22-pantry-items/mutate.mjs`
-    (11 mutations over §17 + §22). It is the driver that paid for two rules the
+    (11 mutations over smoke §17 + smoke §22). It is the driver that paid for two rules the
     others should copy: it restores every mutation in flight on SIGINT / SIGHUP /
     `uncaughtException` — a run piped through `head` died mid-M9 and left
     `public/laoka/app.js` mutated, which the NEXT run's preflight reported as a
     red guard on a clean tree — and it waits for the dev server to settle after
     writing a file before the section runs, because a fetch landing mid-reload
-    returned `/laoka/index.html` without its embed block and turned four §17
+    returned `/laoka/index.html` without its embed block and turned four smoke §17
     checks red for a reason that had nothing to do with the mutation.
     Its anchors are matched against a **line-ending normalised** copy of each
     file and written back with the ending the file already had: this tree is a
@@ -1155,7 +1204,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     that disagrees with the expense it points at is worse than no ledger. Notify
     on `created` only (a correction is not a second purchase). Smoke §22 (e)
     proves the pre-fill, the empty week, the adoption, the no-second-expense and
-    the surviving date/category/description; §13 still proves the one-press half.
+    the surviving date/category/description; smoke §13 still proves the one-press half.
 
 37. **A number is TYPED, never nudged — one file, every document.**
     `public/shared/number-entry.js` is the only place that decides how a number
@@ -1252,21 +1301,21 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       a cooldown map and the daily push ledger all belong on the object and
       would be pointless anywhere else. `DO_STATE_POLICY` in
       `scripts/lib/do-state.mjs` is where each field states its kind and WHY it
-      is object state, and §25 fails a new field until somebody writes that down.
+      is object state, and smoke §25 fails a new field until somebody writes that down.
     * **A single slot written from a request and read past an `await` is the
       bug.** Keyed state — a `Map` addressed by device, person or event — cannot
       collide this way, which is why those are Maps rather than one field.
     * **`FleetDO.lastNotify` is the one deliberate exception, and it is PINNED
       rather than excused.** It holds request data and is allowed to because it
       decides NOTHING: its registry entry names the single method allowed to read
-      it (`fetch`, for the `/debug-notify` payload). A new reader makes §25 red,
+      it (`fetch`, for the `/debug-notify` payload). A new reader makes smoke §25 red,
       because that is the moment the value starts deciding something and belongs
       in a parameter like any other request data.
     * **A cache must be request-INDEPENDENT by construction.** `geofenceCache`
       and `notifyCache` are refilled from the database and invalidated to null;
       two requests racing to refill one compute the same value, so a lost update
       costs a query and changes nothing anybody can observe. Feed a cache from
-      request data and §25 says `wrong-write`.
+      request data and smoke §25 says `wrong-write`.
     * **Scope comes from the bindings, not from the base class.** Laoka's `Lobby`
       is a plain class and a Durable Object all the same, so the audit reads
       `wrangler.jsonc`'s `durable_objects.bindings` — and a class named there and
@@ -1283,7 +1332,7 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
       listed it as `(undeclared)` in the inventory while raising no fault: the
       audit printed "every field is declared" and exited 0 about a class it had
       just called undeclared, and smoke §25 agreed, because both read the fault
-      list. §25 now carries a control for that shape (`a field that exists only
+      list. smoke §25 now carries a control for that shape (`a field that exists only
       by assignment is reported as undeclared`) and driver M10 reverts the
       ordering (it stops the collection entirely, leaving the same field set
       incomplete at the same point); the real tree stays green under M10, so the
@@ -1305,6 +1354,246 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     neither does the accuracy or glitch gate, which are counted before they drop.
     `DB-REDESIGN.md` §1c's "comfortable" estimate assumed ONE row per ping per side;
     that is why it was wrong.
+41. **The map's pure engines are FILES both callers load, and the suite imports them
+    instead of rebuilding them out of the page's text.** Four so far:
+    `public/shared/geo.js` (`HomeGeo` — distance, bearing, the eight cardinals, the
+    angular gap; the public share measures with it too, because a share that
+    measures differently is a second opinion about the same road),
+    `public/shared/meet.js` (`HomeMeet` — the ONE crossing verdict, `create()`
+    taking the page's reads as accessors and `rangeRateKmh` exported beside it),
+    `public/shared/meet-strip.js` (`HomeMeetStrip` — the ruler as an INSTANCE,
+    `createScale()` returning `{ scale, index, reset }` where the remembered rung
+    used to be two page-scope `let`s, plus the bar's subject half `create()`: the
+    pick, the nearest, the trend, the bar's own crossing, the picker's rows), and
+    `public/shared/trip-legs.js` (`HomeTripLegs` — what counts as a stored point
+    and what a day adds up to, i.e. rule 34's arithmetic). The engine is a file
+    because the suite could otherwise only reach it by RE-DECLARING it: section 15
+    used to `new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;
+    …')` the ruler three times, slice `COMPASS_POINTS` out of the page by regex,
+    and stitch `rangeRateKmh` / `computeLegsForDay` together with a hand-listed
+    dependency map. Those checks now evaluate the SAME file the page loads into a
+    bare `window` and call it, so the arithmetic has one definition and a test
+    surface that cannot drift from it. The page keeps one-line delegations under
+    the names it always used (`distanceMeters`, `bearingDegrees`, `compassPoint`,
+    `angularDiff`, `shouldDrawPoint`, `computeLegsForDay`), and the include is
+    ADDITIVE only — `/shared/*` is edge-served and deliberately outside
+    `run_worker_first`, so a page and its script can be one deploy apart (rule 9)
+    and a caller that needs a new name on an old file draws nothing. Adding a fifth
+    engine is this same move; pasting an engine's body back into the page is the
+    bug. Bump `WAY_BUILD` whenever the page changes. Smoke §15 fails if a page name
+    stops being a one-line return, if a copy grows back (`function meetEtaFor`,
+    `function meetStripScale`, `function pullEase`), or if the share carries its own
+    haversine again. All three guards are falsified by
+    `scripts/one-off/2026-09-27-map-engines/mutate.mjs` — it pastes the ruler's
+    body back into the page, grows one delegation past a single return, and
+    restores the share's haversine; each has to turn smoke §15 red (it needs the dev
+    server, which is why it is not one of the drivers in the `guards` job).
+    smoke §9's other half judges somebody else's tile host, which is the one thing no
+    amount of reading this repo can make deterministic — so it judges a RECORD of
+    it: `scripts/fixtures/basemaps/`, written by `npm run basemaps:record` (the
+    only thing here that talks to the tile host on purpose, printing a per-URL
+    diff), read by smoke §9 and by `npm run audit:basemaps` in CI, and asked
+    directly only when that IS the question (`SMOKE_LIVE=1`, `--live`). Same walk,
+    same judgment, three callers: `scripts/lib/basemap-record.mjs`.
+42. **Session repair is ONE rule with three adapters** (`src/lib/session-repair.ts`).
+    The rule reads `home_session`, mints every module's cookie and returns a PLAN
+    — `{ homeUser, token, setCookie, retryRequest }` — or null. It never dispatches
+    and never decides what a failed repair looks like: the failure shapes stay with
+    the surfaces, `withRepair` (`src/index.tsx`) retries the module APIs once and
+    `requireAuth` (`src/lib/middleware.ts`) sets the cookie and redirects pages.
+    `repairLaoka` is gone — Laoka's `200 {user:null}` is just that adapter's
+    `repairWhen` predicate. Minting mints ALL modules and passes no password, so a
+    repair never creates a module account (rule 38). The cookie vocabulary — parser
+    with the μlogger RFC 2109 quote strip, Set-Cookie builders, the secure rule —
+    lives once in `src/lib/cookies.ts`; `src/way/lib/session.ts` re-exports it.
+    Smoke §8 proves DELIVERY, not just status: the repaired response must carry
+    exactly one fresh module cookie, and replaying that cookie alone (no
+    `home_session`) must still be signed in. Both halves are falsified by
+    `scripts/one-off/2026-09-27-session-repair/mutate.mjs` — a `", "` Cookie join
+    and a delete-after-append Set-Cookie each have to turn smoke §8 red (it needs the dev
+    server, which is why it is not one of the drivers in the `guards` job).
+
+43. **Kiné has ONE ledger, and it is `src/kine/ledger.ts`.** The delivered/paid
+    row expressions, the balance rule and the week's two figures are written
+    there once and imported by every surface: `src/routes/kine.tsx` and
+    `src/routes/dashboard.tsx` both call `clientLedger(row)`. It imports nothing
+    — no D1, no `window`, no bundler — so plain node loads it, and the
+    arithmetic has a test surface the eight pasted SQL copies never had (smoke
+    smoke §27 imports it and calls it in a bare process).
+
+    * **Kiné's truth is MONEY, exact.** `balance` is francs; the session count is
+      a derived LABEL (`sessionBalance`), so a rounded session figure can never
+      disagree with the francs printed beside it. `state` is `owes` / `prepaid` /
+      `balanced`, and `prepaid` is money we hold, not a zero.
+    * **The row's names are the ledger's names.** A row aliased
+      `delivered_count` / `paid_amount` reads as ZERO through the ledger (its
+      `delivered` is undefined), and while those fields were optional tsc said
+      nothing — /kine shipped a `balanced` tile over a client with four delivered
+      sessions. Smoke §27 scans `src/`, so the old pair cannot come back outside
+      the module.
+    * **One expression per fact.** The delivered and paid subqueries live in the
+      module and nowhere else (smoke §27 counts the copies): a route pasting one
+      back is exactly how Home and /kine came to disagree about the same client.
+    * **A contract with no rate of its own bills at the client's `default_rate`,
+      and a zero rate is not money** — the old Home SUM multiplied by NULL and
+      silently dropped the contract out of Uncollected Dues.
+44. **A guard is a NAME, declared in the rule → guard map — prose cannot go stale
+    loudly.** Every numbered rule above declares its guards in the table below,
+    and `npm run audit:rules` resolves every declaration: a smoke section that
+    must exist (optionally with a check fragment it must contain), an `audit:`
+    script whose file must exist, or a driver path. It fails a rule with no row,
+    a rule whose prose names a guard its rows omit, a `§` citation anywhere in
+    the repo that does not resolve or names no document, and a smoke section that
+    is neither claimed by a row nor declared as guarding no rule. It reads files
+    only, so it gates CI and runs as smoke §28, and
+    `scripts/one-off/2026-09-27-rule-guards/mutate.mjs` proves each of those fault
+    classes can still go red.
+
+45. **Home's JavaScript is inside a type gate of its own — one relaxation, and
+    it is PINNED.** `npm run check` is `strict` over `include: ["src"]` with
+    `checkJs: false`, so every `.js` file under `src/` — Laoka's seventeen
+    vendored files, 3228 lines — sat inside the include and OUTSIDE the gate:
+    parsed, imported, and not one line of it looked at. `npm run
+    audit:laoka-types` is the other half: the same compiler, the same strict
+    settings, over every `.js`/`.mjs`/`.cjs` under `src/`, with exactly ONE
+    relaxation (`noImplicitAny`) — and the pass ASSERTS its own effective option
+    set before it reads a file, refusing to answer if any other flag moved.
+    Full strictness on those files reports 321 faults, 285 of them parameters
+    with no annotation anywhere in the directory (there was no JSDoc at all);
+    with the relaxation ten remained, and all ten are fixed.
+
+    * **The checked set is a WALK, not a list.** A `.js` file added anywhere
+      under `src/` is inside the gate the moment it lands, and the pass fails if
+      a checked file never reaches the compiler — the shape of a scan that
+      reports a clean tree about files it never read. `public/` is deliberately
+      outside: those are browser scripts (they want the DOM lib and a
+      declaration of the engines' `window.Home*` globals), and the suite
+      already executes the engine files the page loads (rule 41).
+    * **What the first run found, beyond `err.message`.** Eight sites read
+      `.message` off a caught `unknown` — under `strict` a catch binding IS
+      `unknown`, which is why the read lives once in `messageOf`
+      (`src/laoka/lib/http.js`). One inferred result carried an OPTIONAL `value`
+      (pantry's `readAmount`; every answer carries `value` now, which is what
+      lets the caller narrow). And `readImage` (`src/laoka/routes/admin.js`)
+      inferred a `{ ok: boolean }` union whose discriminant had widened, so two
+      admin handlers were typed `Promise<Response | undefined>` — routes that
+      could resolve to no response at all; declaring the two shapes that
+      function's own comment already described is the fix.
+    * **Never the option set.** A fault in these files is fixed by typing the
+      value or declaring the shape, never by loosening a flag: widening the
+      relaxation is itself a finding, which is why the pin exists.
+    * **The pass is compile-time; one runtime leg goes with it.** The picture
+      path it rewrote is walked by smoke §22 on a throwaway recipe: a picture
+      over the cap answers 413 (the failure member whose ABSENCE was the old
+      `undefined` return), an unknown type falls back to `image/jpeg`, the bytes
+      come back from their own URL under that type, an empty patch answers 400,
+      clearing the picture 404s the URL, and a signed-out caller gets 401.
+    * Falsified by `scripts/one-off/2026-09-27-laoka-types/mutate.mjs` — a
+      reverted fix, a NEW `.js` file with a fault, a relaxed option set and a
+      renamed audit script each have to go red.
+
+## The rule → guard map
+
+A promise kept only in prose cannot go stale loudly: rename a smoke section,
+move a driver and the sentence reads exactly as well as the day it was written.
+So each numbered rule's guards are declared here, one row per (rule, guard) edge,
+and `npm run audit:rules` (`scripts/lib/rule-guards.mjs`) resolves them. It fails
+when a rule has no row, when a declared guard does not resolve, when a rule's
+prose names a guard its rows omit, when a `§` citation in the repo does not
+resolve or names no document, and when a section of `scripts/smoke.mjs` is
+neither claimed by a row here nor listed as guarding no rule below. A guard cell
+is one of:
+
+* `smoke §N` — a section of `scripts/smoke.mjs` (the numbers are a contract),
+  optionally with a fragment the section must still contain
+  (`smoke §12 — "the DO flush completes"`). The fragment is what stays red when a
+  section survives but the check inside it is renamed away.
+* `audit:<script>` — a `package.json` script, whose `.mjs` file must exist.
+* `driver <path>` — a falsification driver under `scripts/one-off/`.
+* `none (convention)` — nothing guards the rule. That is a declared answer, not
+  an omission; the audit prints the count.
+
+| Rule | Slug | Guard | Falsifier |
+| ---- | ---- | ----- | --------- |
+| 1 | mount-order | smoke §3 | — |
+| 1 | mount-order | smoke §4 | — |
+| 2 | cookie-join | smoke §8 | driver scripts/one-off/2026-09-27-session-repair/mutate.mjs |
+| 3 | fresh-response | smoke §8 | — |
+| 4 | post-next-append | smoke §8 | — |
+| 5 | way-hash-format | smoke §2 | — |
+| 6 | laoka-auth-403 | none (convention) | — |
+| 7 | way-midnight-cron | none (convention) | — |
+| 8 | auth-pepper | smoke §2 | — |
+| 8 | auth-pepper | smoke §7 | — |
+| 9 | static-first | smoke §6 | — |
+| 10 | iframe-chrome | smoke §17 | — |
+| 11 | chat-own-page | smoke §6 | — |
+| 11 | chat-own-page | smoke §12 | — |
+| 12 | db-binding-name | smoke §4 | — |
+| 13 | one-settings-surface | smoke §10 | — |
+| 14 | one-chrome | smoke §5 | — |
+| 14 | one-chrome | smoke §16 | — |
+| 14 | one-chrome | smoke §18 | driver scripts/one-off/2026-09-23-theme-signal/mutate.mjs |
+| 14 | one-chrome | smoke §26 | — |
+| 15 | two-channels-per-person | smoke §10 | — |
+| 15 | two-channels-per-person | smoke §11 | — |
+| 16 | one-ntfy-server | smoke §11 | — |
+| 17 | home-db-id | none (convention) | — |
+| 18 | chat-shared-path | smoke §12 | — |
+| 19 | messages-fk-parent | smoke §12 — "the DO flush completes" | — |
+| 20 | laoka-week-expense | smoke §13 | — |
+| 21 | forgettable-template | smoke §14 | — |
+| 22 | dashboard-when-not-what | smoke §15 | — |
+| 23 | nearly-home-three-ways | smoke §12 | — |
+| 23 | nearly-home-three-ways | smoke §15 | — |
+| 24 | unread-watermark | smoke §5 | driver scripts/one-off/2026-09-23-unread-card/mutate.mjs |
+| 25 | speed-jitter | smoke §15 | — |
+| 26 | corroborated-speed | smoke §15 | — |
+| 27 | same-second-pings | smoke §15 | — |
+| 28 | exit-walks-three-phases | smoke §15 | — |
+| 29 | accuracy-gate | smoke §9b | — |
+| 29 | accuracy-gate | smoke §15 | — |
+| 30 | deliberate-silences | smoke §19 | — |
+| 31 | live-share-grant | smoke §12 | — |
+| 31 | live-share-grant | smoke §20 | — |
+| 31 | live-share-grant | smoke §21 | — |
+| 32 | schema-not-deploy | audit:remote | — |
+| 33 | one-spelling | smoke §12 | — |
+| 33 | one-spelling | smoke §19 | driver scripts/one-off/2026-09-22-one-spelling/mutate.mjs |
+| 34 | one-arithmetic | smoke §12 | — |
+| 34 | one-arithmetic | smoke §15 | — |
+| 35 | catalogue-two-domains | smoke §17 | — |
+| 35 | catalogue-two-domains | smoke §22 | driver scripts/one-off/2026-09-21-pantry-stock/mutate.mjs |
+| 35 | catalogue-two-domains | smoke §23 | driver scripts/one-off/2026-09-22-pantry-items/mutate.mjs |
+| 36 | numbers-not-categories | smoke §13 | — |
+| 36 | numbers-not-categories | smoke §22 | — |
+| 37 | typed-not-nudged | smoke §23 | — |
+| 38 | module-scope-not-storage | smoke §24 | — |
+| 38 | module-scope-not-storage | audit:module-state | — |
+| 39 | do-this-not-scratch | smoke §25 | — |
+| 39 | do-this-not-scratch | audit:do-state | — |
+| 40 | do-row-spend | smoke §19 | — |
+| 41 | engines-are-files | smoke §9 | driver scripts/one-off/2026-09-30-basemap-names/mutate.mjs |
+| 41 | engines-are-files | audit:basemaps | driver scripts/one-off/2026-09-30-basemap-record/mutate.mjs |
+| 41 | engines-are-files | smoke §15 | driver scripts/one-off/2026-09-27-map-engines/mutate.mjs |
+| 42 | session-repair-one-rule | smoke §8 — "hands the browser the fresh" | driver scripts/one-off/2026-09-27-session-repair/mutate.mjs |
+| 43 | kine-one-ledger | smoke §27 — "the delivered/paid row expressions are written in ONE file" | — |
+| 44 | guard-is-a-name | smoke §28 | driver scripts/one-off/2026-09-27-rule-guards/mutate.mjs |
+| 44 | guard-is-a-name | audit:rules | — |
+| 45 | js-inside-the-gate | audit:laoka-types | driver scripts/one-off/2026-09-27-laoka-types/mutate.mjs |
+| 45 | js-inside-the-gate | smoke §29 | — |
+| 45 | js-inside-the-gate | smoke §22 | — |
+
+### Sections that guard no numbered rule
+
+The census above is closed: every section banner in `scripts/smoke.mjs` is either
+claimed by a row or declared here, so a section can never quietly stop being
+anybody's guard. A section belongs here when it guards the RUN rather than a
+promise:
+
+| Section | Why it guards no numbered rule |
+| ------- | ------------------------------ |
+| smoke §1 | the harness's own prerequisite — the dev server answers at all. It exits the suite before any rule is exercised, and no numbered rule promises the boot page. |
 
 ## Smoke test (local, after any identity change)
 
@@ -1320,7 +1609,9 @@ curl -b jar $B/admin                -o /dev/null -w "admin %{http_code}\n"
 Expect 302→`/` on login and 200 everywhere else. With ONLY a `home_session`
 cookie in the jar, each of those should still return 200 via auto-repair.
 `npm run smoke` automates all of the above plus the gates, the chrome
-consistency and the repair path — prefer it over hand-rolled curl.
+consistency and the repair path — section 8 also proves the repair REACHES the
+browser (exactly one fresh cookie, replayable with no `home_session` left) —
+prefer it over hand-rolled curl.
 
 ## Troubleshooting map
 
@@ -1354,7 +1645,7 @@ have their own separate repositories and their own history.
 
 | Symptom | Look at |
 | --- | --- |
-| Login works but a module shows its own login screen | that module's`app.js`/head script bounces to `/login` when a fetch 401s; `src/identity.ts` repair helpers |
+| Login works but a module shows its own login screen | that module's`app.js`/head script bounces to `/login` when a fetch 401s; the repair rule in `src/lib/session-repair.ts` (parser: `src/lib/cookies.ts`) |
 | A module 404s on an `/api/…` path | `run_worker_first` in `wrangler.jsonc` — asset paths are served by the edge before the Worker |
 | Tab bar looks different on some tabs | both hosts must render `HomeTabBar` from `views/app-chrome.tsx` — a second, local tab bar is the bug |
 | Clicking ✏️ / 🗑️ beside one row acts on a DIFFERENT row (Laoka's pantry categories) | a handler built inside a `var` loop closes over the LOOP VARIABLE, so every iteration's callback sees the last one — this shipped once in `renderPantry`, where the ✏️ of every category heading opened “dry staples”. Build the node inside an IIFE bound per iteration (`(function (cat) { … })(sub)`) or hand it to a render function that takes it as an argument (`pantryRow(item)` is immune for exactly that reason). Smoke §22 fails on it |
@@ -1375,6 +1666,7 @@ have their own separate repositories and their own history.
 | A summary of two or three figures reads as a column of text (the Kiné card on Home is the one that has shipped both ways) | the shapes were swapped: a COMPARISON (`.tile`s side by side inside one card) was set as a `.ledger` list, which makes the reader subtract instead of glance. See "A comparison is not a list" above; smoke section 26 counts the week's two tiles in the served page and the three in `KineClientStats` |
 | A row of tiles has gone grey/flat, and the figures cannot be told apart at a glance (the Kiné card on Home, 2026-09-26) | the tile colour language was dropped: `.tile-tint` mixes the SURFACE from the tile's own tone class, and each fact owns a hue — blue sessions, green money in, orange a balance to settle — while the FIGURE inside the balance tile keeps yellow paid-ahead / red unpaid / green settled. A tile with no tone class is ink, and a card of ink tiles is the list this became. Smoke section 26 reads both the class on the served page and the mix in `CHROME_CSS` |
 | A tile's colour means nothing (it is decoration) | the two axes were collapsed: the SURFACE says which FACT, the FIGURE says what STATE. A balance wearing the same hue as the money-in tile beside it, or a state colour promoted to the surface, loses one of the two answers — and a hue the money palette does not own (blue on a franc figure) is the same fault in the other direction. See "A tile carries TWO colours" above |
+| A client's balance reads differently on Home and /kine — or Uncollected Dues skips a client whose contract has no `session_rate` (2026-09-27) | the arithmetic was written eight times in two dialects: Home's balance tile counted SESSIONS (`Math.round(paid / rate) − delivered`), /kine subtracted money (`delivered × rate − paid`), and a third `due` SUM multiplied by `sc.session_rate` with no fallback — `COUNT(*) * NULL` is NULL, and `SUM` ignores it. `src/kine/ledger.ts` is now the only place: the two row expressions (`DELIVERED_COUNT_SQL`, `PAID_SQL`), `clientLedger` (money exact; `sessionBalance` is a derived label) and `weekLedger`. Smoke section 27 imports it in a bare node process, fails if a route writes its own copy back, and fails if any file under `src/` calls a client's figures `delivered_count`/`paid_amount` again — the ledger reads `delivered`/`paid`, and a differently-named column answers ZERO (which is how /kine's tile read a client with four delivered sessions as settled) |
 | Half a screen is dark and half is light (a `bg-gray-100` box whose text is invisible) | the tokens are answering a different signal than the `dark:` utilities. They must answer the **`html.dark` class only** — a `@media (prefers-color-scheme: dark)` copy of the tokens is the bug, not the fix (probe it: an element with only `dark:bg-gray-700` is transparent without a `.dark` ancestor, grey-700 with one). Section 26 fails if the media copy comes back, or if a document loads `CHROME_CSS` without the bootstrap that sets the class |
 | A tab exists in one shape but not the other | `HOME_TABS` in `views/app-chrome.tsx` is the single list; the bottom bar and `HomeNav` both map over it |
 | A person who IS an admin cannot see the admin links on `/settings` (or an admin POST bounces back to `/settings`) | they are a Home admin whose Sompitra row predates the merge, so `users.is_admin` is 0 there. The card and the handlers must judge with `isSettingsAdmin()` — central role first, module flag as a fallback (rule 13, `CUTOVER.md` §1c) |
@@ -1394,17 +1686,18 @@ have their own separate repositories and their own history.
 | The HUD badge and the Trips card show two different distances for one day | the HUD must **recompute** its "km today" from those same rows (`refreshTodayDist` → `computeLegsForDay`), never accumulate each ping's stored `distance_km` as it arrives. The two are different quantities, not the same one rounded: local data read `1.8 km today` on the badge against `0.9 km` on the card for one day. Smoke section 15 fails if a `todayDist[...] +=` accumulator comes back |
 | The day after a walk is charged the walk as driven km | a walking return in `computeDriving` must also advance `lastRecordedPoint` — that anchor is where the NEXT driving segment measures from, and leaving it at the last driving point makes a walk-to-the-shop-and-back part of the drive home. The row still stores distance 0 on purpose; the anchor is a separate thing. Smoke section 15 counts both walking returns, and `scripts/one-off/2026-09-21-walking-anchor/probe.mjs` proves the arithmetic on the real state machine |
 | A reviewed past day draws a walking leg like a drive, or a walking day exports an empty GPX | `showDayOnMap` breaks its lines at a change of MODE too (walking = `walkingLineStyle`, thin + dashed), and `exportCurrentDay`'s GPX keeps every point `shouldDrawPoint` keeps, one `<trkseg>` per run. The GPX used to filter `is_driving`, so it disagreed with the CSV and the KML on the same row of buttons. Smoke section 15 fails on both |
-| The bar under the map shows a crossing the pill never drew | the page must have **one** verdict function (`meetDecision`) that both the live pill (`meetEtaFor`) and the distance gauge (`renderMeetStrip`) call, and the bar's green name + red tick are asked about the bar's **OWN two ends** (`meetStripCrossPair`), which while a reference is picked can be a pair the pill is not talking about — a tick borrowed from the pill's pair would mark a bar whose dot is somebody else. Both sides also start from one participant test (`meetParticipantVelocity`: driving, and fast enough), so they cannot disagree about who is in a meeting at all. Smoke section 15 fails if the gauge grows its own copy of the gates |
-| The bar measures to the wrong thing, or the list of people and places is unreachable | the name on the bar is the **picker**: it opens every other person and every place, **nearest first from the device being watched**, and the pick is **persisted** (`map_strip_ref`) and **deactivate-able** (the Auto row, or tapping the lit row again). A pick beats the pill's peer and beats the nearest one — that is the whole point of picking: the distance is then allowed to GROW as well as shrink. An unresolvable pick (a peer that has not reported since the reload, a place that left the list) still draws, with `dist: null` and the reason in the title, and the bar stays visible even when nothing has a position: it is the only way into the picker, so hiding it hides its own control. Smoke section 15 runs `meetStripTarget` (pick beats nearest, and beats the pill's peer), `stripPickerRows` (order + which row is marked) and checks the persistence, the delegated row click and the panel's own markup |
-| The bar's arrow points the wrong way, or disagrees with the pill | the trend chevron is the **range rate** between the bar's two ends — the same `rangeRateKmh` the verdict gates on (`closing < MEET_ETA_CLOSING_MIN_KMH`), so a bar that says "closing" cannot be showing a pair the pill has just called off — with a `MEET_STRIP_TREND_KMH` noise floor, `flat` in between, and **null** (no arrow) when the map has no honest velocity for one of the two ends: a stale distance is still a reading, a stale direction is not. A place has no velocity of its own, so its rate is your own motion along the line to it. Smoke section 15 evaluates the rate (at / away / head-on) and fails if either caller stops sharing it |
-| The bar fills up as the two of them move APART | the fill is what is **LEFT of the current scale** (`meetStripFillFraction`: `1 - dist / scale`) — the FAR end of the scale is on the left and "here" is on the right, so the bar grows as they close and drains as they part, and one glance answers approaching-or-separating before any number is read. It was drawn the other way round first (fill = the distance), which made a widening gap look like the bar filling up. Every mark on the track goes through that one mapping, and the dot rides the fill's head, so the shading, the mark and the number beside it cannot disagree. Smoke section 15 walks the fraction out from 0 to 1 km of a 1 km bar and fails if it is not monotone DOWN, or if 0 m is not the full bar |
-| The bar's scale flickers, or its dot says nothing about how far apart two people are | the gauge is a **ruler with a moving scale**: the rung is the smallest one that still contains the distance — a ladder BUILT from `MEET_STRIP_BANDS_M` (200 m steps under a km, then 1, 5, 10, 20, 50 km, then 100 km up to the ceiling) — and it is named on the bar, so `1.2 km` beside a `2 km` bar is a bar 37% full. The remembered rung belongs to ONE **subject** (`meetStripScaleKey`): switch the bar from a 12 km pick to the place next door and it starts fresh, instead of walking down one rung per fix while drawing 150 m as 2% of a 20 km bar. The scale grows the instant the distance outgrows the bar and shrinks only under `MEET_STRIP_SHRINK_AT` of the next rung down; the reluctant half is load-bearing, because ±6 m of fix noise crosses a 200 m boundary repeatedly. A rescale therefore STEPS the fill — down to a quarter when closing, up to a half when parting, on the fine rungs — at the same moment the scale label changes: the price of a bar that always means "of the scale shown", and the reason the exact distance is printed rather than implied. Smoke section 15 pins the bands literally and runs the builder over the real rung boundaries |
-| The bar's colour means nothing, or goes amber at every range | the fill and the dot are tinted by how far the distance sits **into the current rung** (`meetStripCloseness` → `meetStripTint`, green at its floor to amber at its top), not by real distance — 2 km reads green on a 5 km bar and amber on a 2 km bar. Deliberately a *different quantity* from the fill: keyed to the whole scale the colour would barely move, because hysteresis keeps the distance in the top half of its scale at every real range, so it would be amber at 500 m and amber at 50 km; keyed to the rung it sweeps the whole ramp on every rung and still moves with the fill (green as the bar grows, amber as it drains). Smoke section 15 evaluates the ramp and fails if the input changes to something that cannot move |
+| The bar under the map shows a crossing the pill never drew | the page must have **one** verdict function (`HomeMeet.decision`, in `public/shared/meet.js`, rule 41) that both the live pill (`meetEtaFor`) and the distance gauge (`renderMeetStrip`) call, and the bar's green name + red tick are asked about the bar's **OWN two ends** (`HomeMeetStrip.create().crossPair`), which while a reference is picked can be a pair the pill is not talking about — a tick borrowed from the pill's pair would mark a bar whose dot is somebody else. Both sides also start from one participant test (`participantVelocity` in that same file: driving, and fast enough), so they cannot disagree about who is in a meeting at all. Smoke section 15 imports the file and fails if the gauge grows its own copy of the gates |
+| The bar measures to the wrong thing, or the list of people and places is unreachable | the name on the bar is the **picker**: it opens every other person and every place, **nearest first from the device being watched**, and the pick is **persisted** (`map_strip_ref`) and **deactivate-able** (the Auto row, or tapping the lit row again). A pick beats the pill's peer and beats the nearest one — that is the whole point of picking: the distance is then allowed to GROW as well as shrink. An unresolvable pick (a peer that has not reported since the reload, a place that left the list) still draws, with `dist: null` and the reason in the title, and the bar stays visible even when nothing has a position: it is the only way into the picker, so hiding it hides its own control. Smoke section 15 runs `HomeMeetStrip.create().target` (pick beats nearest, and beats the pill's peer) and `pickerRows` (order + which row is marked), and checks the persistence, the delegated row click and the panel's own markup |
+| The bar's arrow points the wrong way, or disagrees with the pill | the trend chevron is the **range rate** between the bar's two ends — the same `HomeMeet.rangeRateKmh` the verdict gates on (`closing < HomeMeet.CONFIG.CLOSING_MIN_KMH`), so a bar that says "closing" cannot be showing a pair the pill has just called off — with a `HomeMeetStrip.CONFIG.TREND_KMH` noise floor, `flat` in between, and **null** (no arrow) when the map has no honest velocity for one of the two ends: a stale distance is still a reading, a stale direction is not. A place has no velocity of its own, so its rate is your own motion along the line to it. Smoke section 15 imports the rate (at / away / head-on) and fails if either caller stops sharing it |
+| The bar fills up as the two of them move APART | the fill is what is **LEFT of the current scale** (`HomeMeetStrip.fillFraction`: `1 - dist / scale`) — the FAR end of the scale is on the left and "here" is on the right, so the bar grows as they close and drains as they part, and one glance answers approaching-or-separating before any number is read. It was drawn the other way round first (fill = the distance), which made a widening gap look like the bar filling up. Every mark on the track goes through that one mapping, and the dot rides the fill's head, so the shading, the mark and the number beside it cannot disagree. Smoke section 15 walks the fraction out from 0 to 1 km of a 1 km bar and fails if it is not monotone DOWN, or if 0 m is not the full bar |
+| The bar's scale flickers, or its dot says nothing about how far apart two people are | the gauge is a **ruler with a moving scale**: the rung is the smallest one that still contains the distance — a ladder BUILT from `HomeMeetStrip.CONFIG.BANDS_M` (200 m steps under a km, then 1, 5, 10, 20, 50 km, then 100 km up to the ceiling) — and it is named on the bar, so `1.2 km` beside a `2 km` bar is a bar 37% full. The remembered rung belongs to ONE **subject**, compared by the ruler INSTANCE (`createScale()`): two rulers are two instances, not one global remembering for both. Switch the bar from a 12 km pick to the place next door and it starts fresh, instead of walking down one rung per fix while drawing 150 m as 2% of a 20 km bar. The scale grows the instant the distance outgrows the bar and shrinks only under `HomeMeetStrip.CONFIG.SHRINK_AT` of the next rung down; the reluctant half is load-bearing, because ±6 m of fix noise crosses a 200 m boundary repeatedly. A rescale therefore STEPS the fill — down to a quarter when closing, up to a half when parting, on the fine rungs — at the same moment the scale label changes: the price of a bar that always means "of the scale shown", and the reason the exact distance is printed rather than implied. Smoke section 15 reads the bands out of the module and walks its ladder over the real rung boundaries |
+| The bar's colour means nothing, or goes amber at every range | the fill and the dot are tinted by how far the distance sits **into the current rung** (`HomeMeetStrip.closeness` → `tint`, green at its floor to amber at its top), not by real distance — 2 km reads green on a 5 km bar and amber on a 2 km bar. Deliberately a *different quantity* from the fill: keyed to the whole scale the colour would barely move, because hysteresis keeps the distance in the top half of its scale at every real range, so it would be amber at 500 m and amber at 50 km; keyed to the rung it sweeps the whole ramp on every rung and still moves with the fill (green as the bar grows, amber as it drains). Smoke section 15 runs the ramp and fails if the input changes to something that cannot move |
 | The bar shows a place instead of a person, or the setting for it does nothing | the bar's source is a persisted setting in **Settings → Map** (`map_strip_source`, the same control shape as the pace switch): nearest person, or nearest place. Place mode measures straight-line to the fence **centre** and must carry **no direction test** — "Heading toward X" is about which way you are pointed, and a ruler that hid a place behind you would not be a ruler. A place also has no crossing, so the red tick and the pill-coloured label stay off. Smoke section 15 fails if place mode grows the pill's 55° cone, loses the setting, or starts counting down a meeting with a fence |
 | The bar goes blank on a peer whose last fix is old, or shows a stale pair as if it were live | the gauge and the pill differ on exactly one thing, deliberately: a distance reading is still true when it is old, a promise about the next few seconds is not. So the gauge **still draws a stale peer and prints the age beside it**, while `meetDecision` keeps the pill dark. Smoke section 15 fails if the gauge starts bailing on staleness instead of labelling it |
-| The map announces a "meeting" for two people on parallel roads, or for a pair two kilometres apart | the meeting pill's gates, all three of them priced in `scripts/one-off/2026-09-24-meet-eta-lab` rather than by eye: each velocity comes from that device's **own last two fixes** (never the reported speed column, which would otherwise be believed twice), the estimate is ignored beyond `MEET_ETA_SETTLED_M` (at 2 km, ±6 m of fix noise swings the predicted miss by hundreds of metres — the lab's first false positive was a 39 m "meeting" between two people who passed 464 m apart), and the miss distance `MEET_ETA_DCPA_MAX_M` plus the 55° heading test are what separate a crossing from two people pointed at each other on roads that never meet. Smoke section 15 fails on each |
+| A fix to the map's compass, ruler, verdict or day-legs cannot be tested without editing the test suite too | the engine is PAGE TEXT, so the only way to run it is to reconstruct it: declare the ruler's private `let`s by hand, slice `COMPASS_POINTS` out by regex, list `rangeRateKmh`'s dependencies in a string. That is the symptom of an engine that is not a file — move it to `public/shared/` and let the page load it while smoke §15 imports it (rule 41). Smoke §15 fails if the copy grows back into the page, which is how the two would drift |
+| The map announces a "meeting" for two people on parallel roads, or for a pair two kilometres apart | the meeting pill's gates, all three of them priced in `scripts/one-off/2026-09-24-meet-eta-lab` rather than by eye: each velocity comes from that device's **own last two fixes** (never the reported speed column, which would otherwise be believed twice), the estimate is ignored beyond `HomeMeet.CONFIG.SETTLED_M` (at 2 km, ±6 m of fix noise swings the predicted miss by hundreds of metres — the lab's first false positive was a 39 m "meeting" between two people who passed 464 m apart), and the miss distance `HomeMeet.CONFIG.DCPA_MAX_M` plus the 55° heading test are what separate a crossing from two people pointed at each other on roads that never meet. Smoke section 15 fails on each |
 | The pill goes dark in the MIDDLE of a real meet | the fence rule must count a peer inside a fence as **home only if it is also not moving** (`theirs.fix.is_inside_geofence && theirs.kmh < CONFIG.ETA_MIN_SPEED_KMH`). Requiring *both* peers to be outside every fence silenced 15 s of a true meet, because every driver is inside their own home fence for the first minute of a trip — measured on the lab, which prices both readings in a table. Smoke section 15 fails on the stricter test |
-| The HUD promises an arrival that never pushes, and the badge never pulses | the HUD's `ETA_MIN_SPEED_KMH` / `ETA_MAX_BEARING_DIFF_DEG` and the DO's `APPROACH_MIN_SPEED_KMH` / `APPROACH_MAX_BEARING_DIFF` are the same judgement made twice, in two languages, and they must be equal — smoke section 15 compares the four values |
+| The HUD promises an arrival that never pushes, and the badge never pulses | the HUD's `ETA_MIN_SPEED_KMH` / `ETA_MAX_BEARING_DIFF_DEG` — which the page's own `CONFIG` now reads straight out of `HomeMeet.CONFIG` rather than restating (rule 41) — and the DO's `APPROACH_MIN_SPEED_KMH` / `APPROACH_MAX_BEARING_DIFF` are the same judgement made twice, in two languages, and they must be equal — smoke section 15 compares the four values |
 | A WAY or share page loads blank, but the server answers 200 with the full document | a syntax error in that page's inline `<script>`. Nothing compiles these files (by design — no build step), so it reaches production silently: the only compile either page gets is smoke section 15, which parses both inline scripts with `node:vm`. The old header named a `check:dashboard` script that exists only in the standalone W.A.Y repo |
 | "Is my tab stale, or is the deploy broken?" cannot be answered | `WAY_BUILD` (bottom of Settings) is the only answer, so it must be bumped with the page: smoke section 15 fails when the marker's date is older than the last commit that touched `public/way/index.html` (skipped when git cannot answer, e.g. a shallow export) |
 | Module still shows its own header/nav inside a tab | the module's own `window.self !== window.top` embed script — selectors drift when its UI changes |
@@ -1450,11 +1743,17 @@ have their own separate repositories and their own history.
 | The HUD's age reads `-1s ago` | the phone's clock runs ~1 s ahead of the viewer's: the age is `Date.now() - ping.timestamp` and must be **clamped at 0** (`now` under a second). Whatever the skew, an age can never be negative |
 | The badge's address column is `—`, or appears and vanishes a few seconds later | `renderBadges()` rebuilds every badge on each ping, so the resolved text must be re-applied from `addressCache` (`cachedAddressLines`) — text written only by the fetch callback is wiped immediately. Check `localStorage['way_addresses']` and `describeAddress()`; a cached address >400 m from the device is hidden on purpose |
 | A phone's uploads to `/ulogger` are rejected (401), or `addpos` says "Missing required parameter" | device auth **folds case** on `users.username` (`MaxX`, `Niri`), so a 401 means the password (not the casing) is wrong, or a session cookie went stale — and `addpos` wants `time` (seconds), not `timestamp`, with `speed` in **m/s** (the route converts to km/h). Before 2026-09-20 this check was exact-case, which is how a casing fix could leave a phone refused while the browser login worked (rule 33) |
-| The share's map is blank, or shows "access blocked … tile usage policy" (`osm.wiki/blocked`) | the page is pointing at a tile server of its own again. Both maps read `/shared/basemaps.js` and nothing else, because OSM's volunteer-run server blocks this app per-APP (the same request with no `Referer` still gets a real tile, which is why `curl` looks fine): a blocked tile is a **flat 1-bit image a few hundred bytes long**, not an HTTP error. Never inline a tile URL in a page — that is how `/live` broke while the household map, on Esri, looked perfect |\r\n| A tile lands in the wrong part of the world, at the right zoom | Esri's tile path is `/tile/{z}/{y}/{x}` — ROW before COLUMN, the reverse of OSM's `{z}/{x}/{y}`. Copy a basemap from `/shared/basemaps.js` instead of retyping a URL; smoke §9 asserts the order |
+| The share's map is blank, or shows "access blocked … tile usage policy" (`osm.wiki/blocked`) | the page is pointing at a tile server of its own again. Both maps read `/shared/basemaps.js` and nothing else, because OSM's volunteer-run server blocks this app per-APP (the same request with no `Referer` still gets a real tile, which is why `curl` looks fine): a blocked tile is a **flat 1-bit image a few hundred bytes long**, not an HTTP error. Never inline a tile URL in a page — that is how `/live` broke while the household map, on Esri, looked perfect |
+| A tile lands in the wrong part of the world, at the right zoom | Esri's tile path is `/tile/{z}/{y}/{x}` — ROW before COLUMN, the reverse of OSM's `{z}/{x}/{y}`. Copy a basemap from `/shared/basemaps.js` instead of retyping a URL — and note that this covers every tile URL a key draws, `overlays` included, not just its `url`. smoke §9 asserts the order per host, and a host it does not know (`tileOrderByHost`) fails on purpose: read the provider's docs and declare the order there rather than trusting the shape of a URL |
 | The share opens too far out to read a street, or at a zoom the tiles cannot serve | the viewer's follow zoom is ONE number, `FOLLOW_ZOOM` in `public/live/index.html`, used by the first `setView` and by Recentre. Smoke asserts `16 ≤ FOLLOW_ZOOM ≤ streets.maxNativeZoom` (a level past the raster's native zoom returns the last real tile upscaled: the map looks fine and is wrong) and that neither call site names a zoom of its own. It is NOT the household map's `FOLLOW_ZOOM_LEVEL`, which is a per-person preference there |
-| The share's map looks empty at street level, with no error anywhere | not a block and not a bug: Esri's street raster carries little detail at z17 over rural Madagascar (~2.4 KB per tile against ~6.5 KB at z14, both genuinely served). Read the tile BYTES before concluding a host blocks you, and do not answer this by pointing at another tile server — a second hand-typed tile URL is exactly how `/live` got blocked (see the two rows above) |
+| The share's map looks empty at street level, with no error anywhere | first ask WHICH background it is drawing: since 2026-09-30 both keys are VECTOR, so an empty share is a style or a tile host failing (`basemap-style.js` warns and falls back to the untuned style), not thin cartography. If a key still draws a raster (`url:`), this is the raster-era shape: Esri's street raster carried little detail at z17 over rural Madagascar (~2.4 KB per tile against ~6.5 KB at z14, both genuinely served). Read the tile BYTES before concluding a host blocks you — a block is a flat few-hundred-byte image, not an HTTP error — and do not answer either of them by pointing at another tile server (see the two rows above). Since 2026-09-30 smoke §9 also samples the household's OWN view — the centre `/way/` declares, at the zoom the vector source calls its deepest — and fails when that tile is EMPTY or carries none of `building`/`transportation`/`place`, which is the one failure a perfectly tuned style hides. It was written after probing turned up the trap: a vector request PAST a source's native zoom (OpenFreeMap's is z14) is answered `200` with a ZERO-BYTE body, so a map that asks a host for street-zoom tiles instead of overzooming the deepest real ones paints nothing while every status check in the suite stays green |
+| The labelled map looks like a coloured version of the grey one, or one of the two maps has no place names on it | the labelled key is asking for no more names than the plain canvas. Since 2026-09-30 both keys are VECTOR (`style:` in `/shared/basemaps.js`, drawn by MapLibre from OpenFreeMap): the labelled one carries `dense: true`, which is `/shared/basemap-style.js` patching the upstream style at run time (minor street names and the first neighbourhood places one zoom earlier, more room for labels upstream's collision test drops). Around here that is the difference between a map and a coloured canvas — commercial rasters printed the same road network as the plain one and thinned out as you zoomed (14 KB of names at z16, 2.5 KB at z18). smoke §9 fails a labelled key that asks for neither the dense set nor a reference layer, a page that draws a background of its own, an upstream style that no longer has the label layers the tuner rewrites, and a view that draws nothing at all (one real tile fetched at the household's own centre, at the zoom the source declares deepest) — and `scripts/one-off/2026-09-30-basemap-names/mutate.mjs` proves each can fail |
+| Buildings rise into 3D again, or buildings vanished above z14 | `/shared/basemap-style.js` decides flatness for BOTH keys (`FLAT` plus the drop-by-TYPE in `tune()`), and its two halves are a pair: dropping upstream's `building-3d` without lifting the zoom cap on the flat layer that takes its footprints over is a map with NO buildings from z14 up, which renders perfectly and reads as "there is nothing here". smoke §9 reads the TUNED style back and fails on either — a `fill-extrusion` still drawn, or a dataset upstream drew as 3D left uncovered over the zooms it covered — so a red there is one of those two. And remember that module is cached: bump `public/sw.js`'s `CACHE` name with it |
 | A page you just edited still behaves the old way in the Preview tab | the browser is holding the DOCUMENT, not the file: `wrangler dev` serves the current bytes (verify with an authenticated `curl`, an anonymous one only 302s to `/login`), but a preview already showing `/way/` keeps running the script it loaded. Reload the page (or navigate the preview away and back) before concluding a fix did not work — and treat a `sessionStorage` pin as sticky across in-page hash changes |
-| A route answers a bodyless 500 and the page can only say something generic | a throw ABOVE the named-error layer is not caught by it: `requireUser` reading D1, or the identity lookup that runs before `lib/share.ts`. `handleWay` wraps both API groups and answers JSON with a sentence, logging the route — observed for real on `POST /api/share` (2026-09-21). Smoke asserts the wrapper is still there |\r\n| Pings start arriving under a spelling you just merged away | the running build is older than rule 33: the device id must be **re-resolved from the account** on every fix (`canonicalDeviceId` in `src/way/routes/ingest.ts`), because a 30-day μlogger cookie minted before a rename re-stamps the old spelling onto `gps_pings.device_id`. Smoke §19 forges exactly that cookie and reads the ledger row back |
+| A basemap check is red, or `audit:basemaps` says the record is stale | the subject of those checks is somebody else's tile host, and they judge a COPY of it: `scripts/fixtures/basemaps/`, written by `npm run basemaps:record`. So a red means one of three things, and the message says which — upstream changed (refresh, and the recorder prints a per-URL diff by sha256 so you can see WHAT), this repo declares a key the record has no bytes for (record after adding the key, which is also when you read the new provider's terms), or the copy is older than **120 days** (`STALE_DAYS` in `scripts/lib/basemap-record.mjs`) and is being reported rather than judged, because a guard answered by a copy has to know its copy is old. `SMOKE_LIVE=1 npm run smoke` and `npm run audit:basemaps --live` ask the real servers instead, and record mode REFUSES them, so "the suite runs without network" is a property of the run rather than a hope about the machine |
+| An edited `/shared/*.js` module has no effect, or two maps disagree about the same key | `public/sw.js` caches `script` requests **stale-while-revalidate**, keyed by URL (cached copy first, refreshed in the background, `/api/` and documents excluded) — so a module *renamed or added* evicts itself, but one rewritten at the same path does not, and the load right after an edit runs the PREVIOUS module. **Bump the worker's `CACHE` name when you change a cached module's behaviour** (`home-v2` → `home-v3`, as the flat-buildings change did): `activate` deletes every other cache, which is what evicts the old entries. A device that has not taken the new worker yet still needs the reload twice; verify against the SERVED file (`curl`) rather than the page. Two maps disagreeing about one key is the same symptom with a different cause: a page that drew a background of its own; smoke §9 fails that one |
+| A route answers a bodyless 500 and the page can only say something generic | a throw ABOVE the named-error layer is not caught by it: `requireUser` reading D1, or the identity lookup that runs before `lib/share.ts`. `handleWay` wraps both API groups and answers JSON with a sentence, logging the route — observed for real on `POST /api/share` (2026-09-21). Smoke asserts the wrapper is still there |
+| Pings start arriving under a spelling you just merged away | the running build is older than rule 33: the device id must be **re-resolved from the account** on every fix (`canonicalDeviceId` in `src/way/routes/ingest.ts`), because a 30-day μlogger cookie minted before a rename re-stamps the old spelling onto `gps_pings.device_id`. Smoke §19 forges exactly that cookie and reads the ledger row back |
 | The share badge shows the speed but NOT its colour, and the footer/address stay empty or frozen | a local named **`window`** inside that function. `var window = state.since ? …` was hoisted to the top of `render()`, so the global read `undefined` for the whole function and every statement *after* the speed figure was silently skipped — on every poll, forever, with nothing in the console but `Cannot read properties of undefined (reading 'HomePlayback')`. The local is `windowLabel` now, and section 20 fails any page that declares its own `window` |
 | The share button is missing from WAY → Settings → Map | first check WHO you are signed in as: the row is admin-only, and a non-admin sees the sentence "Only an admin can hand out a code" in its place. If you are an admin and it still says **Checking…**, the device list has not loaded — the row acts on the SELECTED device and refuses to show a stale answer for a different one. A `403` from `POST /way/api/share` while `/admin` mints fine means `shareMinter` is failing to read the central session: `HOME_DB` must be bound and `home_session` must be present (the console uses the same cookie) |
 | A code minted from the map is not listed in the console | both doors write the same `share_links` rows, so an empty console means the row is not there at all: check `wrangler d1 execute HOME_DB --local` for `SELECT id, subject, revoked_at, expires_at FROM share_links`. Note the console lists ACTIVE codes for every device while the map shows only the SELECTED device's |
@@ -1479,6 +1778,9 @@ have their own separate repositories and their own history.
 | The approach pulse runs but is barely visible, or the sweep is cut off at a box edge | the sweep must live in `#approach-radar-layer` (a `position: fixed` sibling of `#map`, NOT a child of `#badge-strip`) — the strip is `overflow-y: auto` and clips everything a card draws outside itself to a ~170 px column. Check `getComputedStyle(document.getElementById('badge-strip')).overflowY` and whether the radar element's `left`/`top` match its card's centre; smoke section 15 fails if the layer moves inside the strip |
 | A login briefly shows or provisions another person's account (or a module row appears with the wrong password) | module-scope state carrying REQUEST data — rule 38. `npm run audit:module-state` reads every file under `src/` and names the binding; smoke §24 fails on it. The one that shipped was `let lastPassword` in `src/identity.ts`, and the wrong value lands in the WAY/Laoka row a person is CREATED with, which in W.A.Y is also their μlogger credential |
 | A tracking event acts on the wrong device, or one request's data appears in another's | request data parked on the DO's `this` — rule 39. A field assigned from a request and read past an `await` is shared with whatever request interleaves; `npm run audit:do-state` names the field and its kind, and smoke §25 fails on it. The one field allowed to hold request data (`FleetDO.lastNotify`) is declared `diagnostics` and may only be read by the method its registry entry names — a new reader means it has started deciding something |
+| A `.js` route under `src/` reads `.message` off a caught error, or a handler can resolve to nothing at all | rule 45: every `.js` under `src/` is compiled by `npm run audit:laoka-types` (smoke §29) under one declared relaxation (`noImplicitAny`) that the pass pins. A caught value is `unknown` — use `messageOf` from `src/laoka/lib/http.js`; a union that refuses to narrow usually wants its shapes DECLARED, which is how two admin handlers were found typed as returning no response |
+| A rule's guard stops existing — a smoke section renamed, a driver moved, an audit script renamed — while the docs still promise it | rule 44: a promise is only real if a scanner can resolve its NAME. The rule → guard map in this file declares every rule's guards, `npm run audit:rules` resolves them (a section that must exist, optionally with a check fragment inside it; an `audit:` script whose file exists; a driver path) and smoke §28 runs the same scan with the controls that prove it can fail. Fix the map or the guard, not the sentence |
+| A doc cites a section number and nobody can tell which document owns it | a bare section sign is legal only INSIDE the document that owns that numbering (smoke's numbers are a contract) or as the second half of a same-line chain. Everywhere else write it qualified — `smoke §N`, `CUTOVER §N`, `DB-REDESIGN §N`, `PRESENCE §N` — because the same number is a different section in each. `npm run audit:rules` fails the bare form, and `scripts/one-off/2026-09-27-rule-guards/sharpen.mjs` is the one-off pass that added the missing names |
 | `npm run audit:do-state` lists a field as `(undeclared)` and still exits 0 saying "every field is declared" | the undeclared rule ran before assignment-only fields were collected, so the field set was incomplete when it was tested — rule 39. Both the command and smoke §25 read the fault list, so both agreed on the wrong answer; the §25 control `a field that exists only by assignment is reported as undeclared` is what notices, and driver M10 reverts the ordering to prove the control is the thing holding it |
 
 ### What is actually served

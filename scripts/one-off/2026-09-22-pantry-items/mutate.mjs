@@ -2,7 +2,7 @@
 // ─── one-off: does every NEW guard in this batch fail on its own fault? ───
 //
 // A guard that cannot go red is decoration. This batch added checks in TWO
-// sections of scripts/smoke.mjs — §17 (the shell carrying an inner tab) and §22
+// sections of scripts/smoke.mjs — smoke §17 (the shell carrying an inner tab) and smoke §22
 // (one pantry item edited on its own, and the shape of the shelves on Home) — so
 // this driver extracts BOTH and runs them together against a mutated tree, with
 // the suite's own helpers, in ~6 seconds per mutation instead of ~3 minutes.
@@ -153,7 +153,7 @@ function fnBody(src, name) {
   }
   return null
 }
-// §17 reads the tab bar's markup through the suite's own helper, so it travels in
+// smoke §17 reads the tab bar's markup through the suite's own helper, so it travels in
 // as a real function — cut from the same file, never re-typed here.
 const tabBarHtml = new Function(
   'html', `return (function tabBarHtml(html) ${fnBody(smoke, 'tabBarHtml')})(html)`)
@@ -179,7 +179,7 @@ async function settled(tries = 40) {
   return false
 }
 
-/** The trip half of §22 needs SOMETHING to buy and NO trip in progress. Both are
+/** The trip half of smoke §22 needs SOMETHING to buy and NO trip in progress. Both are
  *  state, and mutations can change it, so every run starts from a prepared pantry
  *  and puts back whatever this changed. */
 async function preparePantry() {
@@ -328,7 +328,7 @@ if (login.status !== 302) {
 
 // NOTE the parameter names: the extracted sections read their sources as
 // `new URL('../' + p, __root)`, so the repo-root value has to arrive bound to
-// `__root`; `jar` travels in as the map itself, because §22 parks and restores
+// `__root`; `jar` travels in as the map itself, because smoke §22 parks and restores
 // the cookie jar to ask the pantry what an ANONYMOUS caller gets.
 const runSection = new Function(
   'BASE', '__root', 'log', 'ok', 'bad', 'check', 'req', 'body', 'form', 'fnBody', 'tabBarHtml',
@@ -388,7 +388,7 @@ for (const m of chosen) {
     for (const e of edits) writeKeepingEol(e.file, normalized(e.file).replace(e.from, e.to))
     // Writing a file makes the dev server RELOAD, and the section's very first
     // fetches then land mid-reload: `/laoka/index.html` came back without its
-    // embed block for one run (M5), which turned four §17 checks red for a reason
+    // embed block for one run (M5), which turned four smoke §17 checks red for a reason
     // that had nothing to do with the mutation, and then threw `fetch failed`.
     // Wait for the watcher to be done before believing anything the section says.
     await settled()

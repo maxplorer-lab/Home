@@ -31,6 +31,16 @@ export function text(body, status, contentType) {
   });
 }
 
+// The message out of a caught value. A `catch` binding is `unknown` under
+// `strict` (useUnknownInCatchVariables), so reading `.message` off it directly
+// is the one shape every route here used to get wrong — eight sites, all of
+// them reported by the type pass the first time it ran (rule 45). The read
+// lives here once, in the same file as the other small shared helpers.
+export function messageOf(err) {
+  if (err && typeof err === 'object' && 'message' in err) return String(err.message);
+  return '';
+}
+
 // Zero padded integer from untrusted input, or null when absent/invalid.
 export function toInt(value) {
   if (value === null || value === undefined || value === '') return null;

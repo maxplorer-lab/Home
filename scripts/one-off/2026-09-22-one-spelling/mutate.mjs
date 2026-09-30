@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ─── One spelling, through the HUMAN door ────────────────────────────
-// Falsification driver for the guards §19 of `npm run smoke` grew on
+// Falsification driver for the guards smoke §19 of `npm run smoke` grew on
 // 2026-09-22. It extracts that section, mutates ONE code path at a time, and
 // asks of each mutation: does the check that exists for it actually go red?
 //
@@ -52,7 +52,7 @@ function writeKeepingEol(p, text) {
   write(p, crlf ? text.replace(/\n/g, '\r\n') : text)
 }
 
-// ── extract §19 out of the shipping suite ────────────────────────────
+// ── extract smoke §19 out of the shipping suite ────────────────────────────
 const smoke = read('scripts/smoke.mjs')
 const start = smoke.indexOf('// ─── 19. Diagnostics')
 const end = smoke.indexOf('// ─── 20. the live share')

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ─── one-off: does every §22 guard actually fail on its own fault? ───
+// ─── one-off: does every smoke §22 guard actually fail on its own fault? ───
 //
 // A guard that cannot go red is decoration. Running the whole smoke suite once
 // per mutation costs ~2 minutes each, and section 22 is the last thing in it, so
@@ -107,7 +107,7 @@ async function settled(tries = 40) {
   return false
 }
 
-/** The trip half of §22 needs SOMETHING to buy and NO trip in progress. Both are
+/** The trip half of smoke §22 needs SOMETHING to buy and NO trip in progress. Both are
  *  state, and mutations can change it: a mutation that empties a trip, or the
  *  suite's own walk consuming the only low item, makes the next run SKIP that
  *  half -- and a skipped half reports no failure at all, which reads exactly like
@@ -423,7 +423,7 @@ const MUTATIONS = [
     expects: ['and the emptied trip is not left behind as a ghost'],
   },
 
-  // ── §23: a number is typed, never nudged ──
+  // ── smoke §23: a number is typed, never nudged ──
   {
     id: 'M24', file: ENTRY,
     why: 'the spinner buttons come back in the engines that draw them',

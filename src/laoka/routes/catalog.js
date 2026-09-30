@@ -1,13 +1,13 @@
 // Catalog CRUD across all three levels. Removal is a soft delete so that live
 // weeks and history keep resolving, and any signed-in user may do it.
 
-import { ok, fail, readJson, toInt, toStr, toBool } from '../lib/http.js';
+import { ok, fail, readJson, toInt, toStr, toBool, messageOf } from '../lib/http.js';
 import { getCatalogTree } from '../data/queries.js';
 
 const SLOT_ROLES = ['protein', 'side', 'salad', 'none'];
 
 function conflict(err) {
-  const message = err && err.message ? err.message : '';
+  const message = messageOf(err);
   if (message.indexOf('UNIQUE') !== -1) return fail(409, 'that name already exists here');
   return null;
 }
@@ -34,7 +34,7 @@ export default [
           .bind(name, toBool(body.isPantry) ? 1 : 0, toInt(body.sortOrder) || 0).run();
         return ok({ id: r.meta.last_row_id });
       } catch (err) {
-        return conflict(err) || fail(500, err.message);
+        return conflict(err) || fail(500, messageOf(err));
       }
     }
   },
@@ -56,7 +56,7 @@ export default [
         await ctx.env.DB.prepare(sql).bind(...binds).run();
         return ok({});
       } catch (err) {
-        return conflict(err) || fail(500, err.message);
+        return conflict(err) || fail(500, messageOf(err));
       }
     }
   },
@@ -85,7 +85,7 @@ export default [
           .bind(groupId, name, toStr(body.icon, 8) || null, slotRole, toInt(body.sortOrder) || 0).run();
         return ok({ id: r.meta.last_row_id });
       } catch (err) {
-        return conflict(err) || fail(500, err.message);
+        return conflict(err) || fail(500, messageOf(err));
       }
     }
   },
@@ -111,7 +111,7 @@ export default [
         await ctx.env.DB.prepare(sql).bind(...binds).run();
         return ok({});
       } catch (err) {
-        return conflict(err) || fail(500, err.message);
+        return conflict(err) || fail(500, messageOf(err));
       }
     }
   },
@@ -142,7 +142,7 @@ export default [
           .bind(subgroupId, name, available, toStr(body.notes, 200) || null, toInt(body.sortOrder) || 0).run();
         return ok({ id: r.meta.last_row_id });
       } catch (err) {
-        return conflict(err) || fail(500, err.message);
+        return conflict(err) || fail(500, messageOf(err));
       }
     }
   },
@@ -165,7 +165,7 @@ export default [
         await ctx.env.DB.prepare(sql).bind(...binds).run();
         return ok({});
       } catch (err) {
-        return conflict(err) || fail(500, err.message);
+        return conflict(err) || fail(500, messageOf(err));
       }
     }
   },

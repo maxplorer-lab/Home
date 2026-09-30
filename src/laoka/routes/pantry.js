@@ -39,9 +39,17 @@ const MAX_PRICE = 100000000;
 const MAX_QTY = 10000;
 
 function readAmount(value, max, allowNull) {
-  if (value === null || value === '' || value === undefined) return { ok: allowNull, value: null };
+  // Every answer carries `value` (null when there is none), so the shape is ONE
+  // shape discriminated by `ok`. With a failure member that omitted `value`,
+  // the caller's guard could not narrow the else-branch to a number and
+  // `Math.trunc(r.value)` read as number OR undefined — which is what the type
+  // pass reported the first time it ran (rule 45). No caller reads `.value`
+  // without checking `.ok` first.
+  if (value === null || value === '' || value === undefined) {
+    return allowNull ? { ok: true, value: null } : { ok: false, value: null };
+  }
   const n = Number(value);
-  if (!Number.isFinite(n) || n < 0 || n > max) return { ok: false };
+  if (!Number.isFinite(n) || n < 0 || n > max) return { ok: false, value: null };
   return { ok: true, value: n };
 }
 

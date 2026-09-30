@@ -312,9 +312,11 @@ on hand is graded** by `currentGradedColor` (red under zero, then yellow, blue,
 green as the balance grows) because it answers "is this healthy?" rather than
 "which way did the money go" — and the grading is the 700 step in light mode,
 because this is a 30px figure and `yellow-500` on white is 2.3:1; and **Kiné
-counts sessions, not money** (a delivered count in ink, the payments in green
-like every other franc coming in, and the balance keeping the green/yellow/red
-session grading). Kiné's payments used to be orange — the colour of money going
+counts sessions** (a delivered figure is a count, not a money direction; the
+payments are green like every other franc coming in; and the balance — francs,
+billed minus paid — keeps the green/yellow/red grading, from the one ledger
+module Home and /kine both read, smoke section 27). Kiné's payments used to be
+orange — the colour of money going
 *out* — on the same screen that printed income in green.
 
 **The module stage.** WAY, Laoka and Chat run inside
@@ -433,9 +435,10 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
 An admin can show **one device to one person outside the household**: they open
 `/live`, type a 6-digit code, and watch that device drive on a full-bleed
 **street map** with nothing else in it — no account, no app, nothing to
-install. (The background is Esri's labelled raster, from `/shared/basemaps.js`;
-it used to be OSM's standard tiles until that server blocked this app — see the
-basemap section below. Nothing on either map names a tile URL of its own.) This is
+install. (The background is the labelled key from `/shared/basemaps.js`, drawn by
+`/shared/basemap-layer.js`; it used to be OSM's standard raster tiles until that
+server blocked this app — see the basemap section below. Nothing on either map
+names a map host of its own.) This is
 the case the app is for ("she is still driving; here is how you watch her"), and
 it is the single exception to "everything is behind one login", so it is built
 as though every request were hostile. `AGENTS.md` rule 31 carries the traps;
@@ -498,18 +501,75 @@ smoke section 20 proves it live rather than by grepping.
   poll's 5 s, and not at all while the device sits where we already resolved it.
   Past 400 m of drift the text is dropped: a stale address is worse than a dash,
   because it looks authoritative.
-* **The background comes from ONE file, for both maps.** `/shared/basemaps.js`
-  holds each basemap's label, tile URL, native zoom and the credit its licence
-  requires; the household map builds its layer menu from it and the share draws
-  its single background from it, so no page names a tile server of its own. That
-  is a lesson rather than tidiness: `/live` used to hardcode OSM's standard
-  tiles, and on 2026-09-20 OSM's volunteer-run server began answering every
-  request that identified this app with a blank tile and `osm.wiki/blocked` —
-  breaking the share while the household map, on Esri, looked perfect. Both maps
-  are on ArcGIS Online rasters now (keyless, CDN-hosted), and the share gets the
-  labelled street style, because place names are what "where is she?" needs.
+* **The background comes from ONE file, for both maps, and is DRAWN in one
+  place.** `/shared/basemaps.js` holds each key's label, the style or tile URL it
+  draws, its zoom ceiling and the credit its licence requires; the household map
+  builds its layer menu from those keys, the share draws its single background
+  from them, and `/shared/basemap-layer.js` is the only code that turns a key
+  into layers — so no page names a map host of its own, and the two maps cannot
+  disagree about what "LITE" or "STREETS" means. That is a lesson rather than
+  tidiness: `/live` used to hardcode OSM's standard tiles, and on 2026-09-20
+  OSM's volunteer-run server began answering every request that identified this
+  app with a blank tile and `osm.wiki/blocked` — breaking the share while the
+  household map, on a commercial CDN, looked perfect.
+  Commercial rasters then failed the household for the opposite reason: around
+  the household's own part of the world they print the same road network as the
+  plain canvas and thin out as you zoom in (14 KB of names at z16, 2.5 KB at z18),
+  which the household read as "just a colored version of the lite basemap" and
+  then "you just bolded the street names, and very few places". Label density is
+  a decision made inside a style, so since 2026-09-30 both keys are VECTOR —
+  MapLibre drawing OpenFreeMap's tiles and style (keyless, no registration, no
+  request limit, MIT styles) — and the density is ours:
+  `/shared/basemap-style.js` patches the upstream style at run time (minor street
+  names and the first neighbourhood places one zoom earlier, more room for labels
+  that upstream's collision test drops), and smoke §9 fetches the live style and
+  runs the real tuner over it, so a renamed upstream layer is a failed check
+  rather than a map that quietly prints less.
+  That file also decides FLATNESS, for both keys: upstream raises buildings into
+  3D (`fill-extrusion`) from z14 and a flat map is enough for a glance on a phone,
+  so `tune()` drops every layer of that type. Two costs it must not take, and does
+  not: the tile BYTES are unchanged (the same `building` data feeds the flat
+  footprints, so the saving is per-frame drawing), and the flat layer that takes
+  the footprints over is uncapped — upstream's `building` fill stops at z14, the
+  exact zoom its 3D twin starts, so dropping the 3D without lifting that cap is a
+  map with no buildings just where someone is looking closely. Smoke §9 reads the
+  TUNED style back and fails if anything still draws a `fill-extrusion`, or if a
+  dataset upstream drew as 3D is left drawn by nothing over the zooms it covered.
+  And because a tuned style can still paint nothing, the same section samples the
+  household's OWN view: one real tile, fetched at the centre the page declares and
+  at the zoom the source calls its deepest, must carry `building`,
+  `transportation` and `place` — with an empty-area tile fetched beside it, so the
+  requirement is shown to be one a blank payload fails. Probing that fixture found
+  the trap it now guards: a vector request PAST a source's native zoom comes back
+  `200` with a ZERO-BYTE body, so asking a host for street-zoom tiles instead of
+  overzooming the deepest real ones paints an empty map that passes every status
+  check in the suite. Those upstream bytes (two style JSONs, their TileJSON, the
+  sample tiles) are judged from a RECORD — `scripts/fixtures/basemaps/`, written
+  by `npm run basemaps:record`, which prints a per-URL diff by sha256 — rather
+  than fetched per run, so the suite is deterministic and works offline, and a
+  red means upstream or this repo changed instead of the network being down. The
+  same walk and judgment run in CI as `npm run audit:basemaps` (read-only, no
+  server, no network: it refuses the recorded hosts on purpose), and past 120 days
+  the record is reported as stale rather than judged.
   AGENTS.md rule 33's sibling rule of thumb: a hardcoded third-party URL is a
   dependency on somebody else's policy, taken once per page that repeats it.
+* **The map's arithmetic is one file per rule, and both pages call it.**
+  `/shared/geo.js` (`HomeGeo`) owns distance, bearing, the eight cardinals and
+  the angular gap — the share's own haversine, in the other algebraic form, is
+  gone, so "how far" has one answer on both pages. `/shared/meet.js`
+  (`HomeMeet`) owns the crossing verdict and its gates, `/shared/meet-strip.js`
+  (`HomeMeetStrip`) the bar's ruler, its colour and what it measures to, and
+  `/shared/trip-legs.js` (`HomeTripLegs`) what counts as a stored point and what
+  a day adds up to. The page keeps ONE-LINE delegations under the names it
+  always used (`distanceMeters`, `compassPoint`, `computeLegsForDay`, …), and
+  that thinness is the point: it is what the suite checks instead of trusting.
+  The same lesson as the bullet above, one level down — a rule living inside a
+  page can only be tested by rebuilding it. Section 15 used to
+  `new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0; …')`
+  the ruler three times, pull `COMPASS_POINTS` out of the page with a regex and
+  stitch `rangeRateKmh` together with a hand-listed dependency map; it now
+  evaluates the same file the page loads into a bare `window` and calls it
+  (AGENTS.md rule 41).
 * **The badge's numbers are live while the drawing is not.** The speed is the
   newest fix's, straight out of the payload, and the age is the newest fix's age
   — the 25 s lag lives only in where the dot is drawn. The speed's colour comes
@@ -1466,3 +1526,27 @@ the right one, revoke it) — section 20.
 Where a check would write to the household's own data it reports **skipped**
 rather than passing quietly — a green suite must never mean "wiped the
 family's week to prove it could".
+
+A section can also check the DOCS. Section 28 runs `npm run audit:rules` on the
+same tree: the rule → guard map in `AGENTS.md` declares every numbered rule's
+guards, and the scan resolves each declaration (a smoke section, optionally with
+a check fragment the section must still contain; an `audit:` script whose file
+exists; a driver path), then fails a rule with no row, a rule whose prose names a
+guard its rows omit, a `§` citation that resolves to no section or names no
+document, and a smoke section that is neither claimed by a rule nor declared as
+guarding none. Prose cannot go stale loudly — a renamed section or a moved
+driver reads exactly as well as it did the day it was written; a declared name
+can (AGENTS.md rule 44).
+
+The type gate has a seam of its own, and rule 45 closes it. `npm run check` is
+`strict` over `include: ["src"]` with `checkJs: false`, so Laoka's vendored
+JavaScript (17 files under `src/laoka/`, 3228 lines) was parsed and never looked
+at. `npm run audit:laoka-types` runs the same compiler over every
+`.js`/`.mjs`/`.cjs` under `src/` with one declared relaxation — `noImplicitAny`,
+because in unannotated JavaScript every parameter is implicitly `any` — and it
+pins that relaxation: the pass asserts its own effective option set before it
+reads a file and refuses to answer if any other flag moved, so a fault is fixed
+by declaring the value's type (`messageOf` in `src/laoka/lib/http.js`), never by
+loosening a check. The checked set is a walk of `src/` rather than a list, so a
+new file is inside the gate the moment it lands; section 29 runs the same pass
+with the controls.

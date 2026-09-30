@@ -11,12 +11,14 @@
 // ONE LOGIN: POST /login checks username + password against the central
 // home-db, provisions the person into each module's database (first time
 // only) and mints every module's native session cookie — see
-// src/identity.ts. Two repair paths keep every module reachable:
+// src/identity.ts. Every module stays reachable through ONE repair rule
+// (src/lib/session-repair.ts), adapted per surface:
 //   • module APIs → on a 401 with a live home_session, the module cookie
 //     is minted and the request retried once (covers stale cookies and
-//     accounts created after this login).
-//   • Sompitra pages → its requireAuth middleware does the same
-//     (src/lib/middleware.ts).
+//     accounts created after this login). Laoka's /auth/me answers
+//     200 {user:null} instead of 401 — the same retry, a different trigger.
+//   • Sompitra pages → its requireAuth middleware mints the cookie and
+//     carries on (src/lib/middleware.ts).
 //
 // Logout (GET /logout) destroys the central session and every module
 // session that can be reached server-side.
@@ -31,7 +33,9 @@ import { Hono } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 
 import type { Env } from './env'
-import { getHomeUserFromCookie, promoteSession, isSecureRequest, HOME_COOKIE } from './identity'
+import { getHomeUserFromCookie, HOME_COOKIE } from './identity'
+import { repairSession } from './lib/session-repair'
+import { readCookie } from './lib/cookies'
 import type { HomeUser } from './identity'
 import { requireAuth } from './lib/middleware'
 import { pruneDiag } from './lib/diagnostics'
@@ -77,38 +81,35 @@ app.all('/ws', (c) => handleWayWebSocket(c.req.raw, c.env))
 // cookie auth still guards the DO upgrade (see src/laoka/worker.js).
 app.all('/laoka-ws', (c) => handleLaoka(c.req.raw, c.env, execCtx(c)))
 
-// ── shared repair helper: 401 → mint module cookie → retry ──────
+// ── the module-API adapter over the one repair rule ─────────────
 
 async function withRepair(
   request: Request,
   env: Env,
   target: 'sompitra' | 'way' | 'laoka',
   dispatch: (req: Request) => Promise<Response>,
+  // What a signed-out module API looks like. Everything except Laoka's
+  // public /auth/me answers 401; that route reports "no session" as
+  // 200 {user:null}, and recognising it is its adapter's job (laokaApi).
+  repairWhen: (res: Response) => boolean | Promise<boolean> = (res) => res.status === 401,
+  // What to answer when repairWhen fired but the rule could not repair
+  // (no live Home session, or minting produced nothing). Default: the
+  // module's own signed-out response, untouched.
+  unrepaired: (res: Response) => Response = (res) => res,
 ): Promise<Response> {
-  const url = new URL(request.url)
   const res = await dispatch(request)
-  if (res.status !== 401) return res
+  if (!(await repairWhen(res))) return res
 
-  // 401 with a possible central session → mint the module cookie, retry.
-  const homeToken = getCookieFrom(request, 'home_session')
-  const homeUser = await getHomeUserFromCookie(env.HOME_DB, homeToken)
-  if (!homeUser) return res
+  const plan = await repairSession(request, env, target)
+  if (!plan) return unrepaired(res)
 
-  const setCookie = await promoteSession(env, target, homeUser, isSecureRequest(url.origin))
-  if (!setCookie) return res
-
-  // Re-send with the fresh module cookie. Cookie headers must be joined
-  // with "; " — Headers.append would join with ", ", which cookie parsers
-  // cannot read, so the retry would still look signed-out.
-  const pair = setCookie.split(';')[0]!
-  const prior = request.headers.get('Cookie')
-  const retryReq = new Request(url, request)
-  retryReq.headers.set('Cookie', prior ? prior + '; ' + pair : pair)
-  const retry = await dispatch(retryReq)
+  const retry = await dispatch(plan.retryRequest)
   const out = new Response(retry.body, retry) // fresh Response → mutable headers
-  // Drop any 401-era clearing cookie, then hand the browser the fresh one.
+  // Drop any signed-out-era clearing cookie, then hand the browser the fresh
+  // one. Deleting FIRST is load-bearing: Headers.delete removes every
+  // Set-Cookie, so the other order would delete the fresh cookie too.
   out.headers.delete('Set-Cookie')
-  out.headers.append('Set-Cookie', setCookie)
+  out.headers.append('Set-Cookie', plan.setCookie)
   return out
 }
 
@@ -118,7 +119,7 @@ async function withRepair(
 // same FleetDO, same reply/reaction rendering), moved out of WAY's dashboard
 // so the only chat in the product lives in one place.
 app.get('/chat', async (c) => {
-  const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+  const user = await getHomeUserFromCookie(c.env.HOME_DB, readCookie(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
   return c.html(<ModuleShell kind="chat" displayName={user.display_name || user.username} />)
 })
@@ -126,7 +127,7 @@ app.get('/chat', async (c) => {
 // it is only ever served to a live Home session (like WAY's and Laoka's).
 for (const p of ['/chat/', '/chat/index.html']) {
   app.get(p, async (c) => {
-    const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+    const user = await getHomeUserFromCookie(c.env.HOME_DB, readCookie(c.req.raw, HOME_COOKIE))
     if (!user) return c.redirect('/login')
     return c.env.ASSETS.fetch(new Request(new URL('/chat/index.html', c.req.url), { headers: c.req.raw.headers }))
   })
@@ -228,7 +229,7 @@ app.all('/way/api/*', (c) => wayApi(c.req.raw, c.env))
 // chromeless — same engine, same chrome, no separate app look.
 app.get('/way', (c) => c.redirect('/way/'))
 app.get('/way/', async (c) => {
-  const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+  const user = await getHomeUserFromCookie(c.env.HOME_DB, readCookie(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
   return c.html(<ModuleShell kind="way" displayName={user.display_name || user.username} />)
 })
@@ -236,7 +237,7 @@ app.get('/way/', async (c) => {
 // sends this path through the Worker so it only ever leaves the server with
 // a live Home session — the standalone UI never renders signed-out.
 app.get('/way/index.html', async (c) => {
-  const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+  const user = await getHomeUserFromCookie(c.env.HOME_DB, readCookie(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
   return c.env.ASSETS.fetch(new Request(new URL('/way/index.html', c.req.url), { headers: c.req.raw.headers }))
 })
@@ -253,42 +254,31 @@ async function laokaApi(request: Request, env: Env, ctx: { waitUntil(p: Promise<
   // Laoka's internal routes are /api/*: strip the /laoka prefix, then let
   // its own router authenticate, provision-guard and dispatch.
   const innerUrl = new URL(url.pathname.replace(/^\/laoka/, '') + url.search, url.origin)
-  const res = await withRepair(request, env, 'laoka', (req) => handleLaoka(new Request(innerUrl, req), env, ctx))
-  // Laoka reports "no session" as 200 {user:null} on its public /auth/me;
-  // catch that too so a stale laoka cookie still gets repaired.
-  if (res.status === 200) {
-    const ct = res.headers.get('content-type') || ''
-    if (ct.includes('application/json') && url.pathname.endsWith('/api/auth/me')) {
+  return withRepair(
+    request, env, 'laoka',
+    (req) => handleLaoka(new Request(innerUrl, req), env, ctx),
+    async (res) => {
+      if (res.status === 401) return true
+      // Laoka reports "no session" as 200 {user:null} on its public
+      // /auth/me; catch that too so a stale laoka cookie still gets repaired.
+      if (res.status !== 200) return false
+      const ct = res.headers.get('content-type') || ''
+      if (!ct.includes('application/json') || !url.pathname.endsWith('/api/auth/me')) return false
       try {
         // Peek via a clone: the original body must stay consumable when the
-        // response passes through untouched.
+        // response passes through untouched (nothing needed repairing).
         const data = (await res.clone().json()) as { user?: unknown }
-        if (!data.user) return repairLaoka(request, env, ctx)
-      } catch { /* fall through */ }
-    }
-  }
-  return res
-}
-
-async function repairLaoka(request: Request, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<Response> {
-  const url = new URL(request.url)
-  const innerUrl = new URL(url.pathname.replace(/^\/laoka/, '') + url.search, url.origin)
-  const homeToken = getCookieFrom(request, 'home_session')
-  const homeUser = await getHomeUserFromCookie(env.HOME_DB, homeToken)
-  if (!homeUser) return new Response(JSON.stringify({ ok: false, user: null }), { status: 200, headers: { 'content-type': 'application/json' } })
-
-  const setCookie = await promoteSession(env, 'laoka', homeUser, isSecureRequest(url.origin))
-  if (!setCookie) return new Response(JSON.stringify({ ok: false, user: null }), { status: 200, headers: { 'content-type': 'application/json' } })
-
-  const pair = setCookie.split(';')[0]!
-  const prior = request.headers.get('Cookie')
-  const retryReq = new Request(innerUrl, request)
-  retryReq.headers.set('Cookie', prior ? prior + '; ' + pair : pair)
-  const retry = await handleLaoka(new Request(innerUrl, retryReq), env, ctx)
-  const out = new Response(retry.body, retry)
-  out.headers.delete('Set-Cookie')
-  out.headers.append('Set-Cookie', setCookie)
-  return out
+        return !data.user
+      } catch { return false }
+    },
+    // What the old repairLaoka answered when ITS trigger (the 200-no-user
+    // form) fired but there was nothing to repair: a 200 the SPA reads as
+    // no-user. Only that trigger gets this shape — an anonymous 401 keeps its
+    // own, which is what every other module API answers too.
+    (res) => (res.status === 200
+      ? new Response(JSON.stringify({ ok: false, user: null }), { status: 200, headers: { 'content-type': 'application/json' } })
+      : res),
+  )
 }
 
 app.all('/laoka/api/*', (c) => laokaApi(c.req.raw, c.env, execCtx(c)))
@@ -296,7 +286,7 @@ app.all('/laoka/api/*', (c) => laokaApi(c.req.raw, c.env, execCtx(c)))
 // THE LAOKA tab: authenticated shell page embedding the Laoka SPA chromeless.
 app.get('/laoka', (c) => c.redirect('/laoka/'))
 app.get('/laoka/', async (c) => {
-  const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+  const user = await getHomeUserFromCookie(c.env.HOME_DB, readCookie(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
   // `?tab=` is carried into the module's own document (Laoka reads it at boot),
   // which is what lets a link land on the Pantry rather than the week plan.
@@ -305,7 +295,7 @@ app.get('/laoka/', async (c) => {
 // Chromeless module document for the shell's fetch (edge-side otherwise;
 // gated here so the signed-out UI never renders).
 app.get('/laoka/index.html', async (c) => {
-  const user = await getHomeUserFromCookie(c.env.HOME_DB, getCookieFrom(c.req.raw, HOME_COOKIE))
+  const user = await getHomeUserFromCookie(c.env.HOME_DB, readCookie(c.req.raw, HOME_COOKIE))
   if (!user) return c.redirect('/login')
   return c.env.ASSETS.fetch(new Request(new URL('/laoka/index.html', c.req.url), { headers: c.req.raw.headers }))
 })
@@ -352,15 +342,3 @@ export default {
   },
 } satisfies ExportedHandler<Env>
 
-// ── tiny cookie helper (raw header level) ────────────────────────
-
-function getCookieFrom(request: Request, name: string): string | undefined {
-  const header = request.headers.get('Cookie')
-  if (!header) return undefined
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=')
-    if (idx === -1) continue
-    if (part.slice(0, idx).trim() === name) return part.slice(idx + 1).trim()
-  }
-  return undefined
-}

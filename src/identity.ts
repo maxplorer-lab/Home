@@ -29,6 +29,7 @@
 // must never break the central login itself.
 
 import type { Env } from './env'
+import { setCookieValue } from './lib/cookies'
 
 // ── Cookie names (one per module, all Path=/ on this origin) ─────
 export const HOME_COOKIE = 'home_session'
@@ -373,22 +374,9 @@ export async function ensureModuleAccounts(env: Env, user: HomeUser, password: s
 }
 
 // ── Module session minting ───────────────────────────────────────
-
-function isSecureRequest(url: string): boolean {
-  try {
-    const u = new URL(url)
-    if (u.protocol === 'https:') return true
-    // Browsers treat loopback as trustworthy; plain-HTTP LAN IPs must NOT
-    // get Secure cookies or login would silently not stick.
-    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]'
-  } catch {
-    return true
-  }
-}
-
-function cookieValue(name: string, token: string, secure: boolean, maxAgeSeconds: number): string {
-  return `${name}=${token}; Path=/; HttpOnly;${secure ? ' Secure;' : ''} SameSite=Lax; Max-Age=${maxAgeSeconds}`
-}
+// The Set-Cookie SHAPE lives in src/lib/cookies.ts (one vocabulary for the
+// whole app); this file only decides WHICH cookies a login mints, and
+// whether the person's module account has to be created first.
 
 interface MintedCookie {
   name: string
@@ -411,7 +399,7 @@ export async function mintModuleCookies(env: Env, user: HomeUser, secure: boolea
       const expires = new Date(Date.now() + MODULE_SESSION_SECONDS * 1000).toISOString()
       await env.DB.prepare('INSERT INTO sessions (id, user_id, token, expires_at) VALUES (?1, ?2, ?3, ?4)')
         .bind(crypto.randomUUID(), accounts.sompitra.id, token, expires).run()
-      out.push({ name: SOMPITRA_COOKIE, value: cookieValue(SOMPITRA_COOKIE, token, secure, MODULE_SESSION_SECONDS) })
+      out.push({ name: SOMPITRA_COOKIE, value: setCookieValue(SOMPITRA_COOKIE, token, MODULE_SESSION_SECONDS, secure) })
     } catch { /* skip */ }
   }
 
@@ -422,7 +410,7 @@ export async function mintModuleCookies(env: Env, user: HomeUser, secure: boolea
         { userId: accounts.way.id, username: accounts.way.username, exp: Math.floor(Date.now() / 1000) + MODULE_SESSION_SECONDS },
         env.SESSION_SECRET,
       )
-      out.push({ name: WAY_COOKIE, value: cookieValue(WAY_COOKIE, token, secure, MODULE_SESSION_SECONDS) })
+      out.push({ name: WAY_COOKIE, value: setCookieValue(WAY_COOKIE, token, MODULE_SESSION_SECONDS, secure) })
     } catch { /* skip */ }
   }
 
@@ -434,21 +422,17 @@ export async function mintModuleCookies(env: Env, user: HomeUser, secure: boolea
       await env.LAOKA_DB.prepare(
         "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))"
       ).bind(hash, accounts.laoka.id, '+' + LAOKA_SESSION_DAYS + ' days').run()
-      out.push({ name: LAOKA_COOKIE, value: cookieValue(LAOKA_COOKIE, token, secure, LAOKA_SESSION_DAYS * 24 * 60 * 60) })
+      out.push({ name: LAOKA_COOKIE, value: setCookieValue(LAOKA_COOKIE, token, LAOKA_SESSION_DAYS * 24 * 60 * 60, secure) })
     } catch { /* skip */ }
   }
 
   return out
 }
 
-/** Auto-repair: mint ONE module's cookie (used when a browser arrives with a
- * live Home session but no/stale module cookie). Returns the Set-Cookie
- * value or null. */
-export async function promoteSession(env: Env, target: 'sompitra' | 'way' | 'laoka', user: HomeUser, secure: boolean): Promise<string | null> {
-  const cookies = await mintModuleCookies(env, user, secure)
-  const want = target === 'sompitra' ? SOMPITRA_COOKIE : target === 'way' ? WAY_COOKIE : LAOKA_COOKIE
-  return cookies.find((c) => c.name === want)?.value ?? null
-}
+// Auto-repair (mint ONE module's cookie for a live Home session) is the rule
+// in src/lib/session-repair.ts. It calls mintModuleCookies above; it lives
+// there because "mint all, hand back the target's" IS the repair decision,
+// while this file owns accounts and login-side minting.
 
 // ── Notification channels (TWO per person, app-wide) ─────────────
 // The channels belong to the PERSON, not to a module: a phone follows two
@@ -665,9 +649,6 @@ export async function setHomeSetting(db: D1Database, key: string, value: string)
 }
 
 // ── Unified logout ───────────────────────────────────────────────
-
-export function clearCookieValue(name: string, secure: boolean): string {
-  return `${name}=; Path=/; HttpOnly;${secure ? ' Secure;' : ''} SameSite=Lax; Max-Age=0`
-}
-
-export { isSecureRequest }
+// The clear-cookie and set-cookie SHAPES are one vocabulary -- see
+// src/lib/cookies.ts (clearCookieValue). Logout builds its own headers in
+// src/routes/auth.tsx.

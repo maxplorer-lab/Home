@@ -1,7 +1,7 @@
 // Worker entry point. Routes API and socket traffic, and serves the single page
 // app from static assets for everything else.
 
-import { ok, fail } from './lib/http.js';
+import { ok, fail, messageOf } from './lib/http.js';
 import { requireUser } from './lib/auth.js';
 import { lobbyStub } from './lib/notify.js';
 import { Lobby } from './durable/lobby.js';
@@ -17,9 +17,19 @@ import { weekStartFor, todayInNairobi, addDays } from './lib/dates.js';
 
 export { Lobby };
 
-// Auth routes come first and are marked public: they are how a session is
-// obtained. Everything else needs one.
-const ROUTES = [].concat(authRoutes, catalogRoutes, weekRoutes, shoppingRoutes, pantryRoutes, exportRoutes, adminRoutes);
+/** One row of the route table. Auth routes come first and are marked public:
+ * they are how a session is obtained, and everything else needs one. The route
+ * modules export these arrays, so the table is their UNION — which is why the
+ * annotation is here and not on each file: `[].concat(...)` of seven exported
+ * arrays has no single inferred element type, and the type pass reported the
+ * overload rather than trusting it (rule 45).
+ * @typedef {{ method: string, pattern: string, public?: boolean, handler: (ctx: any) => Promise<Response> | Response }} Route */
+
+/** @type {Route[]} */
+const ROUTES = [
+  ...authRoutes, ...catalogRoutes, ...weekRoutes, ...shoppingRoutes,
+  ...pantryRoutes, ...exportRoutes, ...adminRoutes,
+];
 
 function matchRoute(pattern, parts) {
   const expected = pattern.split('/').filter(Boolean);
@@ -114,7 +124,7 @@ export default {
       try {
         return await found.route.handler(context);
       } catch (err) {
-        return fail(500, 'request failed: ' + (err && err.message ? err.message : 'unknown error'));
+        return fail(500, 'request failed: ' + (messageOf(err) || 'unknown error'));
       }
     }
 

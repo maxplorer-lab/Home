@@ -32,19 +32,29 @@
 //   9. no silent map reversion           20. the live share (one code, one device)
 //   9b. the HUD reads what the tracker sends
 //  10. unified settings & channels       21. Settings → Map: the share row
-//  11. two channels per person           22. two shopping lists
-//  23. a number is typed, never nudged   24. no request data in module scope
-//  25. no request data on a DO's `this`
-//  26. one design language (tokens, labels, the front door)
+//  11. two channels per person           22. two shopping lists//   23. a number is typed, never nudged   24. no request data in module scope
+//   25. no request data on a DO's `this`
+//   26. one design language (tokens, labels, the front door)
+//   27. Kiné has one ledger
+//   28. the rule → guard map (the docs' promises)
+//   29. the JavaScript type pass (every .js under src/)
 // Exit code 0 = all green, 1 = something regressed.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { scanModuleState, formatFindings } from './lib/module-state.mjs'
 import { scanDoState, formatDoFaults, stripJsonc, DO_STATE_POLICY } from './lib/do-state.mjs'
+import {
+  REFRESH_HINT, banLiveFetch, centreFrom, judgeBasemaps, liveReader, readRecord, recordReader,
+} from './lib/basemap-record.mjs'
 
 const BASE = (process.env.BASE_URL || 'http://127.0.0.1:8787').replace(/\/$/, '')
+// The repo itself, for the basemap RECORD (§9): the suite judges a copy of the
+// tile host kept in scripts/fixtures/basemaps/ unless SMOKE_LIVE=1 asks for the
+// real thing, so a red means upstream or this repo changed — never the network.
+const repoRoot = fileURLToPath(new URL('../', import.meta.url))
 const USER = process.env.SMOKE_USER || 'maxx'
 const PASS = process.env.SMOKE_PASS || 'adminpass123'
 const ADMIN = process.env.SMOKE_ADMIN !== '0'   // set SMOKE_ADMIN=0 to skip /admin
@@ -397,14 +407,51 @@ jar.clear(); for (const [k, v] of saved) jar.set(k, v)
 
 // ─── 8. auto-repair from home_session alone ──────────────────────
 log('\n8. Session auto-repair (one cookie, every module)')
+const fullJar = new Map(jar)        // restored below: the rest of the suite runs logged in
 const homeOnly = jar.get('home_session')
-jar.clear()
-if (homeOnly) jar.set('home_session', homeOnly)
-else bad('home_session present for repair test', 'missing')
-for (const p of ['/', '/way/api/devices', '/laoka/api/bootstrap']) {
+// Every module's signed-out shape, and the cookie a repair must hand back.
+// The first three legs say "no session" loudly (401 / redirect); Laoka's
+// public /auth/me answers 200 {user:null}, so on that leg the BODY is the
+// evidence and the status alone proves nothing.
+for (const [p, want] of [
+  ['/', 'session'],
+  ['/way/api/devices', 'way_user_session'],
+  ['/laoka/api/bootstrap', 'laoka_session'],
+  ['/laoka/api/auth/me', 'laoka_session'],
+]) {
+  jar.clear()
+  if (homeOnly) jar.set('home_session', homeOnly)
+  else bad('home_session present for repair test', 'missing')
+
+  const meLeg = p.endsWith('/api/auth/me')
+  const readable = async (res) => (await res.clone().json().catch(() => ({}))).user
+
   const r = await req(p)
-  check(`${p} repairs from home_session alone → 200`, r.status === 200, `status ${r.status}`)
+  const handed = r.headers.getSetCookie?.() ?? []
+  const fresh = handed.find((c) => c.startsWith(want + '=')) || ''
+  const repaired = meLeg ? Boolean(await readable(r)) : r.status === 200
+  check(`${p} repairs from home_session alone → ${meLeg ? 'a real user' : '200'}`, repaired,
+    meLeg ? `status ${r.status}, user null — a 200 alone is what signed-OUT looks like on this route` : `status ${r.status}`)
+
+  // The repair has to reach the BROWSER, not just this one response: with no
+  // fresh cookie on the way out, every request after this one repairs again.
+  // Exactly ONE Set-Cookie — a stale clearing cookie left beside it can win
+  // in clients that keep the last value.
+  check(`${p} hands the browser the fresh ${want} cookie`,
+    Boolean(fresh) && handed.length === 1 && !/max-age=0/i.test(fresh),
+    `${handed.length} Set-Cookie header(s)${fresh ? '' : `, none for ${want}`} — a repair the browser never receives is a repair on every request`)
+
+  // …and the cookie it hands over must BE a session: replay it ALONE, with no
+  // home_session left to repair from, or the 200 above proved nothing.
+  jar.clear()
+  if (fresh) jar.set(want, fresh.split(';')[0].slice(want.length + 1))
+  const replay = await req(p)
+  const stillIn = meLeg ? Boolean(await readable(replay)) : replay.status === 200
+  check(`${p} stays signed in on the cookie the repair handed back`, stillIn,
+    `status ${replay.status} — the repair minted a cookie the module does not accept`)
 }
+jar.clear()
+for (const [k, v] of fullJar) jar.set(k, v)
 
 // ─── 9. no silent map reversion ──────────────────────────────────
 log('\n9. WAY basemap stays where the user put it')
@@ -435,26 +482,200 @@ log('\n9. WAY basemap stays where the user put it')
   // read as VALUES rather than by grepping the file: a guard that trips on the
   // comment explaining the fix is the documented trap (section 18) — and it
   // tripped here first.
-  const basemapUrls = [...basemapSrc.matchAll(/url:\s*'([^']+)'/g)].map((m) => m[1])
+  // How a key is drawn, read as a VALUE: `style` is a vector style handed to
+  // MapLibre, `url` is a raster tile template. The module's own header names the
+  // host that blocked us, so neither is found by grepping the file — a guard that
+  // trips on the comment explaining the fix is the documented trap (section 18),
+  // and it tripped here first.
+  const endpoints = [...basemapSrc.matchAll(/\b(style|url):\s*'([^']+)'/g)]
+    .map((m) => ({ kind: m[1], url: m[2] }))
+  // …and the tiles a RASTER key stacks on top of its url (`overlays`): every one
+  // of them is a request with the same ways to be wrong as the url itself.
+  const overlayUrls = [...basemapSrc.matchAll(/overlays:\s*\[([^\]]*)\]/g)]
+    .flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)].map((u) => u[1]))
+  const tileUrls = endpoints.filter((e) => e.kind === 'url').map((e) => e.url).concat(overlayUrls)
+  const everyUrl = endpoints.map((e) => e.url).concat(overlayUrls)
   check('…and neither does the household map',
     !/tile\.openstreetmap\.org/.test(way) && way.includes('/shared/basemaps.js') &&
-      !basemapUrls.some((u) => /tile\.openstreetmap\.org/.test(u)),
-    `a tile URL is inlined in a page again (or a basemap points at the volunteer server): ${basemapUrls.join(' ') || 'none'} — one provider changing its mind can then break one map while the other looks fine, and nothing here would say which`)
+      !everyUrl.some((u) => /tile\.openstreetmap\.org/.test(u)),
+    `a tile URL is inlined in a page again (or a basemap points at the volunteer server): ${everyUrl.join(' ') || 'none'} — one provider changing its mind can then break one map while the other looks fine, and nothing here would say which`)
   // Each basemap, read as its OWN block. The first version of this check grepped
   // the whole module for a credit: stripping ONE basemap's attribution passed,
   // because the other basemap's mention satisfied the grep — found by falsifying
   // it, which is the only reason to write a guard at all.
   const basemapBlocks = [...basemapSrc.matchAll(/([a-z]+):\s*\{([\s\S]*?)\n\s*\},/g)]
     .map((m) => ({ key: m[1], body: m[2] }))
-  const credited = basemapBlocks.filter((b) =>
-    /attribution:\s*'[^']*Esri[^']*'/.test(b.body) && /attribution:\s*'[^']*OpenStreetMap contributors[^']*'/.test(b.body))
+  // A host we may draw from, and the credit its licence requires — one table,
+  // because those are the same obligation: a host that is NOT in here fails on
+  // purpose, so a new provider means reading its terms and writing them down
+  // rather than pasting a URL and hoping.
+  const hostCredit = { 'tiles.openfreemap.org': 'OpenFreeMap', 'server.arcgisonline.com': 'Esri' }
+  const hostOf = (url) => (url.match(/^https:\/\/([^/]+)\//) || [])[1]
+  const creditedFor = (body) => {
+    const url = (body.match(/\b(?:style|url):\s*'([^']+)'/) || [])[1] || ''
+    const credit = hostCredit[hostOf(url)]
+    return !!credit && new RegExp(`attribution:\\s*'[^']*${credit}[^']*'`).test(body) &&
+      /attribution:\s*'[^']*OpenStreetMap contributors[^']*'/.test(body)
+  }
   check('every basemap is https, and each one names who to credit',
-    basemapUrls.length >= 2 && basemapUrls.length === basemapBlocks.length &&
-      basemapUrls.every((u) => u.startsWith('https://')) && credited.length === basemapBlocks.length,
-    `${basemapUrls.length} url(s) for ${basemapBlocks.length} basemap(s); credited: ${credited.map((b) => b.key).join(', ') || 'none'} — the credit is a condition of using someone's tiles rather than decoration, and an http tile on an https page is blocked by the browser before anyone sees it`)
-  check('the tile path is Esri\u2019s {z}/{y}/{x}, not OSM\u2019s {z}/{x}/{y}',
-    basemapUrls.every((u) => /\/tile\/\{z\}\/\{y\}\/\{x\}/.test(u)),
-    `${basemapUrls.join(' ')} — row before column; swapping the two by hand draws the right zoom of the wrong place, which reads as "the map is wrong" rather than "the URL is wrong"`)
+    basemapBlocks.length >= 2 && everyUrl.every((u) => u.startsWith('https://')) &&
+      basemapBlocks.filter((b) => creditedFor(b.body)).length === basemapBlocks.length,
+    `${basemapBlocks.length} basemap(s), ${everyUrl.length} request URL(s); credited: ${basemapBlocks.filter((b) => creditedFor(b.body)).map((b) => b.key).join(', ') || 'none'} — an http tile on an https page is blocked by the browser before anyone sees it, and the credit is a condition of using somebody's tiles rather than decoration`)
+  check('each basemap says how it is drawn, exactly once',
+    endpoints.length === basemapBlocks.length &&
+      basemapBlocks.every((b) => /(^|\n)\s*(style|url):\s*'https:/.test(b.body)),
+    `${endpoints.length} endpoint(s) for ${basemapBlocks.length} basemap(s) — a key that names neither a style nor a url draws nothing at all, and one that names both leaves the page to guess which it meant`)
+  // The household's complaint that produced all of this was "esri is not detailed
+  // enough, just a colored version of the lite basemap", and then, given a better
+  // raster: "you just bolded the street names, and very few places". The labelled
+  // key IS the answer to that: a vector key asks for the tuned label set
+  // (`dense: true`, see /shared/basemap-style.js), a raster key for the reference
+  // layers stacked on it — and either way the fault being guarded is a labelled
+  // key that asks for NOTHING beyond the base canvas, because that map looks
+  // perfectly healthy while it is exactly the one the household was looking at.
+  const labelled = basemapBlocks.find((b) => b.key === 'streets')
+  check('the labelled basemap asks for more names than the plain canvas',
+    Boolean(labelled) && (/dense:\s*true/.test(labelled.body) || /overlays:\s*\[[\s\S]*?'https:/.test(labelled.body)),
+    `${labelled ? labelled.key : 'streets'} asks for neither the dense label set nor a reference layer — a labelled key that draws the base canvas unchanged is the coloured-background complaint this key exists to answer`)
+  // The one thing easy to get wrong per RASTER host: the order of the
+  // placeholders. Esri's path is /tile/{z}/{y}/{x} — ROW before COLUMN, the
+  // reverse of OSM's {z}/{x}/{y} — so a URL pasted from somewhere else draws the
+  // right zoom of the wrong place, which reads as "the map is wrong" rather than
+  // "the URL is wrong".
+  const tileOrderByHost = { 'server.arcgisonline.com': ['z', 'y', 'x'] }
+  const wrongOrder = tileUrls.filter((u) => {
+    const want = tileOrderByHost[hostOf(u)]
+    return !want || [...u.matchAll(/\{(z|x|y)\}/g)].map((m) => m[1]).join('/') !== want.join('/')
+  })
+  check('every raster tile URL uses the placeholder order its own host declares',
+    wrongOrder.length === 0,
+    `${tileUrls.join(' ') || 'no raster keys declared'} — row before column on Esri; swapping the two by hand draws the right zoom of the wrong place, which reads as "the map is wrong" rather than "the URL is wrong"`)
+  // …and a background is only drawn if the PAGES ask the shared path for it. Both
+  // maps draw through /shared/basemap-layer.js and neither builds a layer of its
+  // own: a page carrying its own L.tileLayer/L.maplibreGL is how the two maps
+  // ended up on different providers with nothing in the middle saying so
+  // (2026-09-20), and how a page can keep drawing a background the module has
+  // stopped declaring.
+  const ownLayer = (page) => /L\.(tileLayer|maplibreGL)\(/.test(page)
+  check('both maps draw the background through the one shared path',
+    way.includes('/shared/basemap-layer.js') && live.includes('/shared/basemap-layer.js') &&
+      /HomeBasemapLayer\.show\(/.test(way) && /HomeBasemapLayer\.show\(/.test(live) &&
+      !ownLayer(way) && !ownLayer(live),
+    `the household map ${ownLayer(way) ? 'builds its own layer' : 'uses the shared path'} and the share ${ownLayer(live) ? 'builds its own layer' : 'uses the shared path'} — a background drawn outside /shared/basemap-layer.js is checked by nothing here, and the two maps can then disagree about what the same key means`)
+  // The style a key draws is somebody else's file, so the suite runs the REAL
+  // tuner over it (that file loads into a bare window: rule 41) and reads back
+  // what the tuner could not find or could not change. That report is the only
+  // signal that upstream renamed a label layer: the map keeps rendering perfectly
+  // without the labels anyone came for, which is the fault this whole change was
+  // about.
+  const styleMod = await body(await req('/shared/basemap-style.js'))
+  const tunerWindow = {}
+  try { new Function('window', styleMod)(tunerWindow) } catch (e) { /* reported below */ }
+  const tuner = tunerWindow.HomeBasemapStyle
+  // Everything from here down judges SOMEBODY ELSE'S bytes, and those bytes are a
+  // RECORD now — `scripts/fixtures/basemaps/`, written by `npm run basemaps:record`
+  // — so a red means upstream or this repo changed, never that the network was
+  // down. `SMOKE_LIVE=1` asks the real servers instead (for when the question IS
+  // "has upstream moved?"), and `npm run audit:basemaps` asks the same question in
+  // CI with no server and no network at all: same walk, same judgment, one module.
+  const keys = basemapBlocks.map((b) => ({
+    key: b.key,
+    style: (b.body.match(/\bstyle:\s*'([^']+)'/) || [])[1] || '',
+    dense: /dense:\s*true/.test(b.body),
+  }))
+  const centre = centreFrom(way)
+  const record = readRecord(repoRoot)
+  // `live` is already the share page's body in this section — this flag is the
+  // other sense of the word, so it carries its own name.
+  const liveUpstream = process.env.SMOKE_LIVE === '1'
+  const tuneFaults = []
+  const flatFaults = []
+  const paintFaults = []
+  const controlFaults = []
+  const paintJudged = new Set()
+  const sourceHosts = []
+  let sawExtrusions = 0
+  let controlSaw = ''
+  let unreachable = ''
+  if (!liveUpstream && !record) {
+    // No record and no permission to fetch: the checks below cannot answer at all,
+    // and saying so is the point — a missing record is a fault in THIS repo
+    // (`npm run basemaps:record`), not something to paper over with a live call.
+    unreachable = `there is no recorded upstream — ${REFRESH_HINT}`
+  } else {
+    // Record mode REFUSES the recorded hosts, so "the suite runs without network"
+    // is a property of the run rather than a hope about the machine it runs on.
+    const restore = liveUpstream ? () => {} : banLiveFetch()
+    let judged = { findings: [], summary: {} }
+    try {
+      judged = await judgeBasemaps({
+        keys,
+        centre,
+        tuner,
+        read: liveUpstream ? liveReader() : recordReader({ root: repoRoot, record }),
+        fetchedAt: liveUpstream ? new Date().toISOString() : (record ? record.recordedAt : ''),
+      })
+    } finally { restore() }
+    sourceHosts.push(...(judged.summary.hosts || []))
+    const bucket = { labels: tuneFaults, flat: flatFaults, paint: paintFaults, control: controlFaults }
+    for (const f of judged.findings) {
+      if (f.level === 'unreachable') { unreachable = unreachable || f.message; continue }
+      if (f.level === 'stale') { log(`  \x1b[90m• ${f.message}\x1b[0m`); continue }
+      bucket[f.concern] ? bucket[f.concern].push(f.message) : tuneFaults.push(f.message)
+    }
+    sawExtrusions = judged.summary.sawExtrusions || 0
+    for (const line of judged.summary.judged || []) paintJudged.add(line.split(' ')[0])
+    const emptyTile = (judged.summary.sampled || []).find((s) => s.view.startsWith('empty@'))
+    if (emptyTile) controlSaw = `z${emptyTile.view.split('@')[1]} over open water carries ${emptyTile.layers.length ? emptyTile.layers.map((l) => l.name).join(', ') : 'no layers'} in ${emptyTile.bytes}B`
+    log(`  \x1b[90m• basemap upstream: ${liveUpstream ? 'fetched LIVE' : `read from the record written ${record.recordedAt.slice(0, 10)}`}\x1b[0m`)
+  }
+  // Only a LIVE read has an excuse: when SMOKE_LIVE=1 asks the real servers and
+  // there is no route, these checks say NOT VERIFIED out loud rather than counting
+  // a fetch they never made as clean. The record has no such excuse — it ships
+  // with the repo, so a URL missing from it is a fault in THIS repo.
+  check('the style each key draws still has the label layers the tuner rewrites',
+    // A tuner with nothing listed is not a tuner: an emptied table would make
+    // every fault below unreachable, which is the shape of hole this whole file
+    // keeps finding (a check that passes because its subject is gone).
+    unreachable ? true
+      : (tuner && typeof tuner.tune === 'function' && Object.keys(tuner.DENSE).length > 0 && tuneFaults.length === 0),
+    unreachable ? `NOT VERIFIED — ${unreachable}` : `${tuneFaults.join('; ') || `${Object.keys((tuner && tuner.DENSE) || {}).length} label layer(s) declared, and every one of them there and tuned`}`)
+  check('a style draws no 3D, and loses no footprint with it',
+    // Same discipline as the label table above: an emptied declaration is not a
+    // declaration, and a style set that has stopped drawing 3D at all means this
+    // guard has lost its subject rather than that flatness got cheaper.
+    unreachable ? true
+      : (tuner && typeof tuner.tune === 'function' && Object.keys(tuner.FLAT || {}).length > 0 &&
+        flatFaults.length === 0 && sawExtrusions > 0),
+    unreachable ? `NOT VERIFIED — ${unreachable}`
+      : (flatFaults.join('; ') || (sawExtrusions === 0
+          ? 'no style draws 3D any more, so the FLAT declaration has no subject left — delete it rather than leave a check that passes for free'
+          : `${sawExtrusions} 3D layer(s) upstream, none drawn, every footprint still covered`)))
+  check('the tiles a key\'s style draws come from a host we declare and credit',
+    unreachable ? true : sourceHosts.length > 0 && sourceHosts.every((h) => !!hostCredit[h]),
+    unreachable ? `NOT VERIFIED — ${unreachable}` : `${sourceHosts.join(', ') || 'the style names no tile source'} — a host that is not in hostCredit is one nobody has read the terms of`)
+  // ── …and the map must actually PAINT at the household's own view ──────────
+  // The walk, the reader and the requirements live in scripts/lib/basemap-record.mjs
+  // so that this section, `npm run basemaps:record` and `npm run audit:basemaps`
+  // judge the same bytes in the same order. One habit of that walk is worth
+  // naming: an extra request past a source's native zoom is answered `200` with a
+  // ZERO-BYTE body, so the fixture samples the source's OWN deepest zoom and reads
+  // the layers out of the payload instead of trusting a status code.
+  check('the basemap actually paints at the household\'s own street level',
+    // Only a LIVE read can be told "the network was down": the record answers on
+    // its own, which is the whole reason it exists. So NOT VERIFIED here means
+    // SMOKE_LIVE=1 with no route, or a repo with no record at all — and an
+    // offline machine reading the recorded upstream reads exactly like a green
+    // one, on purpose.
+    unreachable ? true : paintFaults.length === 0 && paintJudged.size === basemapBlocks.length,
+    unreachable ? `NOT VERIFIED — ${unreachable}`
+      : (paintFaults.join('; ') || (paintJudged.size === basemapBlocks.length
+        ? `${[...paintJudged].join('; ')} — real data at the household's own view (${liveUpstream ? 'fetched live' : `read from the record written ${record ? record.recordedAt.slice(0, 10) : '?'}`})`
+        : `${basemapBlocks.length - paintJudged.size} of ${basemapBlocks.length} key(s) are a background this check does not judge — a raster key needs its own half of this check, a real tile rather than the flat few-hundred-byte block, before its URL can be added here`)))
+  check('…and a tile with nothing in it fails that check',
+    unreachable ? true : controlFaults.length === 0,
+    unreachable ? `NOT VERIFIED — ${unreachable}`
+      : (controlFaults.join('; ') || `${controlSaw || 'the empty view'}, none of them building/transportation/place — so the check above is one a blank tile cannot slip past`))
   check('the basemap module serves both maps',
     basemaps.status === 200 && /javascript/.test(basemaps.headers.get('content-type') || '') &&
       /HomeBasemaps/.test(basemapSrc) && /(^|\s)lite:\s*\{/.test(basemapSrc) && /(^|\s)streets:\s*\{/.test(basemapSrc),
@@ -1116,6 +1337,21 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // value that decides how a track looks is still exactly what it was.
   const way = await body(await req('/way/index.html'))
 
+  // The map's engines, loaded ONCE for the whole section: the files the page
+  // itself loads, evaluated into a bare window (no DOM, no Leaflet). Reading them
+  // here rather than rebuilding them from the HTML below is the point of the
+  // extraction — see the note where they are used.
+  const geoJs = await body(await req('/shared/geo.js'))
+  const meetJs = await body(await req('/shared/meet.js'))
+  const stripJs = await body(await req('/shared/meet-strip.js'))
+  const legsJs = await body(await req('/shared/trip-legs.js'))
+  const engines = {}
+  let enginesErr = null
+  for (const src of [geoJs, meetJs, stripJs, legsJs]) {
+    try { new Function('window', src)(engines) } catch (e) { enginesErr = e }
+  }
+  const GEO = engines.HomeGeo, MEET = engines.HomeMeet, STRIP = engines.HomeMeetStrip, TRIP = engines.HomeTripLegs
+
   check('the playback loop is in the page that is actually served',
     way.includes('startPlaybackLoop()') && way.includes('PLAYBACK_LAG_SECONDS') && way.includes('function playbackTick('),
     'the served /way/index.html has no playback loop')
@@ -1331,10 +1567,10 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
 
   // The Trips summary is a DIFFERENT data path on purpose, and it must stay one:
   // it is the household's own numbers, read from the database.
-  const legs = fnBody(way, 'computeLegsForDay')
+  const legs = fnBody(legsJs, 'forDay')
   check('the Trips summary still sums the complete ping list, not the playback buffer',
     !!legs && !/markerPositions|playbackClock|trailFor|drawnIdx/.test(legs),
-    'computeLegsForDay reaches into the playback state')
+    'the legs engine reaches into the playback state, so what a day adds up to depends on what the screen is drawing')
 
   const totals = fnBody(way, 'loadMonthlyTotals')
   const historyOf = fnBody(way, 'fetchHistoryFor')
@@ -1733,7 +1969,7 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // always could. Read against production when this was fixed: 0 rows out of
   // 14,000+ carried a walked distance, so it was 0.0 km, every month.
   const monthFn = fnBody(wayCode, 'loadMonthlyTotals')
-  const legsFn = fnBody(wayCode, 'computeLegsForDay')
+  const legsFn = fnBody(legsJs, 'forDay')
   check('the month adds its km up with the same rule as the day',
     !!monthFn && monthFn.includes('computeLegsForDay(') && !/distance_km/.test(monthFn) &&
     !!legsFn && legsFn.includes('walkedKm'),
@@ -1744,8 +1980,10 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // same judgement made twice, in two languages. The two thresholds have to
   // match, or the map shows an arrival countdown for a drive the notifier
   // never fires on (and the badge never pulses).
-  const etaMin = Number((wayCode.match(/ETA_MIN_SPEED_KMH: ([0-9.]+)/) || [])[1])
-  const etaBearing = Number((wayCode.match(/ETA_MAX_BEARING_DIFF_DEG: ([0-9.]+)/) || [])[1])
+  // The HUD's thresholds are the verdict's now -- read out of the module the page
+  // reads them from, not out of a page literal.
+  const etaMin = MEET ? MEET.CONFIG.MIN_SPEED_KMH : NaN
+  const etaBearing = MEET ? MEET.CONFIG.MAX_BEARING_DIFF_DEG : NaN
   const doMin = Number((doCode.match(/APPROACH_MIN_SPEED_KMH = ([0-9.]+)/) || [])[1])
   const doBearing = Number((doCode.match(/APPROACH_MAX_BEARING_DIFF = ([0-9.]+)/) || [])[1])
   check('the HUD\'s ETA uses the same thresholds as the approach notification',
@@ -1765,81 +2003,105 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // The verdict itself is ONE function on purpose: the pill and the gauge under
   // the map both ask it, so they cannot disagree about the same pair. These
   // checks therefore read meetDecision, not the pill.
-  const meetFn = fnBody(wayCode, 'meetDecision')
-  const meetPillFn = fnBody(wayCode, 'meetEtaFor')
-  const meetStripFn = fnBody(wayCode, 'renderMeetStrip')
-  const meetScaleFn = fnBody(wayCode, 'meetStripScale')
-  const meetVelFn = fnBody(wayCode, 'meetVelocity')
-  const meetSettled = Number((wayCode.match(/MEET_ETA_SETTLED_M: ([0-9.]+)/) || [])[1])
-  const meetDcpa = Number((wayCode.match(/MEET_ETA_DCPA_MAX_M: ([0-9.]+)/) || [])[1])
-  // The bar's ladder is BUILT by the page from a band spec, so these checks run
-  // the real builder over the real bands: a copy of the numbers here would keep
-  // passing while the bar stepped by something else entirely. The array is read
-  // by BRACKET, not by regex: wayCode has its comments stripped, so a pattern
-  // anchored on the prose that follows would depend on which comment happened to
-  // sit there.
-  const stripBands = (() => {
-    const at = wayCode.indexOf('MEET_STRIP_BANDS_M:')
-    if (at === -1) return []
-    const open = wayCode.indexOf('[', at)
-    if (open === -1) return []
-    let depth = 0, i = open
-    for (; i < wayCode.length; i++) {
-      if (wayCode[i] === '[') depth++
-      else if (wayCode[i] === ']') { depth--; if (depth === 0) { i++; break } }
-    }
-    try { return JSON.parse(wayCode.slice(open, i).replace(/\/\/[^\n]*/g, '').replace(/\s+/g, '')) } catch (e) { return [] }
-  })()
-  const stripShrink = Number((wayCode.match(/MEET_STRIP_SHRINK_AT: ([0-9.]+)/) || [])[1])
-  const stripLadder = (() => {
-    const src = fnBody(wayCode, 'meetStripLadder')
-    if (!src || !stripBands.length) return []
-    try {
-      return new Function('CONFIG', 'return function meetStripLadder() ' + src)({ MEET_STRIP_BANDS_M: stripBands })()
-    } catch (e) { return [] }
-  })()
-  /** The page's own rung chooser, over the page's own ladder, with a FRESH
-   *  remembered index: every call starts where a first render would. */
-  const stripScaleAt = (dist) => {
-    const src = fnBody(wayCode, 'meetStripScale')
-    if (!src || !stripLadder.length) return null
-    try {
-      const f = new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;\nlet meetStripScaleKey = null;\nreturn function meetStripScale(dist, subjectKey) ' + src)
-      return f({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)(dist)
-    } catch (e) { return null }
+  // ── the map's engines are FILES now, and these checks RUN them ───────────
+  // Until now this section REBUILT them out of the served HTML: the rung chooser
+  // was re-created with `let meetStripScaleIdx = 0; let meetStripScaleKey =
+  // null;` hand-declared right here, the ladder's bands were recovered by
+  // walking brackets through a CONFIG literal, and the bar's subject half was
+  // stitched together with a hand-written list of what it referenced
+  // (stripDecl/stripRun below). A check that has to restate a module's internals
+  // to run it is the friction the extraction removes -- and what runs below is
+  // now the code the page itself runs, loaded from the file the page loads.
+  check('the map\'s engines are files that load into a bare window, and the page keeps no copy of them',
+    !enginesErr && !!GEO && !!MEET && !!STRIP && !!TRIP &&
+    typeof GEO.distanceMeters === 'function' && typeof GEO.compassPoint === 'function' &&
+    typeof MEET.create === 'function' && typeof STRIP.createScale === 'function' && typeof TRIP.create === 'function' &&
+    way.includes('/shared/geo.js') && way.includes('/shared/meet.js') &&
+    way.includes('/shared/meet-strip.js') && way.includes('/shared/trip-legs.js') &&
+    way.includes('HomeGeo.distanceMeters(') && way.includes('HomeMeet.create(') &&
+    way.includes('HomeMeetStrip.create(') && way.includes('HomeTripLegs.create(') &&
+    !way.includes('function meetDecision') && !way.includes('function meetVelocity') &&
+    !way.includes('function meetEtaFor') && !way.includes('function meetStripScale') &&
+    !way.includes('function meetStripLadder') && !way.includes('function stripRefTarget') &&
+    !way.includes('function stripPickerRows') && !way.includes('function meetStripTarget') &&
+    !way.includes('function meetStripTrend') && !way.includes('function meetStripCrossPair') &&
+    !way.includes('function bearingOfVector') && !/Math\.atan2\(Math\.sqrt\(a\), Math\.sqrt\(1 - a\)\)/.test(way),
+    enginesErr ? `a shared engine would not load: ${enginesErr.message}`
+      : 'the page is not delegating to the shared engines, or one of their bodies grew back inside the HTML — the copy nobody reads against the other is how the bar and the pill came to disagree')
+  // …and the names this page still CALLS are one-line delegations, the shape
+  // speedColor has had since the motion engine moved out (see /shared/playback.js).
+  const delegations = {
+    distanceMeters: /^\s*return HomeGeo\.distanceMeters\(lat1, lon1, lat2, lon2\);$/m,
+    bearingDegrees: /^\s*return HomeGeo\.bearingDegrees\(lat1, lon1, lat2, lon2\);$/m,
+    compassPoint: /^\s*return HomeGeo\.compassPoint\(brgDeg\);$/m,
+    angularDiff: /^\s*return HomeGeo\.angularDiff\(a, b\);$/m,
+    shouldDrawPoint: /^\s*return tripLegs\.shouldDrawPoint\(p\);$/m,
+    computeLegsForDay: /^\s*return tripLegs\.forDay\(pings\);$/m
   }
+  const thin = Object.keys(delegations).filter((n) => !delegations[n].test(fnBody(wayCode, n) || ''))
+  check('the names the page still calls are one line each, into the shared engines',
+    thin.length === 0,
+    thin.length ? `${thin.join(', ')} grew past its one-line delegation`
+      : 'six page names, six single returns into HomeGeo / tripLegs')
+  // …and the SHARE is the geometry's second caller, which is why it is a file at
+  // all: it carried its own haversine until now, in the other form (asin here,
+  // atan2 on the map). A share that measures differently is a second opinion
+  // about the same road.
+  const liveHtml = await body(await req('/live/index.html'))
+  const liveDistM = fnBody(liveHtml, 'distanceM') || ''
+  check('the public share measures with the same geometry as the map',
+    liveHtml.includes('/shared/geo.js') &&
+    /return HomeGeo\.distanceMeters\(lat1, lon1, lat2, lon2\);/.test(liveDistM) &&
+    !/Math\.asin/.test(liveHtml) && !/Math\.atan2\(Math\.sqrt\(a\)/.test(liveHtml),
+    'the share is carrying its own haversine again: it must load /shared/geo.js and delegate, or the map and the share can answer "how far" differently')
+  const meetFn = meetJs
+  const meetPillFn = meetJs
+  const meetVelFn = meetJs
+  const meetStripFn = fnBody(wayCode, 'renderMeetStrip')
+  const meetScaleFn = stripJs
+  const meetSettled = MEET ? MEET.CONFIG.SETTLED_M : NaN
+  const meetDcpa = MEET ? MEET.CONFIG.DCPA_MAX_M : NaN
+  // The numbers the ruler is built from are the MODULE's now, and the page reads
+  // them from there too -- so these checks read them where the page does.
+  const stripBands = STRIP ? STRIP.CONFIG.BANDS_M : []
+  const stripShrink = STRIP ? STRIP.CONFIG.SHRINK_AT : NaN
+  const stripLadder = STRIP ? STRIP.ladder : []
+  /** The module's own rung chooser, on a FRESH instance: every call starts where
+   *  a first render would (the `let meetStripScaleIdx = 0` this used to declare). */
+  const stripScaleAt = (dist) => (STRIP ? STRIP.createScale().scale(dist) : null)
   check('the meeting pill only trusts its own estimate once the pair is close',
-    !!meetFn && Number.isFinite(meetSettled) && meetSettled > 0 && meetSettled <= 2000 &&
-    /range > CONFIG\.MEET_ETA_SETTLED_M/.test(meetFn),
-    !meetFn ? 'meetDecision is not in the page'
+    !!MEET && Number.isFinite(meetSettled) && meetSettled > 0 && meetSettled <= 2000 &&
+    /range > CONFIG\.SETTLED_M/.test(meetJs),
+    !MEET ? 'HomeMeet is not in the shared file'
       : `settled=${meetSettled} m — without a ceiling the extrapolation is fiction at range, which is exactly where the lab's first false positive came from`)
   check('the meeting pill refuses a crossing that passes wide, and one that is not closing',
-    !!meetFn && Number.isFinite(meetDcpa) && meetDcpa > 0 &&
-    /dcpa > CONFIG\.MEET_ETA_DCPA_MAX_M/.test(meetFn) &&
-    /closing < CONFIG\.MEET_ETA_CLOSING_MIN_KMH/.test(meetFn),
-    !meetFn ? 'meetDecision is not in the page'
+    !!MEET && Number.isFinite(meetDcpa) && meetDcpa > 0 &&
+    /dcpa > CONFIG\.DCPA_MAX_M/.test(meetJs) &&
+    /closing < CONFIG\.CLOSING_MIN_KMH/.test(meetJs),
+    !MEET ? 'HomeMeet is not in the shared file'
       : 'the miss distance is the only gate that separates a meeting from two people on parallel roads pointed at each other')
   check('the meeting pill derives each velocity from that device\'s own fixes',
-    !!meetVelFn && /timestamp/.test(meetVelFn) && /MEET_ETA_TELEPORT_KMH/.test(meetVelFn) &&
-    !/\.speed/.test(meetVelFn),
-    !meetVelFn ? 'meetVelocity is not in the page'
+    !!MEET && /timestamp/.test(meetJs) && /CONFIG\.TELEPORT_KMH/.test(meetJs) &&
+    !/\.speed/.test(meetJs),
+    !MEET ? 'HomeMeet is not in the shared file'
       : 'the velocity reads a reported speed, or no longer rejects an impossible one: a phone whose speed column lies would be believed twice')
   check('the meeting pill will not promise anything from a stale fix',
-    !!meetFn && /MEET_ETA_FRESH_S/.test(meetFn) && /if \(!fresh\(mine\)/.test(meetFn),
-    !meetFn ? 'meetDecision is not in the page'
+    !!MEET && /CONFIG\.FRESH_S/.test(meetJs) && /if \(!fresh\(mine\)/.test(meetJs),
+    !MEET ? 'HomeMeet is not in the shared file'
       : 'the freshness test stopped gating the pill: a five minute old fix is a memory of where somebody was, not a prediction of where they will be')
   check('a peer parked in a fence is home, a peer driving through one is not',
-    !!meetFn && /is_inside_geofence && theirs\.kmh < CONFIG\.ETA_MIN_SPEED_KMH/.test(meetFn),
-    !meetFn ? 'meetDecision is not in the page'
+    !!MEET && /is_inside_geofence && theirs\.kmh < CONFIG\.MIN_SPEED_KMH/.test(meetJs),
+    !MEET ? 'HomeMeet is not in the shared file'
       : 'the fence test is stricter than "inside a fence AND not moving", so the pill goes dark whenever the driver passes their own house')
   check('the meeting pill hands the moment over to the Together pill inside the together radius',
-    !!meetFn && /range <= CONFIG\.TOGETHER_DISTANCE_M/.test(meetFn),
-    !meetFn ? 'meetDecision is not in the page'
+    !!MEET && /range <= CONFIG\.TOGETHER_DISTANCE_M/.test(meetJs),
+    !MEET ? 'HomeMeet is not in the shared file'
       : 'two pills would be saying the same thing to the same pair')
   // The gauge is the pill's own answer on a distance ruler, so it reads the same
   // verdict rather than a second copy of the gates.
   check('the pill and the gauge under the map ask one verdict function',
-    !!meetPillFn && !!meetStripFn && /meetDecision\(/.test(meetPillFn) && /meetEtaFor\(/.test(meetStripFn),
+    !!MEET && !!meetStripFn && /meet\.decision\(/.test(fnBody(stripJs, 'crossPair') || '') &&
+    /meetEngine\.etaFor\(/.test(meetStripFn) && /meetBar\.crossPair\(/.test(meetStripFn),
     !meetStripFn ? 'renderMeetStrip is not in the page'
       : 'the gauge grew its own copy of the gates, so the bar under the map can show a crossing the pill would not have drawn')
   // Which way the bar runs IS the reading, not a style choice: the fill is how
@@ -1847,11 +2109,10 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // Filled with the distance instead -- which is how it was drawn first -- a
   // widening gap looks like the bar filling UP, the opposite of what it is.
   {
-    const fillSrc = fnBody(wayCode, 'meetStripFillFraction')
-    let ok = false, why = 'meetStripFillFraction is not in the page'
-    if (fillSrc) {
+    let ok = false, why = 'HomeMeetStrip.fillFraction is not in the shared file'
+    if (STRIP) {
       try {
-        const fill = new Function('return function meetStripFillFraction(dist, scale) ' + fillSrc)()
+        const fill = STRIP.fillFraction
         // Halfway along a 1 km bar is 500 m apart; 0 m is the full bar and 1 km the
         // empty one, which is the inversion itself.
         const points = [[0, 1000, 1], [250, 1000, 0.75], [500, 1000, 0.5], [1000, 1000, 0],
@@ -1865,23 +2126,23 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
           walk[0] === 1 && walk[walk.length - 1] === 0
         // …and it bottoms out past the top of the scale rather than going negative.
         const clamped = fill(50000, 1000) === 0 && fill(-5, 1000) === 1
-        ok = !!fillSrc && bad.length === 0 && drains && clamped
+        ok = bad.length === 0 && drains && clamped
         why = `500 m apart fills ${fill(500, 1000)} of a 1 km bar while 1 km fills ${fill(1000, 1000)} · the same bar walked out from 0 to 1 km drains ${walk[0]} → ${walk[walk.length - 1]} · 50 km on a 1 km bar reads ${fill(50000, 1000)}`
       } catch (e) { why = 'the fill would not evaluate: ' + e.message }
     }
     check('the bar fills as the pair closes and drains as they part, 0 at the far end of the scale', ok, why)
   }
   check('the dot rides the head of the fill, so the mark and the shading are one reading',
-    !!meetStripFn && /meetStripFillFraction\(m, scale\)/.test(meetStripFn) &&
+    !!meetStripFn && /HomeMeetStrip\.fillFraction\(m, scale\)/.test(meetStripFn) &&
     /pct\(target\.dist\)/.test(meetStripFn) &&
     /dot\.style\.left = headPct/.test(meetStripFn) && /fill\.style\.width = headPct/.test(meetStripFn),
     !meetStripFn ? 'renderMeetStrip is not in the page'
       : 'the dot, the fill and the scale became independent again, so the bar can shade one fraction of the scale and mark another')
   check('the gauge rescales at once when the pair outgrows the bar, and reluctantly back',
-    !!meetScaleFn && /while \(i < L\.length - 1 && dist > L\[i\]\) i\+\+/.test(meetScaleFn) &&
-    /dist < L\[i - 1\] \* CONFIG\.MEET_STRIP_SHRINK_AT/.test(meetScaleFn) &&
+    !!STRIP && /while \(i < LADDER\.length - 1 && dist > LADDER\[i\]\) i\+\+/.test(stripJs) &&
+    /dist < LADDER\[i - 1\] \* CONFIG\.SHRINK_AT/.test(stripJs) &&
     Number.isFinite(stripShrink) && stripShrink > 0.4 && stripShrink < 1,
-    !meetScaleFn ? 'meetStripScale is not in the page'
+    !STRIP ? 'HomeMeetStrip is not in the shared file'
       : `shrink threshold=${stripShrink} — without the hysteresis half a pair sitting on a ladder boundary rescales the whole bar on every fix, and ±6 m of fix noise crosses 1,000 m repeatedly`)
   // The bands ARE the rule (200 m under a km, then 1, 5, 10, 20, 50 km, then
   // 100 km up to a ceiling), so they are pinned literally: a "tidier" ladder
@@ -1910,12 +2171,12 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // same trick the pull easing above uses. The fixture is the real thing that
   // would break it: a pair hovering on the 1 km boundary, ±6 m of fix noise.
   {
-    const scaleSrc = fnBody(wayCode, 'meetStripScale')
-    let ok = false, why = 'meetStripScale is not evaluable'
-    if (scaleSrc && stripLadder.length) {
+    let ok = false, why = 'HomeMeetStrip.createScale is not in the shared file'
+    if (STRIP && stripLadder.length) {
       try {
-        const f = new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;\nlet meetStripScaleKey = null;\nreturn function meetStripScale(dist, subjectKey) ' + scaleSrc)
-        const scale = f({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)
+        // A FRESH ruler: no `let meetStripScaleIdx = 0` declared here any more,
+        // because the memory belongs to an instance (createScale).
+        const scale = STRIP.createScale().scale
         const hover = []
         for (let i = 0; i < 200; i++) hover.push(scale(1000 + (i % 2 ? 6 : -6)))
         const settled = hover.slice(50).every((s) => s === hover[50])
@@ -1940,14 +2201,11 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // "closeness" naturally suggests -- and with rungs this fine the bar is amber
   // at every range, saying nothing. So it is run here, over the real ladder.
   {
-    const closeSrc = fnBody(wayCode, 'meetStripCloseness')
-    const tintSrc = fnBody(wayCode, 'meetStripTint')
-    let ok = false, why = 'meetStripCloseness / meetStripTint are not in the page'
-    if (closeSrc && tintSrc && stripLadder.length) {
+    let ok = false, why = 'HomeMeetStrip.closeness / tint are not in the shared file'
+    if (STRIP && stripLadder.length) {
       try {
-        const close = new Function('CONFIG', 'MEET_STRIP_LADDER',
-          'return function meetStripCloseness(dist, i) ' + closeSrc)({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)
-        const tint = new Function('return function meetStripTint(t) ' + tintSrc)()
+        const close = STRIP.closeness
+        const tint = STRIP.tint
         // The 400 m rung's band runs 200..400: green at its floor, amber at its top.
         const i400 = stripLadder.indexOf(400)
         const lo = close(200, i400), hi = close(400, i400)
@@ -1958,7 +2216,7 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
         const painted = "style.background = 'rgb(' + tint + ')'"
         ok = i400 > 0 && Math.abs(lo) < 1e-9 && Math.abs(hi - 1) < 1e-9 && on5 < on2 &&
           tint(0) === '46,204,113' && tint(1) === '245,196,81' &&
-          /meetStripCloseness\(/.test(meetStripFn || '') && (meetStripFn || '').includes(painted)
+          /HomeMeetStrip\.closeness\(/.test(meetStripFn || '') && (meetStripFn || '').includes(painted)
         why = `closeness is ${lo} at the floor of the 400 m rung and ${hi} at its top · 2 km reads ${on2} on the 2 km rung but ${on5} on the 5 km one · green ${tint(0)}, amber ${tint(1)}`
       } catch (e) { why = 'the colour would not evaluate: ' + e.message }
     }
@@ -1970,17 +2228,17 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // speaks up for a fence you are pointed at (a 55-degree cone), and a ruler that
   // hid what is behind you would not be a ruler.
   {
-    const targetFn = fnBody(wayCode, 'meetStripTarget')
+    const targetFn = fnBody(stripJs, 'target')
     const setFn = fnBody(wayCode, 'setStripSource')
     const mapAt = wayCode.indexOf("settingsSection('map'")
     const mapBlock = mapAt === -1 ? '' : wayCode.slice(mapAt, mapAt + 2400)
     const switchInMap = mapBlock.includes('data-strip="user"') && mapBlock.includes('data-strip="fence"') &&
       mapBlock.includes('setStripSource(')
     check('the bar can be told to measure to the nearest place, with no direction test',
-      !!targetFn && /stripSourceMode === 'fence'/.test(targetFn) && /GEOFENCES/.test(targetFn) &&
-      /getDisplayName\(/.test(targetFn) && !/bearingDegrees|angularDiff/.test(targetFn) &&
+      !!targetFn && /sourceMode\(\) === 'fence'/.test(targetFn) && /geofences\(\)/.test(targetFn) &&
+      /nameOf\(/.test(targetFn) && !/bearingDegrees|angularDiff/.test(targetFn) &&
       !!fnBody(wayCode, 'applyStripSource') && /target\.kind === 'user'/.test(meetStripFn || ''),
-      !targetFn ? 'meetStripTarget is not in the page'
+      !targetFn ? "the bar's target is not in the shared file"
         : /bearingDegrees|angularDiff/.test(targetFn)
           ? 'place mode inherited the pill\'s direction test, so the nearest place stops being the nearest place whenever it happens to be behind you'
           : 'place mode no longer reads the setting, no longer names the fence, or the pill\'s "a place has no crossing" guard is gone')
@@ -2004,23 +2262,39 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
     Kofi: stripAt(-18.9137 - 2000 / 110540, 47.5361)
   })
   const STRIP_FENCES = [{ name: 'Home1', displayName: 'Home 1', lat: -18.9137 + 500 / 110540, lng: 47.5361 }]
-  /** The page's OWN bar functions, over that fixture, with one reference injected. */
-  /** A page function as a DECLARATION, parameters included: fnBody returns the
-   *  braces only, and the bar's functions are not all zero-argument shapes. */
-  const stripDecl = (n) => {
-    const at = wayCode.indexOf(`function ${n}(`)
-    const body = at === -1 ? null : fnBody(wayCode, n)
-    return body ? wayCode.slice(at, wayCode.indexOf(body, at)) + body : null
-  }
+  /** The bar's own half of the shared engine, over the fixture, with one
+   *  reference injected. The module's methods are handed back under the names
+   *  these checks have always used, so what they pin is unchanged -- what changed
+   *  is that the code running is the page's own, not a copy assembled here. */
   const stripRun = (fns, ref, mode) => {
-    const bodies = fns.map(stripDecl)
-    const distDecl = stripDecl('distanceMeters')
-    if (!distDecl || bodies.some((b) => !b)) return null
-    const src = `var stripRef = ${JSON.stringify(ref)};\n` + [distDecl, ...bodies].join('\n') +
-      `\nreturn { ${fns.join(', ')} };`
-    return new Function('latestPing', 'GEOFENCES', 'DEVICES', 'stripSourceMode', 'getDisplayName', src)(
-      stripFixture(), STRIP_FENCES, ['MaxX', 'Niri', 'Kofi'], mode || 'user',
-      (n) => (n === 'Home1' ? 'Home 1' : n))
+    if (!STRIP || !MEET || !GEO) return null
+    const bar = STRIP.create({
+      devices: () => ['MaxX', 'Niri', 'Kofi'],
+      latestPing: (id) => stripFixture()[id],
+      pings: () => [],
+      geofences: () => STRIP_FENCES,
+      stripRef: () => ref,
+      sourceMode: () => mode || 'user',
+      nameOf: (n) => (n === 'Home1' ? 'Home 1' : n),
+      now: () => Date.now(),
+      meet: MEET.create({
+        devices: () => ['MaxX', 'Niri', 'Kofi'],
+        latestPing: (id) => stripFixture()[id],
+        pings: () => [],
+        now: () => Date.now()
+      })
+    })
+    const names = {
+      stripRefTarget: 'refTarget', meetStripTarget: 'target', stripPickerRows: 'pickerRows',
+      meetStripTrend: 'trend', meetStripCrossPair: 'crossPair'
+    }
+    const out = {}
+    for (const n of fns) {
+      const fn = bar[names[n] || n]
+      if (typeof fn !== 'function') return null
+      out[n] = fn
+    }
+    return out
   }
   {
     const auto = stripRun(['stripRefTarget', 'meetStripTarget'], null)
@@ -2071,22 +2345,17 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
   // having removed it.
   {
     const dirFn = fnBody(wayCode, 'renderDirection')
-    const pointsSrc = (wayCode.match(/const COMPASS_POINTS = \[[^\]]*\]/) || [])[0]
-    const compassDecl = stripDecl('compassPoint')
-    let dirRun = null
-    if (pointsSrc && compassDecl) {
-      try {
-        dirRun = new Function(pointsSrc + '\n' + compassDecl + '\nreturn { compassPoint };')()
-      } catch (e) { dirRun = null }
-    }
+    // The cardinals are the module's own, CALLED -- they used to be lifted out of
+    // the file's text (a regex for the array, a slice of the function) and
+    // re-declared here, which is the friction this file exists to remove.
+    const cp = GEO ? GEO.compassPoint : null
     // The chip's own rules, read out of the SERVED stylesheet: the arrow's size,
     // the chip's, and the ring that separates it from the map showing through.
     const chipCss = (wayCode.match(/#meet-strip \.bearing \{[\s\S]*?\}/) || [])[0] || ''
     const arrowCss = (wayCode.match(/#meet-strip \.bearing \.bearing-arrow \{[^}]*\}/) || [])[0] || ''
     const px = (css) => parseInt((css.match(/font-size:\s*([0-9.]+)px/) || [])[1], 10)
-    let ok = false, why = 'renderDirection / compassPoint are not in the page'
-    if (dirFn && dirRun) {
-      const cp = dirRun.compassPoint
+    let ok = false, why = cp ? 'renderDirection is not in the page' : 'HomeGeo.compassPoint is not in the shared file'
+    if (dirFn && cp) {
       const oneReading = dirFn.includes('bearingDegrees(') && dirFn.includes('markerPositions[') &&
         dirFn.includes('meet-strip-bearing-arrow') && dirFn.includes('CONFIG.DIRECTION_MIN_M')
       // …and the map half is GONE, not merely switched off: no layer stack, no
@@ -2134,32 +2403,32 @@ log('\n15. W.A.Y: the smoothed map never changes what W.A.Y records')
               : 'the pick is not persisted, or nothing clears it back to Auto')
   }
   {
-    const rateDecl = stripDecl('rangeRateKmh')
-    const trendSrc = fnBody(wayCode, 'meetStripTrend')
-    let ok = false, why = 'rangeRateKmh / meetStripTrend are not in the page'
-    if (rateDecl) {
+    const trendSrc = fnBody(stripJs, 'trend')
+    let ok = false, why = 'HomeMeet.rangeRateKmh / the bar\'s trend are not in the shared files'
+    if (MEET) {
       try {
-        const rate = new Function(rateDecl + '\nreturn rangeRateKmh;')()
+        // The verdict's own range rate, imported: the arrow and the pill must
+        // read the SAME number, and a copy re-declared here could agree today
+        // and drift tomorrow.
+        const rate = MEET.rangeRateKmh
         const a = { latitude: -18.9137, longitude: 47.5361 }
         const b = { latitude: a.latitude + 1000 / 110540, longitude: a.longitude }   // 1 km due north
         const at = rate(a, b, { x: 0, y: 10 }, { x: 0, y: 0 })    // 10 m/s at it
         const away = rate(a, b, { x: 0, y: -10 }, { x: 0, y: 0 })  // 10 m/s away from it
         const headOn = rate(a, b, { x: 0, y: 10 }, { x: 0, y: -10 })
         ok = Math.abs(at - 36) < 0.1 && Math.abs(away + 36) < 0.1 && Math.abs(headOn - 72) < 0.2 &&
-          !!trendSrc && /rangeRateKmh\(/.test(trendSrc) && /rangeRateKmh\(/.test(meetFn || '') &&
-          /meetStripTrend\(/.test(meetStripFn || '') && wayCode.includes('id="meet-strip-trend"')
+          !!trendSrc && /rangeRateKmh\(/.test(trendSrc) && /rangeRateKmh\(/.test(meetJs) &&
+          /meetBar\.trend\(/.test(meetStripFn || '') && wayCode.includes('id="meet-strip-trend"')
         why = `1 km apart: driving at it reads ${at.toFixed(1)} km/h, driving away ${away.toFixed(1)}, head-on ${headOn.toFixed(1)} — the arrow and the pill must read the same number, or the bar can say "closing" for a pair the pill just called off`
       } catch (e) { why = 'rangeRateKmh would not evaluate: ' + e.message }
     }
     check('the trend arrow is the same range rate the verdict gates on', ok, why)
   }
   {
-    const scaleKeySrc = fnBody(wayCode, 'meetStripScale')
-    let ok = false, why = 'meetStripScale is not in the page'
-    if (scaleKeySrc && stripLadder.length) {
+    let ok = false, why = 'HomeMeetStrip.createScale is not in the shared file'
+    if (STRIP && stripLadder.length) {
       try {
-        const f = new Function('CONFIG', 'MEET_STRIP_LADDER', 'let meetStripScaleIdx = 0;\nlet meetStripScaleKey = null;\nreturn function meetStripScale(dist, subjectKey) ' + scaleKeySrc)
-        const scale = f({ MEET_STRIP_SHRINK_AT: stripShrink }, stripLadder)
+        const scale = STRIP.createScale().scale
         for (let i = 0; i < 10; i++) scale(12000, 'user:MaxX')
         const held = scale(11900, 'user:MaxX')
         const fresh = scale(150, 'fence:Home1')
@@ -2940,6 +3209,38 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   check('…and the drop is counted as received too, so a gate count always has a denominator',
     (await counter('received')) === beforeRec + 1,
     `received ${beforeRec} → ${await counter('received')}`)
+
+  // ── The quoted-value parser, through the phone's own door ───────────────
+  // μlogger's Android client sends its session cookie in the older RFC 2109
+  // quoted form -- name="value" -- with the quotes literally part of the
+  // header; the parser strips one matching pair. Nothing in this suite used
+  // that form, so deleting the strip kept every check green while real phones
+  // went dark on their next upload.
+  {
+    const quotedJar = new Map(jar)
+    const deviceCookie = quotedJar.get('way_device_session')
+    if (deviceCookie) {
+      jar.clear()
+      jar.set('way_device_session', `"${deviceCookie}"`)
+      const accepted = await req('/ulogger/client/index.php', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form({
+          action: 'addpos', trackid: '1', lat: '-19.8795533', lon: '47.0307533',
+          time: String(Math.floor(Date.now() / 1000)), accuracy: '5', speed: '0',
+        }),
+      })
+      const answer = await body(accepted)
+      check('a quoted RFC 2109 cookie still authenticates (μlogger\u2019s own form)',
+        /"error"\s*:\s*false/.test(answer),
+        `the quoted value was read as a different cookie name, so the upload was refused: ${answer.slice(0, 80)}`)
+      jar.clear()
+      for (const [k, v] of quotedJar) jar.set(k, v)
+    } else {
+      check('a quoted RFC 2109 cookie still authenticates (μlogger\u2019s own form)',
+        false,
+        'the jar holds no way_device_session — the auth probe above did not mint one, so this form is unproven')
+    }
+  }
 
   // ── One spelling per person, through BOTH of the phone's doors. Home's login
   // has always matched names case-insensitively; μlogger's own credential check
@@ -3753,11 +4054,22 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   check('the viewer\'s NUMBERS stay live while the drawing is delayed',
     /state\.speed/.test(liveSrc) && !!liveFrame && !/foot/.test(liveFrame),
     'the badge was moved onto the delayed clock, so the speed and the age would describe where the dot is drawn instead of where the device is')
+  // ONE background is not "one L.tileLayer call". It was that number once, then
+  // a number read off the labelled key's own layers, and both were the wrong
+  // subject: what matters is that this page asks the SHARED path for exactly one
+  // background, names a key by name, builds no layer of its own and offers no
+  // switch. A page that names its own layer can keep drawing a background the
+  // module has stopped declaring — which is how the share and the household map
+  // ended up on different providers with nothing in the middle saying so
+  // (2026-09-20, the block in /shared/basemaps.js's header).
+  const showCalls = (liveSrc.match(/HomeBasemapLayer\.show\(/g) || []).length
+  const keyedShow = (liveSrc.match(/HomeBasemapLayer\.show\(\s*'([a-z]+)'/g) || [])
   check('the viewer\'s map has ONE background and no switch',
-    (liveSrc.match(/L\.tileLayer\(/g) || []).length === 1 &&
-    /HomeBasemaps\.streets/.test(liveSrc) && !/L\.control\.layers|baseMaps/.test(liveSrc),
-    'the share offers layers to switch, or names a tile host of its own: an outsider gets the map that always works, not a choice to make — and a host named in this file is the dependency that broke this page when OSM blocked the app (2026-09-20)')
+    showCalls === 1 && keyedShow.length === 1 && /HomeBasemaps\.streets/.test(liveSrc) &&
+      !/L\.(tileLayer|maplibreGL)\(/.test(liveSrc) && !/L\.control\.layers|baseMaps/.test(liveSrc),
+    `${showCalls} call(s) into /shared/basemap-layer.js, ${keyedShow.length} naming a key (${keyedShow.join(', ') || 'none'}): the share offers layers to switch, builds a background of its own, or has stopped drawing the one key an outsider gets — an outsider gets the map that always works, not a choice to make`)
   // ── …and it OPENS and RECENTRES at street level ──
+  const basemapsLive = await body(await req('/shared/basemaps.js'))
   // The page used to open at 14 (a neighbourhood blob) and Recentre clamped to
   // "at least 14", so the question an outsider is holding this page to answer —
   // which street is she on — was the one zoom it could not show. The level is
@@ -3766,7 +4078,6 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   // asks the CDN for tiles that do not exist, and Leaflet upscales the last one
   // into a blur — the map looks fine and is wrong).
   const liveCode = liveSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-  const basemapsLive = await body(await req('/shared/basemaps.js'))
   const streetsNative = Number((basemapsLive.match(/streets:\s*\{[\s\S]*?maxNativeZoom:\s*(\d+)/) || [])[1])
   const followZoom = Number((liveCode.match(/var FOLLOW_ZOOM = (\d+)/) || [])[1])
   check('the share opens and recentres at street level, inside what its background can serve',
@@ -4184,6 +4495,83 @@ log('\n22. Two shopping lists: the week\'s meals and the pantry')
   // laoka DB — invisible everywhere, and local only: this suite never runs
   // against a deployed database.
   await req(`/laoka/api/subgroups/${probeId}`, { method: 'DELETE' })
+
+  // (b2) The gourmet PICTURE path: the one door a recipe's image enters and
+  // leaves by, and the handlers the JavaScript type pass rewrote when
+  // `readImage`'s inferred union turned out to have a widened discriminant —
+  // typed, they now promise a Response on every path (rule 45). This walks what
+  // the compiler can only promise about the RUN: a picture over the cap answers
+  // 413, a type the server does not know falls back to image/jpeg, the bytes
+  // come back from their own URL under that type, an empty patch answers 400,
+  // and clearing the picture makes the URL 404 again. The recipe is a
+  // throwaway, soft-deleted at the end, like the meal group above.
+  if (!ADMIN) {
+    log('  \x1b[90m– skipped the picture path: SMOKE_ADMIN=0\x1b[0m')
+  } else {
+    const madeRecipe = await jsonOf(await req('/laoka/api/gourmet', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'zz smoke recipe ' + Date.now() }),
+    }))
+    const recipeId = (madeRecipe && madeRecipe.id) || 0
+    check('the suite could make a throwaway RECIPE to hang a picture on',
+      recipeId > 0,
+      `POST /laoka/api/gourmet answered ${JSON.stringify(madeRecipe)} — this path is ADMIN-only, so the smoke account needs role 'admin' in LAOKA_DB.users (the Home login provisions it from the household role)`)
+
+    if (recipeId) {
+      const noPic = await req(`/laoka/api/gourmet/${recipeId}/image`)
+      check('a recipe with no picture has no picture URL',
+        noPic.status === 404, `status ${noPic.status} for a recipe that carries no image`)
+
+      // The failure member of the union, and the branch where the old inferred
+      // types could resolve to nothing at all instead of answering.
+      const tooBig = await req(`/laoka/api/gourmet/${recipeId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: 'A'.repeat(1800001) }),
+      })
+      check('a picture over the cap answers 413 — refused, never stored, never an empty response',
+        tooBig.status === 413 && /too large/.test(await body(tooBig)),
+        `status ${tooBig.status} for a picture one character over the 1,800,000 cap`)
+
+      const bytes = Buffer.from('smoke-picture-bytes').toString('base64')
+      const saved = await jsonOf(await req(`/laoka/api/gourmet/${recipeId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: bytes, imageType: 'application/x-not-a-real-type' }),
+      }))
+      check('a picture is accepted, and a type it does not know falls back to image/jpeg',
+        !!(saved && saved.ok), `PATCH /api/gourmet/:id answered ${JSON.stringify(saved)}`)
+
+      const picture = await req(`/laoka/api/gourmet/${recipeId}/image`)
+      check('the picture comes back from its own URL, byte-for-byte, under the stored type',
+        picture.status === 200 && picture.headers.get('content-type') === 'image/jpeg' &&
+          (await body(picture)) === 'smoke-picture-bytes',
+        `status ${picture.status}, type ${picture.headers.get('content-type')} — the bytes or the fallback type are wrong`)
+
+      const empty = await req(`/laoka/api/gourmet/${recipeId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      })
+      check('a patch with nothing in it answers 400, never an empty response',
+        empty.status === 400, `status ${empty.status} for an empty PATCH`)
+
+      await req(`/laoka/api/gourmet/${recipeId}/image`, { method: 'DELETE' })
+      const cleared = await req(`/laoka/api/gourmet/${recipeId}/image`)
+      check('clearing the picture makes that URL 404 again',
+        cleared.status === 404, `status ${cleared.status} after DELETE /image`)
+
+      // A recipe is household data, so the gate gets a leg of its own. The LIST
+      // is the route to ask (`GET /api/gourmet/:id` does not exist — an id that
+      // matches no route falls through to the static assets): signed out, it must
+      // answer 401 rather than a list of the household's recipes.
+      const parkedRecipeJar = new Map(jar)
+      jar.clear()
+      const anonRecipes = await req('/laoka/api/gourmet')
+      jar.clear(); for (const [k, v] of parkedRecipeJar) jar.set(k, v)
+      check('the gourmet routes are session-gated too',
+        anonRecipes.status === 401 || anonRecipes.status === 302,
+        `${anonRecipes.status} — an anonymous caller read the household's recipes`)
+
+      await req(`/laoka/api/gourmet/${recipeId}`, { method: 'DELETE' })
+    }
+  }
 
   const renderPantryFn = fnBody(laokaJs, 'renderPantry') || ''
   const headerAt = renderPantryFn.indexOf("class: 'pantrygroup'")
@@ -5427,6 +5815,201 @@ log('\n26. one design language: the tokens, the labels, and the front door')
     `KineClientStats draws ${clientTiles} tile(s) — a client's sessions, money and balance are no longer ` +
       'side by side, or a tile has lost the colour that says which fact it is, or the balance figure no ' +
       'longer carries yellow paid-ahead / red unpaid / green settled')
+}
+
+// ─── 27. Kiné has one ledger ─────────────────────────────────────
+// src/kine/ledger.ts is the ONE place the delivered/paid row expressions, the
+// balance rule and the week's two figures are written. It is imported straight
+// by node — no D1, no window, no bundler — so the arithmetic has a test
+// surface the eight pasted SQL copies never had. Kiné's truth is MONEY, exact:
+// the session count is a derived label, so a rounded session figure can never
+// disagree with the francs beside it again.
+{
+  let ledger = null
+  try {
+    ledger = await import(new URL('../src/kine/ledger.ts', import.meta.url))
+  } catch (e) {
+    ledger = { loadError: e }
+  }
+  check('the ledger module loads into a bare node process',
+    typeof ledger.clientLedger === 'function',
+    `${ledger.loadError ? ledger.loadError.message : 'no clientLedger export'} — Kiné's arithmetic must be ` +
+      'loadable without a server, or it can only ever be checked through a page')
+
+  const rule = (row) => (typeof ledger.clientLedger === 'function' ? ledger.clientLedger(row) : {})
+  const owed = rule({ delivered: 3, paid: 25000, session_rate: 10000 })
+  check("a client's balance is MONEY, exact — the session count is a derived label, not the figure",
+    owed.balance === 5000 && owed.state === 'owes' && owed.sessionBalance === 0.5,
+    `Ar 10,000/session, 3 delivered, 25,000 paid answered ${JSON.stringify(owed)} — in the session-count ` +
+      'dialect this read "balanced" on Home while /kine said "Due 5,000"')
+  const rounded = rule({ delivered: 3, paid: 24000, session_rate: 10000 })
+  check('…and it cannot round a franc away',
+    rounded.balance === 6000 && rounded.state === 'owes',
+    `24,000 paid on 3 delivered left ${rounded.balance} — the rounded session dialect printed "owes 10,000" here`)
+  const ahead = rule({ delivered: 2, paid: 30000, session_rate: 10000 })
+  check('a client who paid ahead is money we hold, and says so',
+    ahead.balance === -10000 && ahead.state === 'prepaid' && ahead.sessionBalance === -1,
+    `${JSON.stringify(ahead)} — a prepaid balance flipped sign or lost its state`)
+  const defaulted = rule({ delivered: 2, paid: 0, session_rate: null, default_rate: 5000 })
+  check("a contract with no rate of its own bills at the client's default",
+    defaulted.rate === 5000 && defaulted.billed === 10000 && defaulted.balance === 10000,
+    `${JSON.stringify(defaulted)} — with no fallback the old Home SUM multiplied by NULL and silently dropped the ` +
+      'contract out of Uncollected Dues')
+  const free = rule({ delivered: 5, paid: 0, session_rate: 0 })
+  check('a zero rate cannot invent a balance',
+    free.balance === 0 && free.state === 'balanced' && free.sessionBalance === 0,
+    `${JSON.stringify(free)} — five unrated sessions are not money`)
+
+  // The face of the drift is a route pasting a copy back, so the guard is a
+  // source scan: the two expressions live once, in the module.
+  const callers = ['src/routes/kine.tsx', 'src/routes/dashboard.tsx'].map((f) => {
+    try { return readFileSync(new URL(`../${f}`, import.meta.url), 'utf8') } catch (e) { return '' }
+  })
+  const ledgerSrc = callers.every((s) => s.length > 0)
+    ? readFileSync(new URL('../src/kine/ledger.ts', import.meta.url), 'utf8')
+    : ''
+  const deliveredExpr = 'at.contract_id = sc.id AND at.is_delivered = 1'
+  const paidExpr = 'SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id'
+  check('the delivered/paid row expressions are written in ONE file',
+    ledgerSrc.split(deliveredExpr).length - 1 === 1 &&
+      ledgerSrc.split(paidExpr).length - 1 === 1 &&
+      callers.every((s) => !s.includes(deliveredExpr) && !s.includes(paidExpr)),
+    'a route is carrying its own delivered/paid subquery again — a copy nobody reads against the other is how ' +
+      'Home and /kine came to disagree about the same client')
+
+  // One vocabulary as well as one rule. A row whose columns are aliased
+  // `delivered_count` / `paid_amount` and handed to `clientLedger` reads as
+  // ZERO (its `delivered` is undefined) — and while those fields were
+  // optional, tsc said nothing: /kine shipped a balance tile reading "balanced"
+  // over a client with four delivered sessions, while the progress line two
+  // rows below it said 4/5. The names are the ledger's everywhere now, and the
+  // module's own comment is the one place allowed to spell the old pair.
+  const strayNames = []
+  try {
+    const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
+      d.isDirectory() ? walk(new URL(`${d.name}/`, dir)) : [new URL(d.name, dir)])
+    for (const file of walk(new URL('../src/', import.meta.url))) {
+      if (file.pathname.endsWith('/kine/ledger.ts')) continue
+      const s = readFileSync(file, 'utf8')
+      if (s.includes('delivered_count') || s.includes('paid_amount')) strayNames.push(file.pathname.split('/').pop())
+    }
+  } catch (e) {
+    strayNames.push('the scan itself failed: ' + e.message)
+  }
+  check("the ledger's row names are the ONLY names — nothing asks for `delivered_count` again",
+    strayNames.length === 0,
+    `${strayNames.join(', ')} — a differently-named column reads as zero through the ledger, which is how a card ` +
+      'showed a client who owed money as settled')
+}
+
+// ─── 28. the rule → guard map ────────────────────────────────────
+// The map in AGENTS.md is the promises themselves, declared as data: one row
+// per (rule, guard) edge, plus the sections that guard no rule. This section
+// runs the SAME scan `npm run audit:rules` runs, and then proves the scan can
+// still fail — a scan whose input, or whose rule set, silently empties reports
+// a clean tree forever, which is the lesson section 24 learned about its own
+// controls.
+log('\n28. The rule → guard map (every declared promise resolves)')
+{
+  const { loadSources, scanRuleGuards, formatRuleFindings } = await import('./lib/rule-guards.mjs')
+  const sources = loadSources(fileURLToPath(new URL('..', import.meta.url)))
+  const faults = formatRuleFindings(scanRuleGuards(sources))
+  check('every numbered rule declares a guard that resolves, and every citation resolves',
+    faults.length === 0,
+    faults.length ? `${faults.length} fault(s): ${faults.slice(0, 3).join(' | ')}` : '')
+
+  // A copy of the loaded tree, wrong in exactly ONE way. Nothing is written to
+  // disk: the scan reads the text it is handed, so a control is a source edit
+  // that never leaves memory.
+  const wrongIn = (mutate) => {
+    const copy = {
+      root: sources.root,
+      agents: sources.agents,
+      smoke: sources.smoke,
+      pkg: sources.pkg,
+      docs: sources.docs.map((d) => ({ ...d })),
+    }
+    mutate(copy)
+    return formatRuleFindings(scanRuleGuards(copy))
+  }
+  const notices = (faultList, needle) => faultList.some((f) => f.includes(needle))
+
+  // A fixture writes its section sign as `\u00a7` on purpose: a literal one in
+  // this file would itself be a citation the scan has to resolve, and no
+  // document owns a section 99. The escape is only in the source text — the
+  // control hands the scanner the real character.
+  const missingSection = wrongIn((s) => {
+    s.agents = s.agents.replace('| smoke §15 |', '| smoke \u00a799 |')
+  })
+  check('…and it notices a guard naming a section that does not exist',
+    notices(missingSection, 'smoke \u00a799'), missingSection.join(' | ') || 'no fault — the guard check is decoration')
+
+  const missingRow = wrongIn((s) => {
+    s.agents = s.agents.replace(/^\| 24 \| unread-watermark \|[^\n]*\n/m, '')
+  })
+  check('…and a numbered rule with no row at all',
+    notices(missingRow, 'rule 24: no row in the rule→guard map'), missingRow.join(' | ') || 'no fault')
+
+  const strayProse = wrongIn((s) => {
+    s.agents = s.agents.replace('Kiné has ONE ledger, and it is', 'Kiné has ONE ledger (smoke §26), and it is')
+  })
+  check('…and a rule whose prose names a guard its rows omit',
+    notices(strayProse, 'rule 43: prose names "smoke §26"'), strayProse.join(' | ') || 'no fault')
+
+  const bareCitation = wrongIn((s) => {
+    s.docs.find((d) => d.path === 'AGENTS.md').text += '\nsee §19 for the detail\n'
+  })
+  check('…and a citation that names no document',
+    notices(bareCitation, 'names no document'), bareCitation.join(' | ') || 'no fault')
+
+  const unexcused = wrongIn((s) => {
+    s.agents = s.agents.replace(/^\| smoke §1 \|[^\n]*\n/m, '| smoke \u00a70 | x |\n')
+  })
+  check('…and a smoke section neither claimed by a rule nor listed as excused',
+    notices(unexcused, 'smoke §1: neither claimed by a rule nor listed as excused'),
+    unexcused.join(' | ') || 'no fault')
+}
+
+// ─── 29. the JavaScript type pass ─────────────────────────
+// `npm run check` is strict over src/ with `checkJs: false`, so every `.js`
+// file under src/ — Laoka's vendored seventeen — sat INSIDE the include and
+// OUTSIDE the gate, parsed and unchecked. This section runs the same pass
+// `npm run audit:laoka-types` runs: the compiler over every .js/.mjs/.cjs under
+// src/, under exactly one relaxation (`noImplicitAny`), which the pass asserts
+// for itself. The controls prove it still notices a fault it is not currently
+// looking at, that it leaves honest JavaScript alone, and that a loosened
+// option set is REFUSED rather than trusted — a pass whose relaxation grew
+// quietly prints a clean tree for the rest of the project's life.
+log('\n29. The JavaScript type pass (every .js under src/)')
+{
+  const { scanLaokaTypes, formatLaokaFindings, describeCheckedSet } = await import('./lib/laoka-types.mjs')
+  const faults = formatLaokaFindings(scanLaokaTypes())
+  const set = describeCheckedSet()
+  check('every .js under src/ typechecks under the one declared relaxation',
+    faults.length === 0,
+    faults.length ? `${faults.length} fault(s): ${faults.slice(0, 2).join(' | ')}` : '')
+
+  // A fixture is handed to the compiler, never written to disk. The path sits
+  // under src/ so the census treats it like any other checked file.
+  const withFixture = (text) => formatLaokaFindings(scanLaokaTypes({
+    extraSources: [{ path: 'src/__type-pass-control__.js', text }],
+  }))
+
+  const caught = withFixture('export function f() { try { g(); } catch (err) { return err.message; } }\nfunction g() {}\n')
+  check('…and it notices a fault in a file it was not looking at (a caught value read as an Error)',
+    caught.some((f) => f.includes('TS18046') && f.includes('__type-pass-control__')),
+    caught.join(' | ') || 'no fault — the pass is decoration')
+
+  const honest = withFixture('/** @param {string} s */\nexport function twice(s) { return s + s; }\n')
+  check('…and it reports nothing about honest JavaScript',
+    honest.length === 0, honest.join(' | '))
+
+  const loosened = formatLaokaFindings(scanLaokaTypes({ optionsPatch: { strictNullChecks: false } }))
+  check('…and a loosened option set is refused, not trusted',
+    loosened.some((f) => f.includes('strictNullChecks') && f.includes('declared set')),
+    loosened.join(' | ') || 'the pass answered anyway with strictNullChecks off')
+
+  console.log(`  \x1b[90mchecked set: ${set.files.length} file(s), ${set.lines} lines; relaxation: noImplicitAny only\x1b[0m`)
 }
 
 // ─── summary ─────────────────────────────────────────────────────

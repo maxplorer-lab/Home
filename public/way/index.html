@@ -37,6 +37,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
@@ -586,7 +587,24 @@ html, body { height: 100%; width: 100%; font-family: 'Plus Jakarta Sans', -apple
 <!-- The basemaps, also shared with the share: one place for what each map is
      called, which server it comes from and who must be credited. -->
 <script src="/shared/basemaps.js"></script>
+<script src="/shared/basemap-style.js"></script>
+<script src="/shared/basemap-layer.js"></script>
+<!-- The map's pure engines, in files the pages load and the suite runs directly.
+     geo.js: the geometry BOTH maps measure with (the share used to carry its own
+     copy). meet.js: the meeting verdict the pill and the bar both ask.
+     meet-strip.js: the bar's ruler and what it measures to. trip-legs.js: what
+     counts as a stored point, and what a day adds up to. -->
+<script src="/shared/geo.js"></script>
+<script src="/shared/meet.js"></script>
+<script src="/shared/meet-strip.js"></script>
+<script src="/shared/trip-legs.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- The vector half of the background: MapLibre draws a style's layers, the
+     wrapper draws them as a Leaflet layer so every marker, track, fence and
+     tooltip this page owns stays a Leaflet layer in its own pane. Pinned and
+     cache-busted like Leaflet above, so a version bump is one deliberate edit. -->
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <script>
 // ============================================================================
 //  WAY dashboard -- the entire frontend: markup and CSS above, app below.
@@ -636,10 +654,11 @@ const CONFIG = {
     // matches the midnight flush (wrangler.jsonc cron at 21:00 UTC).
     TZ_OFFSET_HOURS: 3,
     // The basemaps are NOT here: both maps read /shared/basemaps.js, which is
-    // also where the story of the OSM block lives. Do not inline a tile URL in
-    // this page again — a hardcoded one is a dependency on someone else's
-    // policy, and this page already paid for that once (2026-09-20).
-    // Esri's tile path order is /tile/{z}/{y}/{x}: ROW before column.
+    // also where the story of the OSM block lives, and /shared/basemap-layer.js
+    // is the only code that turns a key into layers. Do not draw a background in
+    // this page again — one of its own is a dependency on someone else's policy
+    // that no guard here reads, and this page already paid for that once
+    // (2026-09-20).
     BASEMAP_DEFAULT: 'lite',
 
     GEOFENCE_HOME_COLOR: '#10b981',
@@ -718,51 +737,30 @@ const CONFIG = {
     // colours its speed readout from the same ramp (see /shared/playback.js).
     SPEED_COLOR_STOPS: HomePlayback.SPEED_STOPS,
 
-    TOGETHER_DISTANCE_M: 150,
+    // These three are the meeting verdict's own numbers. They are READ BACK from
+    // /shared/meet.js rather than written a second time here, so the pill and the
+    // bar cannot measure with two different tolerances.
+    TOGETHER_DISTANCE_M: HomeMeet.CONFIG.TOGETHER_DISTANCE_M,
 
-    ETA_MIN_SPEED_KMH: 15,
-    ETA_MAX_BEARING_DIFF_DEG: 55,
+    ETA_MIN_SPEED_KMH: HomeMeet.CONFIG.MIN_SPEED_KMH,
+    ETA_MAX_BEARING_DIFF_DEG: HomeMeet.CONFIG.MAX_BEARING_DIFF_DEG,
 
     // ── The meeting pill (the other thing #eta-pill can say) ─────
     // "When will the two of you cross", as opposed to "how far to the place".
-    // Every number here was chosen against the one-off lab in
-    // scripts/one-off/2026-09-24-meet-eta-lab, whose README says which gate
-    // each one buys -- they are not estimates of the same thing.
-    MEET_ETA_SETTLED_M: 1200,      // under this separation the extrapolation is worth reading
-    MEET_ETA_DCPA_MAX_M: 250,      // a crossing that passes 250 m wide is not a meeting
-    MEET_ETA_CLOSING_MIN_KMH: 3,   // the range has to actually be shrinking
-    MEET_ETA_FRESH_S: 180,         // a fix older than this is not a position
-    MEET_ETA_MAX_GAP_S: 600,       // two fixes this far apart are a gap, not a velocity
-    MEET_ETA_TELEPORT_KMH: 250,    // an implied speed above this is a bad fix, not motion
-    MEET_ETA_MAX_MIN: 15,          // the horizon the countdown is allowed to name
+    // The verdict and every number behind it -- settled, dcpa, closing, max gap,
+    // teleport, the countdown horizon -- live in /shared/meet.js. They were chosen
+    // against the one-off lab in scripts/one-off/2026-09-24-meet-eta-lab, whose
+    // README says which gate each one buys, and the bar under the map asks the same
+    // verdict about its own two ends -- which is why they are one module rather
+    // than two copies of the gates. The two this page still reads are above.
+    MEET_ETA_FRESH_S: HomeMeet.CONFIG.FRESH_S,   // the age at which a fix stops being a position
     // ── The strip under the map: a distance gauge, not a timeline ─────
-    // The bar spans ONE rung of a ladder and its fill is how much of that rung is
-    // still LEFT, so 500 m apart fills half of a 1 km bar -- and the fill grows as
-    // the two of them close (meetStripFillFraction), the dot riding its head.
-    // The ladder is written as BANDS -- [up to this many metres, snap to a
-    // multiple of this many] -- because that is how the rule is actually
-    // thought about: fine while it matters, coarser as it stops mattering. The
-    // rungs themselves are built from this by meetStripLadder().
-    MEET_STRIP_BANDS_M: [
-        [1000, 200],        // under 1 km:  200 m steps (200, 400, 600, 800, 1 km)
-        [10000, 1000],      // 1-10 km:     1 km steps
-        [50000, 5000],      // 10-50 km:    5 km steps
-        [100000, 10000],    // 50-100 km:   10 km steps
-        [200000, 20000],    // 100-200 km:  20 km steps
-        [300000, 50000],    // 200-300 km:  50 km steps
-        [1000000, 100000]   // past 300 km: 100 km steps, up to the bar's ceiling
-    ],
-    // Rescale hysteresis, and it is not decoration: the scale may grow the
-    // moment the distance no longer fits, but it only shrinks when it is well
-    // inside the next rung down. Without the second half, a pair sitting on a
-    // boundary rescales the whole bar on every fix -- ±6 m of fix noise is
-    // plenty to cross 1,000 m back and forth. This is the fraction of the next
-    // rung down the distance must be under before the bar zooms back in.
-    MEET_STRIP_SHRINK_AT: 0.75,
-    // The trend arrow's noise floor, in km/h: a gap changing slower than this is
-    // reported as steady rather than as a direction. GPS jitter on two fixes at a
-    // 5 s cadence swings the range by a few metres, which is this size.
-    MEET_STRIP_TREND_KMH: 3,
+    // Its ruler moved to /shared/meet-strip.js: the ladder BUILT from the bands,
+    // the hysteresis fraction that stops a boundary from rescaling the bar on
+    // every fix, and the trend arrow's noise floor all live there, with the header
+    // that explains why they are what they are. Smoke section 15 reads the numbers
+    // where they now live, and reads this page only for DELEGATION -- nothing in
+    // this file measures a distance or picks a rung any more.
 
     // ── The bar's DIRECTION half ─────────────────────────────────
     // The bar says how FAR the subject is, which is only half of "where is it".
@@ -834,7 +832,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-26.3-superapp';
+const WAY_BUILD = '2026-09-30.2-vector';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -946,7 +944,7 @@ let stripSourceMode = localStorage.getItem('map_strip_source') === 'fence' ? 'fe
 // then decides person or place). Persisted like the pace -- "how far am I from
 // Anjohy" is a decision about which question the map answers, not a per-moment
 // choice -- and it survives a reload even when that peer has not reported yet
-// (stripRefTarget explains why an unresolvable pick still draws).
+// (meet-strip.js's refTarget explains why an unresolvable pick still draws).
 let stripRef = (function() {
     try {
         const raw = JSON.parse(localStorage.getItem('map_strip_ref') || 'null');
@@ -954,6 +952,39 @@ let stripRef = (function() {
         return { kind: raw.kind === 'fence' ? 'fence' : 'user', id: raw.id };
     } catch (e) { return null; }
 })();
+// ── The map's engines, wired to THIS page's state ───────────────
+// Every one of them is a file (/shared/{geo,meet,meet-strip,trip-legs}.js)
+// because the page's own suite had to rebuild them out of this HTML to run them
+// at all. Each is handed ACCESSORS rather than copies -- the same idiom as
+// followDriver above -- so a ping that arrives mid-frame is what the bar, the
+// pill and the day's totals read.
+const meetEngine = HomeMeet.create({
+    devices: () => DEVICES,
+    latestPing: (id) => latestPing[id],
+    pings: (id) => devicePings[id],
+    now: () => Date.now()
+});
+const tripLegs = HomeTripLegs.create({
+    nameOf: getDisplayName,
+    // NOT this page's number: it is the trail's break threshold, and it belongs
+    // to HomePlayback -- "a break is a break" is one decision in one place.
+    gapSeconds: HomePlayback.FLUID.GAP_SECONDS
+});
+// The bar's live half (what it measures to) and its remembered rung, which is an
+// INSTANCE so a second bar -- or a check -- starts where a first render would.
+const meetBar = HomeMeetStrip.create({
+    devices: () => DEVICES,
+    latestPing: (id) => latestPing[id],
+    pings: (id) => devicePings[id],
+    geofences: () => GEOFENCES,
+    stripRef: () => stripRef,
+    sourceMode: () => stripSourceMode,
+    nameOf: getDisplayName,
+    now: () => Date.now(),
+    meet: meetEngine
+});
+const barScale = HomeMeetStrip.createScale();
+
 let playbackRunning = false;
 let playbackLastFrame = 0;
 let geofenceCircleLayers = [];
@@ -1010,47 +1041,32 @@ function escapeHtml(text) {
 function formatTime(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
+// The geometry lives in /shared/geo.js — ONE law, because the public share used
+// to measure distance with its own copy (see the header there). These four keep
+// the page's own vocabulary so every caller below reads unchanged, and each body
+// is one line: an engine that grows a second implementation here is the bug
+// smoke section 15 fails on.
 function distanceMeters(lat1, lon1, lat2, lon2) {
-    const R = 6371000;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return HomeGeo.distanceMeters(lat1, lon1, lat2, lon2);
 }
 function bearingDegrees(lat1, lon1, lat2, lon2) {
-    const toRad = function(d) { return d * Math.PI / 180; }, toDeg = function(r) { return r * 180 / Math.PI; };
-    const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
-    const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
-              Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
-    return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    return HomeGeo.bearingDegrees(lat1, lon1, lat2, lon2);
 }
-/** A bearing (0 = north, clockwise) as one of the eight compass points. The words
- *  are for the chip on the bar: an arrow is a shape, "NE" is somewhere to aim,
- *  and the two together cannot be misread as anything else. */
-const COMPASS_POINTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 function compassPoint(brgDeg) {
-    const i = Math.round(((brgDeg % 360) + 360) % 360 / 45) % 8;
-    return COMPASS_POINTS[i];
+    return HomeGeo.compassPoint(brgDeg);
 }
-
 function angularDiff(a, b) {
-    const d = Math.abs(a - b) % 360;
-    return d > 180 ? 360 - d : d;
+    return HomeGeo.angularDiff(a, b);
 }
 function speedColor(kmh) {
     return HomePlayback.speedColor(kmh);
 }
 
-/** What the map draws, which must be what the backend STORED: a point exists
- * in the history precisely when it is neither stationary nor inside a fence
- * (see shouldPersistTrackPoint in FleetDO.ts, and smoke §15 ties the two
- * together). Spelled identically on purpose — the old form short-circuited on
- * `is_driving` first, which reads as a different rule even where it happens to
- * agree, and a rule that has to be reasoned about is one that drifts. */
+// What the map draws, which must be what the backend STORED, now lives with the
+// leg grouping that depends on it: /shared/trip-legs.js (and smoke §15 still ties
+// it to shouldPersistTrackPoint in FleetDO.ts).
 function shouldDrawPoint(p) {
-    return !p.is_inside_geofence && !p.is_stationary;
+    return tripLegs.shouldDrawPoint(p);
 }
 
 function toPing(deviceId, raw) {
@@ -1149,14 +1165,14 @@ async function loadDevicesAndGeofences() {
 }
 
 const map = L.map('map', { center: CONFIG.MAP_DEFAULT_CENTER, zoom: CONFIG.MAP_DEFAULT_ZOOM, zoomControl: true });
-let currentLayer = CONFIG.BASEMAP_DEFAULT, tileLayer = null;
+let currentLayer = CONFIG.BASEMAP_DEFAULT, shownBasemap = null;
 
 /** The menu, built from the basemap module: one button per key it defines, so
  *  a basemap added there appears here, and no button can outlive the tiles it
- *  promises. Label, URL and the required credit all come from that one object
- *  — which is what stops a button from saying "OSM" while the map draws
- *  somebody else's raster (the state /way/ was left in on 2026-09-20, when
- *  OSM started blocking this app and the button kept its old name). */
+ *  promises. Label and the required credit come from that one object — which is
+ *  what stops a button from saying "OSM" while the map draws somebody else's
+ *  raster (the state /way/ was left in on 2026-09-20, when OSM started blocking
+ *  this app and the button kept its old name). */
 function buildLayerMenu() {
     const menu = document.getElementById('layer-menu');
     if (!menu || typeof HomeBasemaps === 'undefined') return;
@@ -1167,22 +1183,26 @@ function buildLayerMenu() {
     }).join('');
 }
 
-function setLayer(key) {
-    if (!map || typeof HomeBasemaps === 'undefined') return; // defensive: the map exists on this page
+/** Draw one basemap key. WHAT that means — a vector style drawn by MapLibre, or
+ *  a raster plus the reference layers stacked on it — lives in
+ *  /shared/basemap-layer.js, the one place both maps turn a key into layers; the
+ *  page owns only which key is current and the menu that says so. The draw is
+ *  ASYNC because a vector key's style is fetched and tuned first, so a switch
+ *  the user makes while one is in flight wins: the answer is compared against
+ *  `currentLayer`, and a draw that has been overtaken takes itself back off the
+ *  map (credit included) instead of covering the choice they made. */
+async function setLayer(key) {
+    if (!map || typeof HomeBasemaps === 'undefined' || typeof HomeBasemapLayer === 'undefined') return;
     // An unknown key falls back to the default rather than drawing an empty
     // map: a typo must not leave an outsider (or the household) staring at
     // grey tiles wondering whether the person has moved.
     const want = HomeBasemaps[key] ? key : CONFIG.BASEMAP_DEFAULT;
-    if (want === currentLayer && tileLayer) { document.getElementById('layer-menu').classList.remove('open'); return; }
-    const base = HomeBasemaps[want];
-    if (tileLayer) map.removeLayer(tileLayer);
-    tileLayer = L.tileLayer(base.url, {
-        maxZoom: 19,
-        maxNativeZoom: base.maxNativeZoom,
-        minZoom: 8,
-        attribution: base.attribution
-    }).addTo(map);
+    if (want === currentLayer && shownBasemap) { document.getElementById('layer-menu').classList.remove('open'); return; }
     currentLayer = want;
+    const drawn = await HomeBasemapLayer.show(want, map);
+    if (drawn.key !== currentLayer) { HomeBasemapLayer.end(drawn, map); return; }
+    HomeBasemapLayer.end(shownBasemap, map);
+    shownBasemap = drawn;
     Object.keys(HomeBasemaps).forEach(function (k) {
         const btn = document.getElementById('layer-opt-' + k);
         if (btn) btn.classList.toggle('active', k === want);
@@ -2045,155 +2065,18 @@ function updateSpeedoHUD() {
 // The pill above answers "how far to the place". This answers the question the
 // map could not answer at all: "when will the two of you cross".
 //
-// Every rule in here was priced in scripts/one-off/2026-09-24-meet-eta-lab
-// against a fixture whose geometry is known by construction -- the lab's README
-// and check-maths.mjs say which gate each line below buys. The three that are
-// not obvious, all three measured rather than assumed:
+// The verdict itself -- each side's velocity from its OWN last two fixes (never
+// the speed column), the range rate, the gates, the countdown horizon, and the
+// numbers they are measured at -- lives in /shared/meet.js. It moved there
+// because the distance bar under the map asks the SAME verdict about its own two
+// ends, and a bar saying "closing" about a pair the pill had just refused is the
+// bug the two can only avoid by being one module.
 //
-//   * Each side's velocity is derived from that device's OWN last two fixes,
-//     never from the speed column it reports. A phone whose speed is wrong would
-//     otherwise be believed twice: once for how fast it is going, and once for
-//     which way it is pointed.
-//   * `settled` (MEET_ETA_SETTLED_M): at two kilometres out, ±6 m of fix noise
-//     swings the predicted miss distance by hundreds of metres, so the estimate
-//     is fiction at range and true up close. The pill stays dark until they are
-//     closer than this -- the lab's first false positive was a pair 2.1 km apart
-//     that was going to "miss by 39 m" and actually passed 464 m wide.
-//   * The fence rule counts a peer inside a fence as HOME only if it is also not
-//     moving. The stricter reading ("neither peer inside any fence") silenced
-//     fifteen seconds in the MIDDLE of a real meet, because every driver is
-//     inside their own home fence for the first minute of a trip.
-//
-// A parked subject is not representable here on purpose: the map only keeps
-// moving fixes (shouldDrawPoint), so a phone that is not going anywhere has no
+// What stays here is the pill: when it shows, and what it says. A parked subject
+// is not representable on purpose: the map only keeps moving fixes
+// (tripLegs.shouldDrawPoint), so a phone that is not going anywhere has no
 // velocity to derive. Same reason the fence pill needs a moving device.
 
-/** Compass bearing (0 = north, clockwise) of a local-frame velocity vector. */
-function bearingOfVector(x, y) {
-    return (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
-}
-
-/** Velocity of one device in metres per second (x east, y north), from its OWN
- *  last two fixes. Null when those two cannot give a velocity at all: no history,
- *  a gap, or a jump no vehicle could have made. Reported speed is never used --
- *  the ping carries a speed column and it is wrong often enough that believing it
- *  here would be believing one bad number twice. */
-function meetVelocity(pts) {
-    if (!pts || pts.length < 2) return null;
-    const prev = pts[pts.length - 2], cur = pts[pts.length - 1];
-    const dt = (new Date(cur.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 1000;
-    if (!(dt > 0) || dt > CONFIG.MEET_ETA_MAX_GAP_S) return null; // a gap is not a velocity
-    const ky = 110540, kx = 111320 * Math.cos(cur.latitude * Math.PI / 180);
-    const x = (cur.longitude - prev.longitude) * kx / dt;
-    const y = (cur.latitude - prev.latitude) * ky / dt;
-    const kmh = Math.sqrt(x * x + y * y) * 3.6;
-    if (kmh > CONFIG.MEET_ETA_TELEPORT_KMH) return null; // a bad fix is not motion
-    return { x: x, y: y, kmh: kmh, fix: cur };
-}
-
-/** THE verdict: are these two about to cross, already together, or neither? The
- *  pill and the gauge below both ask this and nothing else, so the two can never
- *  disagree about the same pair -- which is the whole reason it is one function
- *  rather than two copies of the gates. Returns the numbers either way (a silent
- *  pair still has a range and a closing rate), with `verdict` null when the pair
- *  is not one to show. */
-/** The rate the range between two fixes is changing, in km/h, POSITIVE while it
- *  shrinks. ONE formula for the whole feature: the verdict below gates on it ("not
- *  closing is not a meeting") and the bar's trend arrow is the same number pointed
- *  at -- if the two ever disagreed, the bar would say "closing" for a pair the pill
- *  had just called off. `vb` is {x:0,y:0} for anything with no velocity of its own
- *  (a fence), which is how "am I getting closer to this place" is asked. */
-function rangeRateKmh(aFix, bFix, va, vb) {
-    const kx = 111320 * Math.cos(aFix.latitude * Math.PI / 180), ky = 110540;
-    const rx = (bFix.longitude - aFix.longitude) * kx, ry = (bFix.latitude - aFix.latitude) * ky;
-    const range = Math.sqrt(rx * rx + ry * ry);
-    if (range < 0.5) return 0;
-    return -(((rx * (vb.x - va.x)) + (ry * (vb.y - va.y))) / range) * 3.6;
-}
-
-/** A device's own velocity for the meeting maths, or null when it is not a
- *  participant at all: not driving by the map's own record (is_driving, the state
- *  machine's answer), or no velocity that can be derived from its fixes. The pill
- *  and the bar's crossing tick both start here, so the two cannot disagree about
- *  who is in a meeting. */
-function meetParticipantVelocity(deviceId) {
-    const p = latestPing[deviceId];
-    if (!p || !p.is_driving) return null;
-    const v = meetVelocity(devicePings[deviceId]);
-    return (v && v.kmh >= CONFIG.ETA_MIN_SPEED_KMH) ? v : null;
-}
-
-function meetDecision(mine, theirs) {
-    if (!mine || !theirs) return null;
-    const now = Date.now();
-    // The badge's staleness rule: a five minute old fix is a memory of where
-    // somebody was, and a promise about the next few seconds is not built on one.
-    const fresh = function(v) { return now - new Date(v.fix.timestamp).getTime() <= CONFIG.MEET_ETA_FRESH_S * 1000; };
-    if (!fresh(mine) || !fresh(theirs)) return null;
-    // HOME, not merely "inside a fence": a peer parked in a fence is not about
-    // to meet anybody, while a peer driving through one is.
-    if (theirs.fix.is_inside_geofence && theirs.kmh < CONFIG.ETA_MIN_SPEED_KMH) return null;
-
-    const kx = 111320 * Math.cos(mine.fix.latitude * Math.PI / 180), ky = 110540;
-    const r = {
-        x: (theirs.fix.longitude - mine.fix.longitude) * kx,
-        y: (theirs.fix.latitude - mine.fix.latitude) * ky
-    };
-    const range = Math.sqrt(r.x * r.x + r.y * r.y);
-    // Inside the together radius the peer pill owns the moment; the two pills
-    // saying the same thing to the same pair is what this prevents.
-    if (range <= CONFIG.TOGETHER_DISTANCE_M) {
-        return { verdict: 'together', range: range, closing: 0, tcaS: 0, dcpa: range };
-    }
-
-    const v = { x: theirs.x - mine.x, y: theirs.y - mine.y };
-    const vv = v.x * v.x + v.y * v.y;
-    const rv = r.x * v.x + r.y * v.y;
-    const tcaS = vv > 0.01 ? Math.max(0, -rv / vv) : 0;
-    const closing = rangeRateKmh(mine.fix, theirs.fix, mine, theirs); // km/h, positive while they close
-    // Closest point of approach: how near they WILL get, not how near they are.
-    // That one number is what separates a meeting from two people on parallel
-    // roads 473 m apart, both pointed straight at each other.
-    const dcpa = Math.sqrt(Math.pow(r.x + v.x * tcaS, 2) + Math.pow(r.y + v.y * tcaS, 2));
-    const out = { verdict: null, range: range, closing: closing, tcaS: tcaS, dcpa: dcpa };
-
-    // The gates, each one a defect the lab measured rather than a precaution.
-    if (range > CONFIG.MEET_ETA_SETTLED_M) return out;
-    if (tcaS > CONFIG.MEET_ETA_MAX_MIN * 60) return out;
-    if (closing < CONFIG.MEET_ETA_CLOSING_MIN_KMH) return out;
-    if (dcpa > CONFIG.MEET_ETA_DCPA_MAX_M) return out;
-    // Every side that is MOVING has to be pointed at the other. Not a formality
-    // in either direction: without it an overtake closes at 15 km/h with only one
-    // of them pointed at the other, and with it alone a parallel-road pair passes.
-    const myToThem = bearingDegrees(mine.fix.latitude, mine.fix.longitude, theirs.fix.latitude, theirs.fix.longitude);
-    if (angularDiff(bearingOfVector(mine.x, mine.y), myToThem) > CONFIG.ETA_MAX_BEARING_DIFF_DEG) return out;
-    if (theirs.kmh >= CONFIG.ETA_MIN_SPEED_KMH &&
-        angularDiff(bearingOfVector(theirs.x, theirs.y), (myToThem + 180) % 360) > CONFIG.ETA_MAX_BEARING_DIFF_DEG) return out;
-    out.verdict = 'meet';
-    return out;
-}
-
-/** The best meeting the SELECTED device is heading into, or null. Only that
- *  device is ever the subject: the pill says what is about to happen to the
- *  person you are watching. Of the pairs that pass, it reports the soonest
- *  crossing -- an upcoming one is what a countdown is for. */
-function meetEtaFor(deviceId) {
-    const mine = meetParticipantVelocity(deviceId);
-    if (!mine) return null;
-    let best = null;
-
-    for (let i = 0; i < DEVICES.length; i++) {
-        const otherId = DEVICES[i];
-        if (otherId === deviceId) continue;
-        const d = meetDecision(mine, meetVelocity(devicePings[otherId]));
-        // Of the pairs that pass, the SOONEST crossing: an upcoming one is what a
-        // countdown is for, and two peers converging both matter.
-        if (d && d.verdict === 'meet' && (!best || d.tcaS < best.tcaS)) {
-            best = { peerId: otherId, tcaS: d.tcaS, dcpa: d.dcpa, range: d.range, closing: d.closing };
-        }
-    }
-    return best;
-}
 
 /** Draws the meeting pill: the person, when, and the two numbers behind it.
  *  Named "Meeting" and worn in green rather than the fence pill's sky, because
@@ -2221,236 +2104,24 @@ function showMeetPill(eta) {
 // before any number is read. It was drawn the other way round first, filling with
 // the distance, which made a widening gap look like the bar filling up.
 //
-// Why this instead of the timeline it replaces: a crossing is only ever the last
-// 60-90 s of a trip (that is what `settled` buys), so a timeline was empty at
-// every other moment -- which is most of them -- while the question people
-// actually ask ("how far is he?") had no answer on screen at all. A gauge answers
-// it at every range, including the ranges where the pill is deliberately dark.
+// The ruler itself -- the ladder, the rung's hysteresis, the fill, the colour, the
+// two labels -- and everything above the DOM that decides what the bar measures
+// TO (the pinned pick, the nearest person or place, the trend, the bar's own
+// crossing, the picker's rows) live in /shared/meet-strip.js. Why the bar is a
+// gauge rather than the timeline it replaced, and why a stale peer still draws
+// while the pill goes silent, is in that file's header.
 //
-// What it measures TO is the user's: the name on the bar opens a list of every
-// person and place, NEAREST FIRST from the device being watched, and one of them
-// can be picked and left picked (persisted). Until something is picked -- or after
-// it is cleared -- the fallback is the switch in Settings -> Map: the nearest
-// PERSON, or the nearest PLACE in the list. Place mode deliberately drops the HUD
-// pill's direction test -- "Heading toward X" is about which way you are pointed,
-// and a ruler that hid what is behind you would not be a ruler -- and it measures
-// to the fence centre, the same thing that pill counts down.
-//
-// Two more deliberate differences from the pill, both about honesty:
-//   * A STALE peer still draws. The pill goes silent on an old fix because it is
-//     a promise about the next few seconds; "he was 3 km away, four minutes ago"
-//     is still a reading, so the gauge draws it and says the age beside it.
-//   * The scale GROWS at once and shrinks reluctantly (MEET_STRIP_SHRINK_AT).
-//     Without the second half, a distance sitting on a rung boundary rescales the
-//     whole bar on every fix -- ±6 m of GPS noise crosses 1,000 m repeatedly.
-//
-// A PICKED reference is the point of the whole thing: the bar stops following
-// whoever is nearest and answers about one person or place, so the distance can
-// grow as well as shrink while you drive -- and the trend arrow beside the reading
-// says which way it is going, which position alone (always near the end of the
-// scale) cannot. The bar's own crossing (green name, red tick) is asked about ITS
-// two ends, which while something is picked may be a pair the pill is not talking
-// about; bar and pill both go through meetDecision, so they cannot disagree about
-// a pair they share.
-let meetStripScaleIdx = 0;    // remembered between renders; the ladder walk needs it
-let meetStripScaleKey = null; // ...and WHICH subject that rung was chosen for
-
-/** Every rung of the ladder, bottom-up, from the bands in CONFIG. "Snap to a
- *  multiple of 1 km" is why a 1.1 km distance reads on a 2 km bar: a rung is the
- *  smallest one that still CONTAINS the distance. */
-function meetStripLadder() {
-    const out = [];
-    let top = 0;
-    for (const band of CONFIG.MEET_STRIP_BANDS_M) {
-        for (let v = Math.ceil((top + 1) / band[1]) * band[1]; v <= band[0]; v += band[1]) out.push(v);
-        top = Math.max(top, band[0]);
-    }
-    return out;
-}
-const MEET_STRIP_LADDER = meetStripLadder();
-
-/** The rung this distance sits on, with hysteresis: up at once, down only once
- *  the distance is comfortably inside the rung below. The memory is per SUBJECT
- *  (`subjectKey`), not global -- see the reset inside. */
-function meetStripScale(dist, subjectKey) {
-    // A DIFFERENT subject starts fresh. The hysteresis below is about ONE distance
-    // wobbling on a boundary; carried across a change of reference it drew a 100 m
-    // pick as 1% of a 10 km bar and then walked down one rung per fix.
-    if (subjectKey !== meetStripScaleKey) { meetStripScaleKey = subjectKey; meetStripScaleIdx = 0; }
-    const L = MEET_STRIP_LADDER;
-    let i = Math.max(0, Math.min(meetStripScaleIdx, L.length - 1));
-    while (i < L.length - 1 && dist > L[i]) i++;                        // grows at once
-    while (i > 0 && dist < L[i - 1] * CONFIG.MEET_STRIP_SHRINK_AT) i--;  // shrinks only well inside
-    meetStripScaleIdx = i;
-    return L[i];
-}
-
-/** The fill: what fraction of the CURRENT SCALE is closed. 0 when the distance is
- *  at the top of the bar's scale -- nothing gained yet -- and 1 when it is zero.
- *  Its complement is how far along the bar the flashed reference sits, which is
- *  why the dot rides the fill's head: the number beside the bar, the head and the
- *  shaded part are then one reading of the same fact ("3.1 km of a 4 km bar" is a
- *  quarter full), not three.
- *
- *  Rescaling is what the fill pays for the scale's own hysteresis: the rung grows
- *  the instant the distance outgrows it and shrinks at 0.75x the one below, so a
- *  rescale steps the fill (down to a quarter when closing, up to a half when
- *  parting, on the fine rungs) at the same moment the scale label changes. That
- *  step is the price of a bar that always means "of the scale shown", and it is
- *  why the exact distance is printed rather than implied. */
-function meetStripFillFraction(dist, scale) {
-    return Math.max(0, Math.min(1, 1 - dist / Math.max(1, scale)));
-}
-
-/** How far INTO ITS RUNG a distance sits: 0 when the distance is as small as this
- *  rung's step allows, 1 when it is at the top of the rung. This one drives the
- *  COLOUR, not the fill (meetStripFillFraction does that): read off the whole
- *  scale instead and the colour barely moves -- hysteresis keeps the distance in
- *  the top half of the bar's scale at every real range, so a scale-wide ramp is
- *  amber at 500 m and amber at 50 km and says nothing. Rung-relative it sweeps
- *  green to amber on every rung instead, and since it is driven by the same
- *  distance it still moves WITH the fill (green as the bar grows, amber as it
- *  drains) even though the two fractions are not the same number. */
-function meetStripCloseness(dist, i) {
-    const L = MEET_STRIP_LADDER;
-    const prev = i > 0 ? L[i - 1] : 0;
-    return Math.max(0, Math.min(1, (dist - prev) / Math.max(1, L[i] - prev)));
-}
-
-/** Closeness -> colour, as "r,g,b": green at 0, amber at 1. */
-function meetStripTint(t) {
-    const green = [46, 204, 113], amber = [245, 196, 81];
-    const mix = function(k) { return Math.round(green[k] + (amber[k] - green[k]) * t); };
-    return mix(0) + ',' + mix(1) + ',' + mix(2);
-}
-
-/** The scale as it is written on the bar. */
-function meetStripScaleLabel(m) {
-    if (m < 1000) return m + ' m';
-    return (m % 1000 === 0 ? (m / 1000) : (m / 1000).toFixed(1)) + ' km';
-}
-
-/** The bar's own reading of a distance, in ONE place: the leaf beside the bar and
- *  the picker's rows must not round the same number two different ways. */
-function meetStripDistanceLabel(m) {
-    if (m === null || m === undefined || !isFinite(m)) return '--';
-    return m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m';
-}
-
-/** The bar's far end when the user has PICKED one thing to measure to, or null for
- *  Auto. A pick that cannot be resolved right now -- a peer that has not reported
- *  since the reload, a place that left the list -- still comes back, with dist
- *  null, rather than quietly falling through to the nearest: a bar that silently
- *  measured somebody else would make the picker look broken, and the bar is the
- *  only place a pick can be cleared from. */
-function stripRefTarget(deviceId) {
-    if (!stripRef) return null;
-    const mine = latestPing[deviceId];
-    if (!mine) return null;
-    const gap = function(lat, lng) { return distanceMeters(mine.latitude, mine.longitude, lat, lng); };
-    if (stripRef.kind === 'fence') {
-        const f = GEOFENCES.filter(function(g) { return g.name === stripRef.id; })[0];
-        if (!f) return { kind: 'fence', id: stripRef.id, name: stripRef.id, dist: null, lat: null, lng: null };
-        return { kind: 'fence', id: f.name, name: getDisplayName(f.name), dist: gap(f.lat, f.lng), lat: f.lat, lng: f.lng };
-    }
-    const theirs = latestPing[stripRef.id];
-    if (!theirs) return { kind: 'user', id: stripRef.id, name: stripRef.id, dist: null, at: null, lat: null, lng: null };
-    return {
-        kind: 'user', id: stripRef.id, name: stripRef.id, at: theirs.timestamp,
-        lat: theirs.latitude, lng: theirs.longitude,
-        dist: gap(theirs.latitude, theirs.longitude)
-    };
-}
-
-/** The crossing between the bar's OWN two ends, or null. The pill asks the same
- *  verdict (meetDecision) about the pair IT is about; this is the bar asking about
- *  its own pair, which is a different one the moment a reference is pinned -- and a
- *  tick borrowed from the pill's pair would mark a bar whose dot is somebody else.
- *  Both start from the same participant test, so they cannot disagree about who is
- *  in a meeting at all. */
-function meetStripCrossPair(deviceId, pairId) {
-    const mine = meetParticipantVelocity(deviceId);
-    if (!mine) return null;
-    const d = meetDecision(mine, meetVelocity(devicePings[pairId]));
-    return (d && d.verdict === 'meet') ? d : null;
-}
-
-/** Which way the gap is MOVING: 'closing' while the range shrinks, 'opening' while
- *  it grows, 'flat' when the change is under MEET_STRIP_TREND_KMH, and null when
- *  there is no honest velocity to read. Deliberately the same range rate the verdict
- *  gates on (rangeRateKmh), so a bar saying "closing" cannot be showing a pair the
- *  pill has just refused for not closing. A place has no velocity of its own, so its
- *  rate is my own motion along the line to it -- which is what "getting closer to
- *  Anjohy" means. */
-function meetStripTrend(deviceId, target) {
-    if (!target || target.dist === null || target.lat === null) return null;
-    const mine = meetVelocity(devicePings[deviceId]);
-    // A rate from five minutes ago is not a rate. The bar draws a stale DISTANCE and
-    // prints its age, but it will not draw a stale DIRECTION as if it were current.
-    if (!mine || Date.now() - new Date(mine.fix.timestamp).getTime() > CONFIG.MEET_ETA_FRESH_S * 1000) return null;
-    let theirs = { x: 0, y: 0 };
-    if (target.kind === 'user') {
-        theirs = meetVelocity(devicePings[target.id]);
-        if (!theirs) return null;
-    }
-    const rate = rangeRateKmh(mine.fix, { latitude: target.lat, longitude: target.lng }, mine, theirs);
-    if (Math.abs(rate) < CONFIG.MEET_STRIP_TREND_KMH) return 'flat';
-    return rate > 0 ? 'closing' : 'opening';
-}
-
-/** The picker's rows, as DATA: Auto first, then every other person, then every
- *  place, nearest first in each group and anything with no fix at the end of its
- *  group. It sorts from the position of the device being WATCHED -- "everything
- *  from where you are now" can only mean one of the two -- and it is pure on
- *  purpose, so the DOM half below is thin enough to read and this half can be run.
- *  A tie keeps the list order (sort is stable), so the list does not shuffle under
- *  a finger between two fixes. */
-function stripPickerRows(deviceId) {
-    const mine = latestPing[deviceId];
-    const from = mine ? function(lat, lng) { return distanceMeters(mine.latitude, mine.longitude, lat, lng); } : null;
-    const row = function(kind, id, name, dist, at, active) {
-        return { kind: kind, id: id, name: name, dist: dist, at: at || null, active: !!active };
-    };
-    const pinnedUser = stripRef && stripRef.kind === 'user' ? stripRef.id : null;
-    const pinnedFence = stripRef && stripRef.kind === 'fence' ? stripRef.id : null;
-    const people = [];
-    for (let i = 0; i < DEVICES.length; i++) {
-        const id = DEVICES[i];
-        if (id === deviceId) continue;
-        const theirs = latestPing[id];
-        people.push(row('user', id, id, (theirs && from) ? from(theirs.latitude, theirs.longitude) : null, theirs ? theirs.timestamp : null, pinnedUser === id));
-    }
-    const places = [];
-    for (const f of GEOFENCES) {
-        places.push(row('fence', f.name, getDisplayName(f.name), from ? from(f.lat, f.lng) : null, null, pinnedFence === f.name));
-    }
-    // Nothing to measure to goes last.
-    const byNearest = function(a, b) {
-        if (a.dist === null && b.dist === null) return 0;
-        if (a.dist === null) return 1;
-        if (b.dist === null) return -1;
-        return a.dist - b.dist;
-    };
-    people.sort(byNearest);
-    places.sort(byNearest);
-    const autoList = stripSourceMode === 'fence' ? places : people;
-    return {
-        autoLabel: stripSourceMode === 'fence' ? 'nearest place' : 'nearest person',
-        auto: autoList.length ? autoList[0] : null,
-        people: people,
-        places: places
-    };
-}
-
+// What stays here is the DOM: the bar's elements below, the picker panel, the
+// chip that spells out the direction, and the persistence of a pick.
 /** The panel itself: Auto, then the two groups, each row a button. Rebuilt on each
  *  ping while it is open, so the distances in it are the ones on the bar. */
 function renderStripPicker() {
     const el = document.getElementById('strip-picker');
     if (!el) return;
-    const rows = stripPickerRows(selectedDevice);
+    const rows = meetBar.pickerRows(selectedDevice);
     const meta = function(r) {
         if (r.dist === null) return 'no fix';
-        let out = meetStripDistanceLabel(r.dist);
+        let out = HomeMeetStrip.distanceLabel(r.dist);
         // A menu is not a promise: an old fix is still worth listing, but its age
         // goes with it -- the same rule the bar itself follows.
         const ageS = r.at ? Math.max(0, Math.round((Date.now() - new Date(r.at).getTime()) / 1000)) : 0;
@@ -2546,51 +2217,6 @@ function persistStripRef() {
     } catch (e) {}
 }
 
-/** What the far end of the bar is, in order: the reference the user PICKED (if
- *  any), then the pill's own peer while the pill is up (so the ticking crossing and
- *  the dot agree), then the nearest one on the current source. Null when there is
- *  nothing to measure to. */
-function meetStripTarget(deviceId, preferId) {
-    const mine = latestPing[deviceId];
-    if (!mine) return null;
-    const from = function(lat, lng) { return distanceMeters(mine.latitude, mine.longitude, lat, lng); };
-
-    // 1. The pick wins over everything, including the pill's peer: it is the thing
-    //    the user actually chose, and a bar that abandoned it the moment somebody
-    //    else converged would answer a question nobody asked.
-    const pinned = stripRefTarget(deviceId);
-    if (pinned) return pinned;
-
-    // 2. Auto, per the switch: the nearest place...
-    if (stripSourceMode === 'fence') {
-        let best = null;
-        for (const f of GEOFENCES) {
-            const dist = from(f.lat, f.lng);
-            if (!best || dist < best.dist) best = { kind: 'fence', id: f.name, name: getDisplayName(f.name), dist: dist, lat: f.lat, lng: f.lng };
-        }
-        return best;
-    }
-
-    const at = function(id) {
-        const theirs = latestPing[id];
-        if (!theirs) return null;
-        return {
-            kind: 'user', id: id, name: id, at: theirs.timestamp,
-            lat: theirs.latitude, lng: theirs.longitude,
-            dist: from(theirs.latitude, theirs.longitude)
-        };
-    };
-    // ...or the pill's own peer while the pill is up, so the tick and the dot agree.
-    if (preferId) { const p = at(preferId); if (p) return p; }
-    let best = null;
-    for (let i = 0; i < DEVICES.length; i++) {
-        if (DEVICES[i] === deviceId) continue;
-        const p = at(DEVICES[i]);
-        if (p && (!best || p.dist < best.dist)) best = p;
-    }
-    return best;
-}
-
 // ── The bar's direction half ────────────────────────────────────
 // The bar answers "how far is Home / Niri"; this answers "which way", which is
 // the other half of the same question and the only place on the screen it can be
@@ -2667,8 +2293,8 @@ function renderMeetStrip(eta) {
     // The pill's own answer comes first: while it is up, the bar runs to ITS peer.
     // The caller hands `eta` in so the two are the SAME object on the same tick;
     // this default is for the callers that have no pill to draw (a device switch).
-    if (eta === undefined) eta = selectedDevice ? meetEtaFor(selectedDevice) : null;
-    const target = selectedDevice ? meetStripTarget(selectedDevice, eta ? eta.peerId : null) : null;
+    if (eta === undefined) eta = selectedDevice ? meetEngine.etaFor(selectedDevice) : null;
+    const target = selectedDevice ? meetBar.target(selectedDevice, eta ? eta.peerId : null) : null;
 
     // The bar is where the PICKER lives, so it does not disappear just because the
     // nearest thing on the current source has no fix: with nobody reporting, the
@@ -2720,7 +2346,7 @@ function renderMeetStrip(eta) {
     // belong to the pair drawn on the bar, and a place -- which has no velocity of
     // its own -- is never one of them.
     const pairId = (target.kind === 'user' && target.dist !== null) ? target.id : null;
-    const cross = pairId ? meetStripCrossPair(selectedDevice, pairId) : null;
+    const cross = pairId ? meetBar.crossPair(selectedDevice, pairId) : null;
     const live = !!cross;
     el.classList.toggle('live', live);
 
@@ -2745,21 +2371,21 @@ function renderMeetStrip(eta) {
         return;
     }
 
-    const scale = meetStripScale(target.dist, target.kind + ':' + target.id);
+    const scale = barScale.scale(target.dist, target.kind + ':' + target.id);
     // Every mark on the track is placed by this one mapping, so the fill, the dot
     // and the crossing stay in one coordinate system: a distance, expressed as how
     // much of the bar's scale is still LEFT.
-    const pct = function(m) { return meetStripFillFraction(m, scale) * 100; };
+    const pct = function(m) { return HomeMeetStrip.fillFraction(m, scale) * 100; };
     // The fill's head IS the reading -- the dot sits on it -- so the shaded part
     // and the mark cannot drift apart and say two different things.
     const headPct = pct(target.dist);
-    const tint = meetStripTint(meetStripCloseness(target.dist, meetStripScaleIdx));
+    const tint = HomeMeetStrip.tint(HomeMeetStrip.closeness(target.dist, barScale.index()));
     // The direction half of the SAME reading: one bearing, from this device to
     // this subject, drawn on the bar and on the map together -- and in the tint
     // the fill and the dot are already wearing.
     renderDirection(selectedDevice, target, tint);
 
-    document.getElementById('meet-strip-scale').textContent = meetStripScaleLabel(scale);
+    document.getElementById('meet-strip-scale').textContent = HomeMeetStrip.scaleLabel(scale);
     const dot = document.getElementById('meet-strip-peer');
     dot.style.display = 'block';   // …restored from the unresolved pick above
     dot.style.left = headPct.toFixed(2) + '%';
@@ -2775,7 +2401,7 @@ function renderMeetStrip(eta) {
     // while the pill is up -- a red mark on a pair with no crossing would be a
     // promise the pill is not making.
     const crossEl = document.getElementById('meet-strip-cross');
-    const mv = live ? meetVelocity(devicePings[selectedDevice]) : null;
+    const mv = live ? meetEngine.velocity(devicePings[selectedDevice]) : null;
     if (live && mv) {
         crossEl.style.display = 'block';
         crossEl.style.left = pct(mv.kmh / 3.6 * cross.tcaS).toFixed(2) + '%';
@@ -2789,13 +2415,13 @@ function renderMeetStrip(eta) {
     // far it is.
     const ageS = target.at ? Math.max(0, Math.round((Date.now() - new Date(target.at).getTime()) / 1000)) : 0;
     const stale = !!target.at && ageS > CONFIG.MEET_ETA_FRESH_S;
-    const gap = meetStripDistanceLabel(target.dist);
+    const gap = HomeMeetStrip.distanceLabel(target.dist);
     // The trend arrow: WHICH WAY the gap is moving. The fill carries how much of
     // the scale is closed (tinted green when near, amber when far), and a rescale
     // can step that -- so a filled bar is not by itself proof of closing, and this
     // is the one thing on the bar that reacts to a DIRECTION rather than to a
     // distance.
-    const trend = meetStripTrend(selectedDevice, target);
+    const trend = meetBar.trend(selectedDevice, target);
     const trendEl = document.getElementById('meet-strip-trend');
     trendEl.textContent = trend === 'closing' ? '▼' : trend === 'opening' ? '▲' : trend === 'flat' ? '▬' : '';
     trendEl.style.color = trend === 'closing' ? '#2ecc71' : trend === 'opening' ? '#f1c40f' : '#6b7280';
@@ -2803,7 +2429,7 @@ function renderMeetStrip(eta) {
         gap + (stale ? ' · ' + (ageS >= 90 ? Math.round(ageS / 60) + 'm old' : ageS + 's old') : '');
     el.title = selectedDevice + ' → ' + target.name + ' · ' + Math.round(target.dist) + ' m' +
         (stripSourceMode === 'fence' ? ' to the fence centre' : ' apart') +
-        ' · the bar is ' + meetStripScaleLabel(scale) +
+        ' · the bar is ' + HomeMeetStrip.scaleLabel(scale) +
         (live ? ' · crossing in ' + Math.round(eta.tcaS) + ' s, passing ' + Math.round(eta.dcpa) + ' m away' : '') +
         (stale ? " · " + target.name + '\'s last fix is ' + ageS + ' s old' : '') +
         (trend === 'closing' ? ' · the gap is closing' : trend === 'opening' ? ' · the gap is opening' : '');
@@ -2831,7 +2457,7 @@ function updateTogetherAndETA() {
     // Both start from the same precondition: a device that is DRIVING right now,
     // by the map's own record of it (is_driving, the state machine's answer)
     // rather than a speed this code derived.
-    const meet = (p && p.is_driving) ? meetEtaFor(selectedDevice) : null;
+    const meet = (p && p.is_driving) ? meetEngine.etaFor(selectedDevice) : null;
     renderMeetStrip(meet);
 
     // The meeting ETA goes first. When both it and the fence countdown are true,
@@ -3887,53 +3513,12 @@ function onDateChanged(val) {
     loadTripsForDate(selectedDateStr);
 }
 
-/** Group a day's stored points into legs. "Leg" is a BACKEND concept: every
- * stored point carries leg_id (assigned by the state machine, bounded by
- * fence departures/arrivals and start/stop), so this just groups by it --
- * falling back to a time-gap split for rows written before legs existed. */
+// A day's stored points grouped into legs, and the rule that says which of them
+// is a point at all, live in /shared/trip-legs.js -- together, because the day's
+// totals and the map's tracks must agree about what exists. The gap the grouping
+// breaks at is passed in from HomePlayback: it is the trail's own threshold.
 function computeLegsForDay(pings) {
-    const sorted = pings.slice().sort(function(a, b) { return new Date(a.timestamp) - new Date(b.timestamp); });
-    const legs = [];
-    let current = null;
-    let lastTs = null;
-
-    for (const p of sorted) {
-        if (!shouldDrawPoint(p)) { lastTs = null; continue; }
-        const ts = new Date(p.timestamp).getTime();
-        const legId = (p.leg_id !== undefined && p.leg_id !== null) ? p.leg_id : null;
-        const gapSec = (lastTs === null) ? Infinity : (ts - lastTs) / 1000;
-        const legChanged = current !== null &&
-            ((legId !== null && current.legId !== null && legId !== current.legId) || gapSec > CONFIG.TRACK_GAP_SECONDS);
-
-        if (current === null || legChanged) {
-            if (current && current.points.length >= 2) legs.push(current);
-            current = {
-                legId: legId,
-                startTime: p.timestamp, endTime: p.timestamp,
-                startName: p.is_inside_geofence ? getDisplayName(p.geofence_name) : 'En route',
-                points: [[p.latitude, p.longitude]],
-                // distanceKm = the whole path; drivenKm / walkedKm split it by
-                // classification. The day's totals use the split, so walking is
-                // reported but never counted as driven distance. See
-                // shouldPersistTrackPoint() in FleetDO.ts.
-                distanceKm: 0, drivenKm: 0, walkedKm: 0, topSpeed: p.speed || 0, isDriving: !!p.is_driving
-            };
-        } else {
-            const last = current.points[current.points.length - 1];
-            current.points.push([p.latitude, p.longitude]);
-            const segKm = distanceMeters(last[0], last[1], p.latitude, p.longitude) / 1000;
-            current.distanceKm += segKm;
-            if (p.is_driving) current.drivenKm += segKm;
-            else current.walkedKm += segKm;
-            current.endTime = p.timestamp;
-            if ((p.speed || 0) > current.topSpeed) current.topSpeed = p.speed;
-            if (p.is_driving) current.isDriving = true;
-            if (current.legId === null && legId !== null) current.legId = legId;
-        }
-        lastTs = ts;
-    }
-    if (current && current.points.length >= 2) legs.push(current);
-    return legs;
+    return tripLegs.forDay(pings);
 }
 
 /** The HUD's "km today", from the SAME rule the Trips card and the monthly

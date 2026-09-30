@@ -3,66 +3,52 @@
 // (src/routes/auth.tsx) mints a Sompitra session at login time; this
 // middleware transparently REPAIRS a missing/stale one when the central
 // home session is still alive (e.g. module account created after login).
-import { getCookie } from 'hono/cookie'
+//
+// The repair RULE lives in src/lib/session-repair.ts; this file is the
+// page-shaped adapter over its plan -- set the fresh cookie (the one place
+// Hono needs `c.header(..., { append: true })`) and carry on, no retry.
 import type { Context, Next } from 'hono'
 import type { Env, User, Session } from '../db/schema'
-import { SOMPITRA_COOKIE, getHomeUserFromCookie, promoteSession } from '../identity'
+import { SOMPITRA_COOKIE } from '../identity'
+import { repairSession } from '../lib/session-repair'
+import { readCookie } from '../lib/cookies'
 
 export async function requireAuth(c: Context<{ Bindings: Env; Variables: { user: User } }>, next: Next) {
-  const token = getCookie(c, SOMPITRA_COOKIE)
+  const token = readCookie(c.req.raw, SOMPITRA_COOKIE)
 
   if (token) {
-    const session = await c.env.DB.prepare(
-      "SELECT * FROM sessions WHERE token = ? AND expires_at > datetime('now')"
-    ).bind(token).first<Session>()
-
-    if (session) {
-      const user = await c.env.DB.prepare(
-        'SELECT * FROM users WHERE id = ?'
-      ).bind(session.user_id).first<User>()
-
-      if (user) {
-        c.set('user', user)
-        await next()
-        return
-      }
+    const user = await sompitraUser(c.env, token)
+    if (user) {
+      c.set('user', user)
+      await next()
+      return
     }
   }
 
   // No valid Sompitra session — can the central home session repair it?
-  const homeToken = getCookie(c, 'home_session')
-  const homeUser = await getHomeUserFromCookie(c.env.HOME_DB, homeToken)
-  if (homeUser) {
-    const setCookieValue = await promoteSession(c.env, 'sompitra', homeUser, secureFromUrl(c.req.url))
-    if (setCookieValue) {
-      // Re-extract the raw token from the Set-Cookie value and re-run the
-      // same lookup the normal path uses — the freshly minted session row
-      // exists, so the query now succeeds.
-      const raw = setCookieValue.split(';')[0]!.split('=').slice(1).join('=')
-      const session = await c.env.DB.prepare(
-        "SELECT * FROM sessions WHERE token = ? AND expires_at > datetime('now')"
-      ).bind(raw).first<Session>()
-      const user = session
-        ? await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(session.user_id).first<User>()
-        : null
-      if (user) {
-        c.header('Set-Cookie', setCookieValue, { append: true })
-        c.set('user', user)
-        await next()
-        return
-      }
+  // The plan carries the raw token, so the same lookup simply runs again
+  // against the session row that was just minted (no Set-Cookie parsing).
+  const plan = await repairSession(c.req.raw, c.env, 'sompitra')
+  if (plan) {
+    const user = await sompitraUser(c.env, plan.token)
+    if (user) {
+      c.header('Set-Cookie', plan.setCookie, { append: true })
+      c.set('user', user)
+      await next()
+      return
     }
   }
 
   return c.redirect('/login')
 }
 
-function secureFromUrl(url: string): boolean {
-  try {
-    const u = new URL(url)
-    if (u.protocol === 'https:') return true
-    return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]'
-  } catch {
-    return true
-  }
+/** The Sompitra session row + its user, or null. The repair path re-runs
+ * this after minting, which is why the lookup is one function rather than
+ * the same two queries written twice. */
+async function sompitraUser(env: Env, token: string): Promise<User | null> {
+  const session = await env.DB.prepare(
+    "SELECT * FROM sessions WHERE token = ? AND expires_at > datetime('now')"
+  ).bind(token).first<Session>()
+  if (!session) return null
+  return env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(session.user_id).first<User>()
 }

@@ -10,6 +10,12 @@ import { classifyTransaction } from '../lib/notify'
 // The pantry's OWN queries. Home shows a summary of the shelves, and it has to
 // be the same arithmetic the Pantry screen draws from -- see `pantrySummary`.
 import { pantrySummary } from '../laoka/data/queries.js'
+// Kiné's ONE ledger (src/kine/ledger.ts): the row expressions every contract
+// query pastes, the balance rule, and the week's two figures. Home used to
+// carry two more copies of this arithmetic — the per-client subqueries below,
+// and a separate `due` SUM that multiplied by `sc.session_rate` with no
+// fallback, so a client with no session rate dropped out of Uncollected Dues.
+import { DELIVERED_COUNT_SQL, PAID_SQL, clientLedger, weekLedger } from '../kine/ledger'
 import type { Env, User, Transaction, DebtCreditAccount } from '../db/schema'
 
 const dashboard = new Hono<{ Bindings: Env; Variables: { user: User } }>()
@@ -22,7 +28,7 @@ dashboard.get('/', async (c) => {
   const week = currentWeekBounds(0)
 
   // ── Aggregate queries ──────────────────────────────────────
-  const [incomeRow, expenseRow, allIncomeRow, allExpenseRow, debtRow, creditRow, recentTxns, debts, kineClients, kineWeekDelivered, kineWeekPaid, todayTxns] = await Promise.all([
+  const [incomeRow, expenseRow, allIncomeRow, allExpenseRow, debtRow, creditRow, recentTxns, debts, kineClients, kineWeek, todayTxns] = await Promise.all([
     c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='income' AND date BETWEEN ? AND ?`).bind(month.start, month.end).first<{ total: number }>(),
     c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='expense' AND date BETWEEN ? AND ?`).bind(month.start, month.end).first<{ total: number }>(),
     c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='income'`).first<{ total: number }>(),
@@ -42,14 +48,13 @@ dashboard.get('/', async (c) => {
          cu.name        AS customer_name,
          cu.default_rate AS default_rate,
          sc.session_rate AS session_rate,
-         COALESCE((SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered = 1), 0) AS delivered,
-         COALESCE((SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id), 0) AS paid
+         ${DELIVERED_COUNT_SQL} AS delivered,
+         ${PAID_SQL} AS paid
        FROM customers cu
        JOIN service_contracts sc ON sc.customer_id = cu.id AND sc.status = 'active'
        ORDER BY cu.created_at DESC`
     ).all<{ customer_id: string; customer_name: string; default_rate: number; session_rate: number | null; delivered: number; paid: number }>(),
-    c.env.DB.prepare(`SELECT COUNT(*) as total FROM attendance_ticks WHERE is_delivered = 1 AND tick_date BETWEEN ? AND ?`).bind(week.start, week.end).first<{ total: number }>(),
-    c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM client_payments WHERE payment_date BETWEEN ? AND ?`).bind(week.start, week.end).first<{ total: number }>(),
+    weekLedger(c.env.DB, week),
     c.env.DB.prepare(
       `SELECT t.*, c.name AS category_name, cg.name AS group_name, ia.name AS income_account_name, u.display_name AS added_by_display_name
        FROM transactions t
@@ -71,15 +76,12 @@ dashboard.get('/', async (c) => {
   const totalDebt     = debtRow?.total    ?? 0
   const totalCredit   = creditRow?.total  ?? 0
 
-  const dueRow = await c.env.DB.prepare(`
-    SELECT COALESCE(SUM((
-      SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered = 1
-    ) * sc.session_rate - COALESCE((
-      SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id
-    ),0)), 0) AS due FROM service_contracts sc WHERE sc.status = 'active'
-  `).first<{ due: number }>()
-  // Uncollected Dues = money owed TO us: unpaid Kiné sessions + outstanding credits (money lent out)
-  const kineDues = dueRow?.due ?? 0
+  // Uncollected Dues = money owed TO us: unpaid Kiné sessions + outstanding
+  // credits (money lent out). The Kiné half is the SAME rows the tiles below
+  // draw (`kineClients`), summed through the one ledger rule — a second SUM in
+  // SQL is how the anchor and the tiles used to disagree, and its missing
+  // COALESCE dropped contracts with no session_rate out of net worth entirely.
+  const kineDues = kineClients.results.reduce((sum, row) => sum + clientLedger(row).balance, 0)
   const uncollectedDues = kineDues + totalCredit
   const netWorth = currentCash + uncollectedDues - totalDebt
 
@@ -350,30 +352,28 @@ dashboard.get('/', async (c) => {
         <div class="grid grid-cols-2 gap-2 mb-3">
           <div class="tile tile-tint text-blue-600 dark:text-blue-400">
             <p class="t-label">Sessions this week</p>
-            <p class="t-value">{String(kineWeekDelivered?.total || 0)}</p>
+            <p class="t-value">{kineWeek.delivered}</p>
           </div>
           <div class="tile tile-tint text-green-600 dark:text-green-400">
             <p class="t-label">Paid this week</p>
-            <p class="t-value truncate" title={mga(kineWeekPaid?.total || 0)}>{mga(kineWeekPaid?.total || 0)}</p>
+            <p class="t-value truncate" title={mga(kineWeek.paid)}>{mga(kineWeek.paid)}</p>
           </div>
         </div>
 
         {/* Per-client active summary — one block per client, its three figures
-            as the three tiles above (see `KineClientStats`). Home keeps the
-            client's OWN arithmetic and nothing else: opening them is /kine's
-            job, and a name here is a label, not yet a link. */}
+            as the three tiles above (see `KineClientStats`). Home reads the
+            same ledger /kine draws, through the same module: this card cannot
+            disagree with the tab, and a name here is a label, not yet a link. */}
         {kineClients.results.length === 0
           ? <p class="t-micro text-center py-3">No active clients yet</p>
           : (
             <div class="space-y-3">
               {kineClients.results.map(client => {
-                const delivered = client.delivered ?? 0
-                const paid      = client.paid ?? 0
-                const rate      = client.session_rate ?? client.default_rate ?? 0
+                const ledger = clientLedger(client)
                 return (
                   <div>
                     <p class="text-[13.5px] font-semibold mb-1.5 truncate">{client.customer_name}</p>
-                    <KineClientStats delivered={delivered} paid={paid} rate={rate} />
+                    <KineClientStats ledger={ledger} />
                   </div>
                 )
               })}

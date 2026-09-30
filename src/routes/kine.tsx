@@ -3,6 +3,10 @@ import { Hono } from 'hono'
 import { Layout, Card, KineClientStats } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
 import { mga, formatDate, generateId, currentWeekBounds } from '../lib/utils'
+// Kiné's ONE ledger: the delivered/paid row expressions, the balance rule and
+// the week's figures. Every statement below pastes the fragments instead of
+// re-writing them, and every card, tile and form reads `clientLedger`.
+import { DELIVERED_COUNT_SQL, PAID_SQL, clientLedger } from '../kine/ledger'
 import { notifyTransaction, kineNotify } from '../lib/notify'
 import type { Env, User, AttendanceTick, IncomeAccount, Customer, ServiceContract } from '../db/schema'
 
@@ -50,8 +54,8 @@ interface ClientRow {
   total_scheduled: number | null
   status: string | null
   start_date: string | null
-  delivered_count: number
-  paid_amount: number
+  delivered: number
+  paid: number
 }
 
 interface EndedContractRow {
@@ -66,8 +70,8 @@ interface EndedContractRow {
   status: string
   start_date: string | null
   end_date: string | null
-  delivered_count: number
-  paid_amount: number
+  delivered: number
+  paid: number
 }
 
 // ─── GET /kine ─────────────────────────────────────────────
@@ -94,8 +98,8 @@ kine.get('/', async (c) => {
        sc.total_scheduled AS total_scheduled,
        sc.status      AS status,
        sc.start_date  AS start_date,
-       COALESCE((SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered = 1), 0) AS delivered_count,
-       COALESCE((SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id), 0) AS paid_amount
+       ${DELIVERED_COUNT_SQL} AS delivered,
+       ${PAID_SQL} AS paid
      FROM customers cu
      LEFT JOIN service_contracts sc ON sc.customer_id = cu.id AND sc.status = 'active'`
   const activeParams: string[] = []
@@ -121,8 +125,8 @@ kine.get('/', async (c) => {
        cu.name        AS customer_name,
        cu.phone       AS phone,
        cu.default_rate AS default_rate,
-       COALESCE((SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered = 1), 0) AS delivered_count,
-       COALESCE((SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id), 0) AS paid_amount
+       ${DELIVERED_COUNT_SQL} AS delivered,
+       ${PAID_SQL} AS paid
      FROM service_contracts sc
      JOIN customers cu ON cu.id = sc.customer_id
      WHERE sc.status != 'active'`
@@ -216,12 +220,9 @@ kine.get('/', async (c) => {
               )
             }
 
-            const billed = (client.delivered_count ?? 0) * (client.session_rate ?? 0)
-            const paid   = client.paid_amount ?? 0
-            const due    = billed - paid
+            const ledger = clientLedger(client)
             const total  = client.total_scheduled ?? 0
-            const pct    = total > 0 ? Math.round(((client.delivered_count ?? 0) / total) * 100) : 0
-            const rate   = client.session_rate ?? client.default_rate ?? 0
+            const pct    = total > 0 ? Math.round((client.delivered / total) * 100) : 0
 
             return (
               <Card className="mb-4">
@@ -229,7 +230,7 @@ kine.get('/', async (c) => {
                 <div class="flex items-start justify-between gap-2 mb-2">
                   <div class="min-w-0">
                     <h3 class="text-lg sm:text-xl font-bold leading-tight truncate">{client.customer_name}</h3>
-                    <p class="text-xs text-gray-500 mt-0.5">{client.title} · {mga(client.session_rate || 0)}/session</p>
+                    <p class="text-xs text-gray-500 mt-0.5">{client.title} · {mga(ledger.rate)}/session</p>
                   </div>
                   <div class="flex items-center gap-1 shrink-0">
                     <a href={`/kine/clients/view/${client.customer_id}`} class="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded" title="View details">👁</a>
@@ -239,7 +240,7 @@ kine.get('/', async (c) => {
                 </div>
 
                 {/* Per-client summary: delivered / paid / due */}
-                <KineClientStats delivered={client.delivered_count ?? 0} paid={paid} rate={rate} />
+                <KineClientStats ledger={ledger} />
 
                 {/* Progress */}
                 <div class="flex items-center gap-2 my-2">
@@ -247,7 +248,7 @@ kine.get('/', async (c) => {
                     <div class="h-full bg-green-500 rounded-full transition-all" style={`width:${pct}%`} />
                   </div>
                   <span class="text-[11px] text-gray-500 whitespace-nowrap">
-                    {client.delivered_count ?? 0}/{total} sessions
+                    {client.delivered}/{total} sessions
                   </span>
                 </div>
 
@@ -283,7 +284,7 @@ kine.get('/', async (c) => {
 
                 {/* Actions */}
                 <div class="flex gap-2 flex-wrap">
-                  {due > 0 && (
+                  {ledger.balance > 0 && (
                     <a href={`/kine/payment/new?contract_id=${client.contract_id}`}
                       class="text-xs px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white rounded-lg font-semibold">
                       💰 Log Payment
@@ -308,16 +309,18 @@ kine.get('/', async (c) => {
         <div class="mt-6">
           <h2 class="text-lg font-bold mb-3">Ended Contracts</h2>
           <div class="space-y-3">
-            {ended.results.map(ec => (
+            {ended.results.map(ec => {
+              const ledger = clientLedger(ec)
+              return (
               <Card>
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
                     <h4 class="font-semibold text-sm">{ec.customer_name}</h4>
-                    <p class="text-xs text-gray-500">{ec.title} · {mga(ec.session_rate)}/session{ec.start_date ? ` · started ${ec.start_date}` : ''}{ec.end_date ? ` · finished ${ec.end_date}` : ''}</p>
+                    <p class="text-xs text-gray-500">{ec.title} · {mga(ledger.rate)}/session{ec.start_date ? ` · started ${ec.start_date}` : ''}{ec.end_date ? ` · finished ${ec.end_date}` : ''}</p>
                     <p class="text-xs mt-1">
-                      <span class="text-blue-600 dark:text-blue-400 font-semibold">{ec.delivered_count} delivered</span>
+                      <span class="text-blue-600 dark:text-blue-400 font-semibold">{ledger.delivered} delivered</span>
                       <span class="mx-1 text-gray-400">·</span>
-                      <span class="text-orange-600 dark:text-orange-400 font-semibold">{ec.paid_amount.toLocaleString('en-US')} MGA paid</span>
+                      <span class="text-orange-600 dark:text-orange-400 font-semibold">{mga(ledger.paid)} paid</span>
                     </p>
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0">
@@ -330,7 +333,7 @@ kine.get('/', async (c) => {
                   </div>
                 </div>
               </Card>
-            ))}
+            )})}
           </div>
         </div>
       )}
@@ -354,8 +357,7 @@ kine.post('/tick', async (c) => {
   if (tickResult.meta.changes > 0) {
     const info = await c.env.DB.prepare(
       `SELECT cu.name AS customer_name,
-              (SELECT COUNT(*) FROM attendance_ticks t
-                WHERE t.contract_id = sc.id AND t.is_delivered = 1) AS delivered
+              ${DELIVERED_COUNT_SQL} AS delivered
          FROM service_contracts sc JOIN customers cu ON sc.customer_id = cu.id
         WHERE sc.id = ?`
     ).bind(contractId).first<{ customer_name: string; delivered: number }>()
@@ -506,8 +508,8 @@ kine.get('/clients/view/:id', async (c) => {
   const [contracts, ticks, payments] = await Promise.all([
     c.env.DB.prepare(
       `SELECT sc.*,
-         (SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered = 1) AS delivered_count,
-         COALESCE((SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id), 0) AS paid_amount
+         ${DELIVERED_COUNT_SQL} AS delivered,
+         ${PAID_SQL} AS paid
        FROM service_contracts sc WHERE sc.customer_id = ? ORDER BY sc.created_at DESC`
     ).bind(id).all<ServiceContract>(),
     c.env.DB.prepare(
@@ -545,17 +547,20 @@ kine.get('/clients/view/:id', async (c) => {
       {contracts.results.length === 0
         ? <p class="text-sm text-gray-400 text-center py-6">No contracts yet.</p>
         : contracts.results.map(sc => {
-            const delivered = sc.delivered_count ?? 0
-            const paid = sc.paid_amount ?? 0
-            const billed = delivered * sc.session_rate
-            const due = billed - paid
+            const ledger = clientLedger({
+              delivered: sc.delivered ?? 0, paid: sc.paid ?? 0,
+              session_rate: sc.session_rate, default_rate: client.default_rate,
+            })
+            const delivered = ledger.delivered
+            const paid = ledger.paid
+            const due = ledger.balance
             return (
               <Card className="mb-3">
                 <div class="flex items-start justify-between mb-1">
                   <div>
                     <p class="font-semibold">{sc.title}</p>
                     <p class="text-xs text-gray-500">
-                      {mga(sc.session_rate)}/session · {sc.total_scheduled} scheduled · started {sc.start_date}
+                      {mga(ledger.rate)}/session · {sc.total_scheduled} scheduled · started {sc.start_date}
                       {sc.end_date ? ` · finished ${sc.end_date}` : ''}
                     </p>
                   </div>
@@ -624,8 +629,8 @@ kine.get('/clients/view/:id', async (c) => {
 kine.get('/export', async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT cu.name AS client, sc.title, sc.session_rate, sc.total_scheduled, sc.status, sc.start_date, sc.end_date,
-       (SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered = 1) AS delivered,
-       COALESCE((SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id), 0) AS paid
+       ${DELIVERED_COUNT_SQL} AS delivered,
+       ${PAID_SQL} AS paid
      FROM service_contracts sc
      JOIN customers cu ON cu.id = sc.customer_id
      ORDER BY sc.created_at DESC`
@@ -832,17 +837,18 @@ kine.get('/payment/new', async (c) => {
   const user = c.get('user')
   const contractId = c.req.query('contract_id') || ''
   const contract = await c.env.DB.prepare(
-    `SELECT sc.*, cu.name AS customer_name,
-       (SELECT COUNT(*) FROM attendance_ticks at WHERE at.contract_id = sc.id AND at.is_delivered=1) AS delivered_count,
-       COALESCE((SELECT SUM(cp.amount) FROM client_payments cp WHERE cp.contract_id = sc.id),0) AS paid_amount
+    `SELECT sc.*, cu.name AS customer_name, cu.default_rate AS default_rate,
+       ${DELIVERED_COUNT_SQL} AS delivered,
+       ${PAID_SQL} AS paid
      FROM service_contracts sc
      JOIN customers cu ON sc.customer_id = cu.id WHERE sc.id = ?`
   ).bind(contractId).first<any>()
 
   if (!contract) return c.redirect('/kine')
 
-  const billed  = (contract.delivered_count ?? 0) * (contract.session_rate ?? 0)
-  const balance = billed - (contract.paid_amount || 0)
+  const ledger = clientLedger(contract)
+  const billed  = ledger.billed
+  const balance = ledger.balance
 
   // Where this payment can sync to (see kineIncomeAccount).
   const syncTarget = await kineIncomeAccount(c.env.DB, user)
@@ -860,7 +866,7 @@ kine.get('/payment/new', async (c) => {
           </div>
           <div class="flex justify-between text-sm mt-1">
             <span class="text-gray-500">Already Paid</span>
-            <span class="font-semibold text-green-600 dark:text-green-400">{mga(contract.paid_amount || 0)}</span>
+            <span class="font-semibold text-green-600 dark:text-green-400">{mga(ledger.paid)}</span>
           </div>
           <div class="flex justify-between text-sm mt-1 pt-1 border-t border-gray-100 dark:border-gray-700">
             <span class="font-semibold">Balance Due</span>

@@ -18,7 +18,7 @@ Home's dashboard.
 ## What this driver is for
 
 A guard that cannot go red is decoration. These guards live in **two** sections of
-`scripts/smoke.mjs` — §17 (the shell carrying an inner tab) and §22 (the item
+`scripts/smoke.mjs` — smoke §17 (the shell carrying an inner tab) and smoke §22 (the item
 editor, and the card's numbers) — so this extracts both, preflights them unmutated,
 then mutates ONE path at a time and requires that path's own check to go red.
 
@@ -42,7 +42,7 @@ Two things this driver learned the hard way, and now does for every mutation:
   now rewrite every file in flight.
 * **Wait for the dev server after writing a file.** Writing triggers a reload, and a
   fetch landing mid-reload came back with `/laoka/index.html` missing its embed
-  block — four unrelated §17 checks went red and the section threw `fetch failed`,
+  block — four unrelated smoke §17 checks went red and the section threw `fetch failed`,
   which reads exactly like a caught mutation that proves nothing.
 
 ## Probes it creates
