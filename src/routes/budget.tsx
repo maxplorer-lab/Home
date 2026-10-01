@@ -59,10 +59,12 @@ function currentMonthKey(): string {
 
 function prevMonthKey(ym: string): string {
   const parts = ym.split('-')
-  const y = parseInt(parts[0]) || new Date().getFullYear()
-  const m = parseInt(parts[1]) || (new Date().getMonth() + 1)
-  const d = new Date(y, m - 2, 1)
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+  const today = localDate()
+  const y = parseInt(parts[0]) || parseInt(today.slice(0, 4))
+  const m = parseInt(parts[1]) || parseInt(today.slice(5, 7))
+  const prevY = m === 1 ? y - 1 : y
+  const prevM = m === 1 ? 12 : m - 1
+  return `${prevY}-${String(prevM).padStart(2, '0')}`
 }
 
 function monthRange(ym: string): { start: string; end: string; label: string } {
