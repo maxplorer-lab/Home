@@ -652,11 +652,21 @@ schemas, untouched data):
   that never arrived is nobody's module data (see "The diagnostics ledger").
 * `sompitra-db` — migrations in `migrations-sompitra/`.
 * `way-db` — migrations in `migrations-way/`.
-* `laoka` — migrations in `migrations-laoka/` (the module's own history, mirrored
-  from the standalone repo, **plus two exceptions**: `0009_pantry_stock.sql` adds
-  `items.stock` / `items.stock_min`, and `0010_pantry.sql` adds the pantry's own
-  `pantry_trips` / `pantry_lines` and clears any count left on a meal item. Both
-  are additive and nullable, so the standalone app ignores them and still works).
+* `laoka` — migrations in `migrations-laoka/` (the module's own history up to
+  `0008_week_confirmation.sql`, **plus three exceptions**: `0009_pantry_stock.sql`
+  adds `items.stock` / `items.stock_min`, `0010_pantry.sql` adds the pantry's own
+  `pantry_trips` / `pantry_lines` and clears any count left on a meal item, and
+  `0011_pantry_line_qty.sql` adds the per-line quantity. All three are additive
+  and nullable, so the standalone app ignores them and still works).
+
+All four are built from these directories, and only from these directories:
+`npm run db:local` brings the local D1 up to date and `npm run db:remote -- --yes`
+does the same to the real ones. Each command reads the database's own schema and
+applies only the files that database is missing, so it is idempotent and safe on a
+database of any age; `--all` forces every file, which is what an empty database
+needs. The module repos keep their own `migrations/` directories as history; those
+are NOT the source (Laoka's stops at `0008`), and neither is the module repo for
+Sompitra's `0002_seed.sql` — the one command seeds a fresh local database too.
 
 The three module migration folders mirror the standalone repos and are treated
 as read-only: they are the modules' own history, and an index or a column added
@@ -718,10 +728,10 @@ what it says: a grid that gated bank notifications too would be a surprise.
   money fan-out logs the same detail per channel when a push is refused.
 * W.A.Y's existing topics are **adopted into `way_topic`** (case-insensitive
   username match) rather than abandoned — the phone in the field is still
-  following them — and every tracking write is **mirrored back into `way-db`**
-  so a rollback to the standalone Worker (`CUTOVER.md` §6 — one
-  `wrangler deploy` per module repo) publishes to the topic the phone is really
-  following rather than to the one it replaced.
+  following them — and every tracking write is **mirrored into `way-db`**
+  because that is W.A.Y's own fallback for a username `home-db` has never
+  heard of, so the copy stays in step with the topic the phone is really
+  following (`CUTOVER.md` §6 records the retired module deployments).
 * A person with no channel on a side is skipped there; the whole push no-ops
   without a server. Notifications are best-effort and never break a user
 action.
@@ -1514,9 +1524,23 @@ the follow it had just started.
 
 ## Testing locally
 
-There is no test framework; `npm run smoke` (`scripts/smoke.mjs`, zero
-dependencies) is the end-to-end gate and `npm run check` is the type gate.
-Run both against a live dev server with `npm run verify` before deploying.
+`npm run check` is the type gate, `npm test` is the unit gate and `npm run smoke`
+(`scripts/smoke.mjs`, zero dependencies) is the end-to-end gate. `npm run verify`
+runs all three in that order before deploying; the smoke suite is the one that
+needs a live dev server, so start it first.
+
+`npm test` is `node --test` over `scripts/*.test.mjs` — no server, no database, no
+framework. It covers the pure helpers the type gate cannot see: the local-day,
+week and month date helpers (`localDate`, `addDays`, `currentWeekBounds`,
+`currentMonthBounds`) and the Laoka CSV hand-off parser. It is the regression test
+for the timezone bug that made the weekly window, the Kiné grid and every entry
+date default follow UTC instead of the household calendar: every date case runs
+under three process timezones (`TZ=UTC`, `TZ=Africa/Nairobi`,
+`TZ=America/New_York`), because Workers always run with `TZ=UTC`. The CSV suite
+evaluates the function source it extracts from the page's own inline `<script>`
+rather than a copy of it, so it tests what production actually serves. Both files
+are mirrored in `../Sompitra/tests/`.
+
 The smoke suite covers exactly the invariants above: one login → four
 cookies, every tab/API 200, module documents gated, bad credentials
 rejected, chrome identical everywhere, `home_session`-only self-repair,

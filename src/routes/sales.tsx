@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
-import { mga, generateId } from '../lib/utils'
+import { mga, generateId, localDate } from '../lib/utils'
 import { notifyTransaction } from '../lib/notify'
 import type { Env, User, InventoryItem, SaleRecord } from '../db/schema'
 
@@ -211,7 +211,7 @@ sales.get('/record/new', async (c) => {
           <input type="hidden" name="total_cost" id="total-cost-input" />
           <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Date</label>
-            <input type="date" name="date" value={new Date().toISOString().slice(0, 10)}
+            <input type="date" name="date" value={localDate()}
               class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
           </div>
           <div>

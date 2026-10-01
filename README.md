@@ -249,9 +249,10 @@ is subscribed on paper and hears nothing.
 W.A.Y's existing topics were **adopted** into the tracking channel (never
 overwriting a topic someone already follows), so a phone in the field keeps
 working — **Adopt W.A.Y's tracking topics** re-runs that for anyone added
-later. Every tracking write is also mirrored back into `way-db`, so a rollback
-to the standalone W.A.Y Worker (`CUTOVER.md` §6) publishes to the topic the
-phone is actually following rather than to the one it replaced.
+later. Every tracking write is also mirrored into `way-db` — W.A.Y's own
+fallback for a username `home-db` has never heard of — so that copy stays in
+step with the topic the phone actually follows (`CUTOVER.md` §6 records the
+retired module deployments).
 
 ## The W.A.Y map
 
@@ -438,17 +439,18 @@ own tables as before. `home-db` is new and holds only people + sessions.
 
 ```bash
 npm install
-# one-time: apply migrations to the four local D1 databases (see AGENTS.md)
+npm run db:local       # the four local D1 databases, from migrations-*/ (re-runnable)
 npm run dev            # wrangler dev on :8787 (pass another port if busy)
 ```
 
-Test before you deploy (the server must be running):
+Test before you deploy (`npm test` needs no server; `npm run smoke` does):
 
 ```bash
 npm run check                                  # tsc --noEmit
+npm test                                       # node --test: date helpers + the CSV parser
 npm run smoke                                  # end-to-end checks, exit 0 = green
 BASE_URL=http://127.0.0.1:8793 npm run smoke   # non-default port
-npm run verify                                 # both, in order
+npm run verify                                 # check + test + smoke, in order
 npm run audit:remote                           # the four REMOTE dbs vs migrations-* (read-only)
 npm run audit:module-state                     # request state in module scope, in src/ (read-only)
 npm run audit:do-state                         # request data parked on a DO's `this` (read-only)
@@ -456,6 +458,15 @@ npm run audit:rules                            # the docs' declared guards + § 
 npm run audit:laoka-types                      # every .js under src/, one declared relaxation (read-only)
 npm run deploy:dry-run                         # builds + resolves bindings
 ```
+
+`npm run db:local` brings the four local databases up to date from
+`migrations-*/`, and `npm run db:remote -- --yes` does the same to the real ones
+(the `--yes` is required, because it cannot be undone). Both read each database
+and apply **only the files it is missing**, so both are safe to re-run — a second
+run reports everything satisfied and changes nothing. `migrations-*/` is the only
+source of the schema — the module repos keep their own `migrations/` directories
+as history and they are not interchangeable (Laoka's stops at 0008; the pantry
+files 0009–0011 exist only here).
 
 `npm run audit:remote` answers the one question the local suite cannot:
 **did every migration actually reach the real databases?** Those files are
@@ -604,13 +615,14 @@ household at `/admin`.
     while the live chat keeps working — so chat history and map tracks go
     quietly empty.
 * **The three old Workers are gone** (deleted 2026-09-19, after the phones
-  were verified to be posting to Home's `/ulogger`): two cron flushes of the
+  were verified to be posting to Home's `/ulogger`), and their standalone
+  worker configs and CI were retired on 2026-10-01: two cron flushes of the
   same `way-db` and a second stale view of the same phones was the risk.
-  Rollback is still one `wrangler deploy` per module repo — D1 is bound by id
-  and never owned by a Worker, so a redeploy finds every row where Home left
-  it. What a rollback cannot recover is a deleted Durable Object's storage,
-  which is why the old `way` DO's chat backlog was flushed into `way-db`
-  (466 messages) before the deletion.
+  D1 is bound by id and never owned by a Worker, so the databases were never
+  the old Workers' to lose; restoring one would now mean recovering its config
+  from git history (`CUTOVER.md` §6). What a rollback cannot recover is a
+  deleted Durable Object's storage, which is why the old `way` DO's chat
+  backlog was flushed into `way-db` (466 messages) before the deletion.
 * Sompitra's old PIN logins stop working (by design — the password replaces
   the PIN); sessions minted after the cutover are normal.
 

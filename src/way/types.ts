@@ -22,8 +22,9 @@ export interface Env {
   // Workers Builds rather than a local `wrangler deploy`. For `wrangler dev`,
   // put it in .dev.vars. See docs/OPERATIONS.md, "Secrets".
   SESSION_SECRET: string;
-  // Base URL of the ntfy server -- a self-hosted instance (e.g. the Cloud Run
-  // URL) or https://ntfy.sh. Set in wrangler.jsonc's `vars` block.
+  // Base URL of the ntfy server -- a self-hosted instance (e.g. the DuckDNS
+  // name maxxntfy.duckdns.org) or https://ntfy.sh. Set in wrangler.jsonc's
+  // `vars` block; the admin-set app_settings.ntfy_url wins over it.
   NTFY_URL?: string;
   // Optional access token, only needed if the ntfy server has auth enabled.
   // Set with `wrangler secret put NTFY_TOKEN`.

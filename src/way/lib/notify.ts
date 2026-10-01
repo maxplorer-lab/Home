@@ -4,7 +4,7 @@
 // Transport is ntfy: publish with a POST to <server>/<topic> (message in the
 // body, title/tags in headers), and the receiving phone's ntfy app follows
 // that user's own topic. The server root comes from NTFY_URL in
-// wrangler.jsonc and is a SELF-HOSTED instance on Cloud Run -- not the public
+// wrangler.jsonc and is a SELF-HOSTED instance (maxxntfy.duckdns.org) -- not
 // ntfy.sh, whose free daily message quota silently stops delivery once hit.
 // See docs/OPERATIONS.md, "ntfy".
 //
@@ -114,7 +114,7 @@ export interface NtfyMessage {
  * affect tracking or the ping pipeline.
  *
  * `baseUrl` is the ntfy server root -- `https://ntfy.sh` or a self-hosted
- * instance (e.g. a Cloud Run URL). `token` is only needed when that server
+ * instance (e.g. a self-hosted https:// URL). `token` is only needed when that server
  * has authentication enabled. */
 export async function publishNtfy(msg: NtfyMessage, baseUrl: string, token?: string | null): Promise<boolean> {
   try {

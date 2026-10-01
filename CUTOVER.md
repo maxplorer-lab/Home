@@ -13,7 +13,7 @@
 > columns, which did the same. The chat/activity history was therefore frozen
 > at 2026-08-27 while the live chat looked healthy. §1d now covers both.
 >
-> **Step 3.3 is done** (2026-09-19): all three standalone Workers are deleted.
+> **Step 3.3 is done** (2026-09-19): all three standalone Workers are deleted, and their deploy configs and CI were retired on 2026-10-01 (§6).
 > They had received zero requests for days, the phones were verified to be
 > posting to Home's `/ulogger`, and the old `way` DO's chat backlog was flushed
 > into `way-db` first (466 messages, reaching back to 2026-09-07) — deleting a
@@ -86,6 +86,13 @@ correction below, because it is the one that got missed and it cost a day of
 A fresh environment needs all six, in this order — 0004 rewrites the channel
 columns 0002 created.)
 
+**That list is now mechanised.** `npm run db:remote -- --yes` brings the real
+databases up to date (`npm run db:local` does the same locally), and it applies
+only what each database is missing — it reads the schema, so it is safe to re-run
+and safe on a database of any age. `scripts/lib/migration-targets.mjs` is the one
+map of which directory describes which database, shared with `npm run audit:remote`.
+Use `npm run db:local -- --dry-run` to see the plan first.
+
 **0006 was shipped without being applied anywhere but local, and the symptom was
 NOT the one this file used to predict.** The reads swallow their error on purpose
 (the console must keep working on an unmigrated database), so `GET
@@ -152,7 +159,7 @@ which is the person's `way-db.users.username` **verbatim, case included**
 MaxX's arrivals and leaves Niri's still failing — the table is matched by exact
 string, which is why the one-spelling cleanup in §1f mattered.
 
-If it is missing, restore it with `scripts/repair-way-messages-fk.sql`
+If it is missing, restore it with `scripts/repair-way-messages-fk.sql` (`npm run db:local` does this by itself, only when `devices` is absent)
 (idempotent; safe on a populated database, and it derives the rows from
 `gps_pings`/`users` rather than hardcoding names).
 
@@ -343,12 +350,15 @@ it is evicted, so "did my DO change take effect?" is a real question here.
 
 ## 6. Rollback
 
-The old Workers are **deleted** (step 3.3, 2026-09-19), but rollback is still
-cheap: all three module databases are untouched, and each old Worker is one
-`wrangler deploy` from its own repo — D1 is bound by id, never owned by a
-Worker, so a redeploy finds every row exactly where Home left it. Then point the
-phones back (`ulogger` lives on whichever host you tell μlogger). Nothing needs
-migrating either way; the only thing a rollback would strand is `home-db`.
+The old Workers are **deleted** (step 3.3, 2026-09-19) and their standalone
+wrangler configs and CI were **retired** on 2026-10-01, so the module repos can
+no longer `wrangler deploy`. A rollback now means restoring the config from git
+history (`git show <sha>:wrangler.toml` / `wrangler.jsonc`) and deploying from
+the module repo — all three module databases are untouched, and D1 is bound by
+id, never owned by a Worker, so a redeploy would find every row exactly where
+Home left it. Then point the phones back (`ulogger` lives on whichever host you
+tell μlogger). Nothing needs migrating either way; the only thing a rollback
+would strand is `home-db`.
 
 What you cannot get back is a deleted Durable Object's storage — which is why
 step 3.3 comes **after** step 3.2, and why the old `way` DO was flushed into

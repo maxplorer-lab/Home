@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { Layout, Card, KineClientStats } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
-import { mga, formatDate, generateId, currentWeekBounds } from '../lib/utils'
+import { mga, formatDate, generateId, currentWeekBounds, localDate, addDays } from '../lib/utils'
 // Kiné's ONE ledger: the delivered/paid row expressions, the balance rule and
 // the week's figures. Every statement below pastes the fragments instead of
 // re-writing them, and every card, tile and form reads `clientLedger`.
@@ -142,13 +142,9 @@ kine.get('/', async (c) => {
   ])
   const tickedSet = new Set(weekTicks.results.map(t => `${t.contract_id}:${t.tick_date}`))
 
-  // Build 7 days SAT→FRI
-  const days: string[] = []
-  const d = new Date(start + 'T00:00:00')
-  for (let i = 0; i < 7; i++) {
-    days.push(d.toISOString().slice(0, 10))
-    d.setDate(d.getDate() + 1)
-  }
+  // Build 7 days SAT→FRI (date-only arithmetic — never through UTC formatting)
+  const today = localDate()
+  const days = Array.from({ length: 7 }, (_, i) => addDays(start, i))
   const dayLabels = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 
   return c.html(
@@ -257,7 +253,7 @@ kine.get('/', async (c) => {
                   {days.map((day, i) => {
                     const key = `${client.contract_id}:${day}`
                     const ticked = tickedSet.has(key)
-                    const isToday = day === new Date().toISOString().slice(0, 10)
+                    const isToday = day === today
                     const isWeekend = i === 0 || i === 1 // Sat, Sun
                     return (
                       <form method="post" action={ticked ? `/kine/untick` : `/kine/tick`}>
@@ -438,7 +434,7 @@ kine.get('/clients/new', async (c) => {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Start Date</label>
-            <input type="date" name="pkg_start" value={new Date().toISOString().slice(0, 10)}
+            <input type="date" name="pkg_start" value={localDate()}
               class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
           </div>
           <button type="submit"
@@ -476,7 +472,7 @@ kine.post('/clients/new', async (c) => {
   const notes = String(body.notes || '').trim() || null
   const pkgTitle = String(body.pkg_title || '').trim()
   const pkgSessions = parseInt(String(body.pkg_sessions || '0'))
-  const pkgStart = String(body.pkg_start || new Date().toISOString().slice(0, 10))
+  const pkgStart = String(body.pkg_start || localDate())
 
   if (!name || defaultRate <= 0) return c.redirect('/kine/clients/new')
 
@@ -784,7 +780,7 @@ kine.post('/contract/new', async (c) => {
   const title = String(body.title)
   const rate = parseFloat(String(body.session_rate))
   const sessions = parseInt(String(body.total_scheduled))
-  const startDate = new Date().toISOString().slice(0, 10)
+  const startDate = localDate()
 
   const contractId = generateId()
   await c.env.DB.prepare(
@@ -809,7 +805,7 @@ kine.post('/contract/:id/add-sessions', async (c) => {
 // ─── POST /kine/contract/:id/end ─────────────────────────
 kine.post('/contract/:id/end', async (c) => {
   const id = c.req.param('id')
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDate()
   await c.env.DB.prepare(
     "UPDATE service_contracts SET status='completed', end_date = ? WHERE id = ?"
   ).bind(today, id).run()
@@ -883,7 +879,7 @@ kine.get('/payment/new', async (c) => {
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Date</label>
-            <input type="date" name="payment_date" value={new Date().toISOString().slice(0, 10)} required
+            <input type="date" name="payment_date" value={localDate()} required
               class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
           </div>
           <div>

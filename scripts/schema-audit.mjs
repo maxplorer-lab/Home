@@ -31,21 +31,19 @@
 //      intermediate name never exists in a finished database, so it is not
 //      expected either.
 
-import { readFileSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, join } from 'node:path'
+
+import { DATABASES } from './lib/migration-targets.mjs'
+import { expectedSchema, schemaQueryFor } from './lib/migration-schema.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WRANGLER = join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 
-/** Each migrations directory and the binding whose real database it describes. */
-const DATABASES = [
-  ['migrations-home', 'HOME_DB'],
-  ['migrations-sompitra', 'DB'],
-  ['migrations-way', 'WAY_DB'],
-  ['migrations-laoka', 'LAOKA_DB'],
-]
+// The migrations-directory → binding map lives in scripts/lib/migration-targets.mjs,
+// shared with scripts/db-migrate.mjs so that a database can never be audited against
+// one set of files and built from another.
 
 // `--dir <path> [--binding <BINDING>]` audits ONE directory instead of all four.
 // It exists so this tool can be FALSIFIED: point it at a directory containing a
@@ -56,50 +54,27 @@ const oneDir = argv.includes('--dir') ? argv[argv.indexOf('--dir') + 1] : null
 const oneBinding = argv.includes('--binding') ? argv[argv.indexOf('--binding') + 1] : 'HOME_DB'
 const TARGETS = oneDir ? [[oneDir, oneBinding]] : DATABASES
 
-/** Strip SQL comments, so prose about DDL is never read as DDL. */
-function stripComments(sql) {
-  return sql.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ')
-}
+// `--local [--persist-to <dir>]` audits the local D1 instead of the real one. The
+// npm script audits PRODUCTION, so this is opt-in and never the default — it
+// exists so the replay below can be checked against a database whose state you
+// built yourself (`npm run db:local -- --persist-to <dir>`), which is how the
+// dropped-`devices` rule was falsified.
+const local = argv.includes('--local')
+const persistTo = argv.includes('--persist-to') ? argv[argv.indexOf('--persist-to') + 1] : null
 
-/** Replay a directory's migrations in order into the schema they promise. */
-function expectedSchema(dir) {
-  const tables = new Set()
-  /** table → Set(column) for columns added by migrations (never the base ones). */
-  const added = new Map()
-  const dropped = new Map()
-  // An absolute --dir path is used as given; a bare name is a repo directory.
-  const at = (f) => (isAbsolute(dir) ? join(dir, f) : join(ROOT, dir, f))
-  for (const file of readdirSync(isAbsolute(dir) ? dir : join(ROOT, dir)).filter((f) => f.endsWith('.sql')).sort()) {
-    const sql = stripComments(readFileSync(at(file), 'utf8'))
-    for (const m of sql.matchAll(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+["'`]?(\w+)["'`]?/gi)) tables.add(m[1])
-    for (const m of sql.matchAll(/ALTER TABLE\s+["'`]?(\w+)["'`]?\s+ADD COLUMN\s+["'`]?(\w+)["'`]?/gi)) {
-      if (!added.has(m[1])) added.set(m[1], new Set())
-      added.get(m[1]).add(m[2])
-      dropped.get(m[1])?.delete(m[2])
-    }
-    // A dropped column is not part of the finished schema, even though a later
-    // file may never mention it again.
-    for (const m of sql.matchAll(/ALTER TABLE\s+["'`]?(\w+)["'`]?\s+DROP COLUMN\s+["'`]?(\w+)["'`]?/gi)) {
-      if (!dropped.has(m[1])) dropped.set(m[1], new Set())
-      dropped.get(m[1]).add(m[2])
-      added.get(m[1])?.delete(m[2])
-    }
-    // A rename means the source name was an intermediate: nobody's database has
-    // `users_new` in it once the migration finishes.
-    for (const m of sql.matchAll(/ALTER TABLE\s+["'`]?(\w+)["'`]?\s+RENAME TO\s+["'`]?(\w+)["'`]?/gi)) {
-      tables.delete(m[1])
-      tables.add(m[2])
-    }
-  }
-  return { tables, added }
-}
+// The SQL replay lives in scripts/lib/migration-schema.mjs, shared with
+// scripts/db-migrate.mjs — the same files decide both what to audit and what to
+// apply. See that file for the four ways reading SQL naively lies (comments,
+// dropped columns, dropped tables, renames).
 
-/** One read-only query against a REMOTE database. */
+/** One read-only query against a real (or, with --local, a local) database. */
 function askRemote(binding, command) {
   // Through node itself, not `npx`: on Windows the npx shim is not spawnable
   // without a shell (ENOENT), and a shell would then have to survive the
   // quoting of the SQL below.
-  const out = execFileSync(process.execPath, [WRANGLER, 'd1', 'execute', binding, '--remote', '--json', '--command', command], {
+  const args = [WRANGLER, 'd1', 'execute', binding, local ? '--local' : '--remote', '--json', `--command=${command}`]
+  if (persistTo) args.push('--persist-to', persistTo)
+  const out = execFileSync(process.execPath, args, {
     cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000,
   })
   return JSON.parse(out.slice(out.indexOf('[')))[0].results[0]
@@ -107,12 +82,8 @@ function askRemote(binding, command) {
 
 let gaps = 0
 for (const [dir, binding] of TARGETS) {
-  const { tables, added } = expectedSchema(dir)
-  const cols = [...added.keys()].map((t) => `(SELECT group_concat(name) FROM pragma_table_info('${t}')) AS c_${t}`).join(', ')
-  const row = askRemote(
-    binding,
-    `SELECT (SELECT group_concat(name) FROM sqlite_master WHERE type='table') AS tables${cols ? ', ' + cols : ''}`
-  )
+  const { tables, added } = expectedSchema(ROOT, dir)
+  const row = askRemote(binding, schemaQueryFor({ tables, added }).sql)
 
   const have = new Set(String(row.tables || '').split(',').filter(Boolean))
   const missingTables = [...tables].filter((t) => !have.has(t))
@@ -125,16 +96,17 @@ for (const [dir, binding] of TARGETS) {
 
   const bad = missingTables.length + missingCols.length
   gaps += bad
-  console.log(`${binding.padEnd(9)} ${String(have.size).padStart(3)} tables on remote · ${tables.size} promised by ${dir}`)
+  console.log(`${binding.padEnd(9)} ${String(have.size).padStart(3)} tables on ${local ? 'local ' : 'remote'} · ${tables.size} promised by ${dir}`)
   if (missingTables.length) console.log(`  \x1b[31mMISSING TABLES:  ${missingTables.join(', ')}\x1b[0m`)
   if (missingCols.length) console.log(`  \x1b[31mMISSING COLUMNS: ${missingCols.join(', ')}\x1b[0m`)
   if (!bad) console.log('  \x1b[32m✓ every migration is applied here\x1b[0m')
 }
 
 if (gaps === 0) {
-  console.log('\n\x1b[32m\x1b[1mAll four remote databases match their migration files.\x1b[0m\n')
+  console.log(`\n\x1b[32m\x1b[1m${local ? 'All four local' : 'All four remote'} databases match their migration files.\x1b[0m\n`)
   process.exit(0)
 }
 console.log(`\n\x1b[31m\x1b[1m${gaps} gap(s). Apply the missing file(s) to that database:\x1b[0m`)
-console.log('  npx wrangler d1 execute <BINDING> --remote --file=<migrations-dir>/<file>.sql\n')
+console.log(`  npx wrangler d1 execute <BINDING> ${local ? '--local' : '--remote'} --file=<migrations-dir>/<file>.sql`)
+console.log('  ...or let it work out what is missing: npm run db:local' + (local ? '' : ' / db:remote -- --yes') + '\n')
 process.exit(1)

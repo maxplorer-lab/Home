@@ -27,20 +27,36 @@ export function sessionExpiresAt(): string {
   return d.toISOString()
 }
 
+// ─── App-timezone day helpers ────────────────────────────────
+// The household is at UTC+3 (Africa/Nairobi, no DST) and Workers always run
+// with TZ=UTC, so `getFullYear()/getMonth()/getDate()` and `toISOString()`
+// return UTC dates — three hours behind the wall calendar. Every date the app
+// derives from "now" goes through localDate()/addDays() instead.
+export const TZ_OFFSET_MS = 3 * 60 * 60 * 1000
+
+/** The household calendar's `YYYY-MM-DD` for an instant (defaults to now). */
+export function localDate(d: Date = new Date()): string {
+  const t = new Date(d.getTime() + TZ_OFFSET_MS)
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`
+}
+
+/** `YYYY-MM-DD` moved by whole days — date-only, so no clock or timezone involved. */
+export function addDays(iso: string, days: number): string {
+  const d = new Date(iso + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+/** SQLite date()/datetime() modifier: shifts a stored UTC value to local time. */
+export const TZ_SQL_MODIFIER = `+${TZ_OFFSET_MS / 3_600_000} hours`
+
 // ─── Week helpers (SAT-FRI cycle) ────────────────────────────
 export function currentWeekBounds(offsetWeeks = 0): { start: string; end: string } {
-  const today = new Date()
-  const day = today.getDay() // 0=Sun … 6=Sat
-  // days since last Saturday (day 6)
-  const sinceSat = (day + 1) % 7
-  const sat = new Date(today)
-  sat.setDate(today.getDate() - sinceSat + offsetWeeks * 7)
-  const fri = new Date(sat)
-  fri.setDate(sat.getDate() + 6)
-  return {
-    start: sat.toISOString().slice(0, 10),
-    end:   fri.toISOString().slice(0, 10),
-  }
+  const today = localDate()
+  const day = new Date(today + 'T00:00:00Z').getUTCDay() // 0=Sun … 6=Sat
+  const sinceSat = (day + 1) % 7 // days since last Saturday (day 6)
+  const start = addDays(today, -sinceSat + offsetWeeks * 7)
+  return { start, end: addDays(start, 6) }
 }
 
 export function formatDate(d: string): string {
@@ -50,18 +66,14 @@ export function formatDate(d: string): string {
 }
 
 // ─── Month helpers (calendar month, local) ───────────────────
-function isoLocal(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
 export function currentMonthBounds(offsetMonths = 0): { start: string; end: string; label: string } {
-  const now = new Date()
-  const first = new Date(now.getFullYear(), now.getMonth() + offsetMonths, 1)
-  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0)
+  const [y, m] = localDate().split('-').map(Number)
+  const first = new Date(Date.UTC(y, m - 1 + offsetMonths, 1))
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0))
   return {
-    start: isoLocal(first),
-    end: isoLocal(last),
-    label: first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
+    start: first.toISOString().slice(0, 10),
+    end: last.toISOString().slice(0, 10),
+    label: first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
   }
 }
 

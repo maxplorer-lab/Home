@@ -35,8 +35,10 @@
     // 10 ms CPU limit — the AUTH_PEPPER secret carries the real strength.
     "PBKDF2_ITERATIONS": "5000",
     // Push notifications go to the self-hosted ntfy instance, not public
-    // ntfy.sh (its free quota silently drops messages when hit).
-    "NTFY_URL": "https://ntfy-424942506653.africa-south1.run.app"
+    // ntfy.sh (its free quota silently drops messages when hit). Self-hosted
+    // behind a DuckDNS name. This is only the THIRD layer: home-db's
+    // home_settings.ntfy_server wins, then Sompitra's app_settings copy.
+    "NTFY_URL": "https://maxxntfy.duckdns.org"
   },
 
   // Static assets served by the edge BEFORE the Worker runs:

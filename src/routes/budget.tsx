@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
-import { mga, formatDate, generateId, currentWeekBounds, userAccentColor } from '../lib/utils'
+import { mga, formatDate, generateId, currentWeekBounds, currentMonthBounds, localDate, addDays, userAccentColor } from '../lib/utils'
 // The brand glyph set (see app-chrome.tsx) — money screens use the money icons.
 import { Icon } from '../views/app-chrome'
 import { notifyTransaction } from '../lib/notify'
@@ -21,42 +21,27 @@ async function getCategories(db: D1Database) {
 }
 
 // ─── Report helpers ──────────────────────────────────────────
-function fmtLocal(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 function reportPeriod(key: string): { start: string; end: string; label: string } {
-  const today = new Date()
+  const today = localDate()
   switch (key) {
     case 'last_week': {
       const { start, end } = currentWeekBounds(-1)
       return { start, end, label: 'Last Week (SAT–FRI)' }
     }
-    case 'last_7_days': {
-      const s = new Date(today); s.setDate(today.getDate() - 6)
-      return { start: fmtLocal(s), end: fmtLocal(today), label: 'Last 7 Days' }
-    }
+    case 'last_7_days':
+      return { start: addDays(today, -6), end: today, label: 'Last 7 Days' }
     case 'this_month': {
-      const s = new Date(today.getFullYear(), today.getMonth(), 1)
-      const e = new Date(today.getFullYear(), today.getMonth() + 1, 0)
-      return { start: fmtLocal(s), end: fmtLocal(e), label: 'This Month' }
+      const { start, end } = currentMonthBounds(0)
+      return { start, end, label: 'This Month' }
     }
     case 'last_month': {
-      const s = new Date(today.getFullYear(), today.getMonth() - 1, 1)
-      const e = new Date(today.getFullYear(), today.getMonth(), 0)
-      return { start: fmtLocal(s), end: fmtLocal(e), label: 'Last Month' }
+      const { start, end } = currentMonthBounds(-1)
+      return { start, end, label: 'Last Month' }
     }
-    case 'last_30_days': {
-      const s = new Date(today); s.setDate(today.getDate() - 29)
-      return { start: fmtLocal(s), end: fmtLocal(today), label: 'Last 30 Days' }
-    }
-    case 'this_year': {
-      const s = new Date(today.getFullYear(), 0, 1)
-      return { start: fmtLocal(s), end: fmtLocal(today), label: 'This Year' }
-    }
+    case 'last_30_days':
+      return { start: addDays(today, -29), end: today, label: 'Last 30 Days' }
+    case 'this_year':
+      return { start: `${today.slice(0, 4)}-01-01`, end: today, label: 'This Year' }
     case 'all': {
       return { start: '1970-01-01', end: '2999-12-31', label: 'All Time' }
     }
@@ -69,8 +54,7 @@ function reportPeriod(key: string): { start: string; end: string; label: string 
 
 // ── Comparison helpers (month keys are 'YYYY-MM') ──────────
 function currentMonthKey(): string {
-  const d = new Date()
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+  return localDate().slice(0, 7)
 }
 
 function prevMonthKey(ym: string): string {
@@ -82,15 +66,16 @@ function prevMonthKey(ym: string): string {
 }
 
 function monthRange(ym: string): { start: string; end: string; label: string } {
+  const today = localDate()
   const parts = ym.split('-')
-  const y = parseInt(parts[0]) || new Date().getFullYear()
-  const m = parseInt(parts[1]) || (new Date().getMonth() + 1)
-  const start = new Date(y, m - 1, 1)
-  const end = new Date(y, m, 0)
+  const y = parseInt(parts[0]) || parseInt(today.slice(0, 4))
+  const m = parseInt(parts[1]) || parseInt(today.slice(5, 7))
+  const start = `${y}-${String(m).padStart(2, '0')}-01`
+  const end = addDays(new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10), -1)
   return {
-    start: fmtLocal(start),
-    end: fmtLocal(end),
-    label: start.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }),
+    start,
+    end,
+    label: new Date(start + 'T00:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' }),
   }
 }
 
@@ -414,7 +399,7 @@ budget.get('/add-expense', async (c) => {
             {/* Date */}
             <div>
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Date</label>
-              <input type="date" name="date" value={new Date().toISOString().slice(0,10)} required
+              <input type="date" name="date" value={localDate()} required
                 class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
             </div>
 
@@ -852,7 +837,7 @@ budget.get('/add-income', async (c) => {
         <form method="post" action="/budget/add-income" class="space-y-4">
           <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Date</label>
-            <input type="date" name="date" value={new Date().toISOString().slice(0,10)} required
+            <input type="date" name="date" value={localDate()} required
               class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
           </div>
           <div>
@@ -1060,7 +1045,7 @@ async function pantryHandoff(env: Env, tripId: number) {
   })
   if (!lines.length) return null
   const amount = lines.reduce((sum, l) => sum + l.price, 0)
-  const day = String(trip.started_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+  const day = String(trip.started_at || '').slice(0, 10) || localDate()
   return { tripId, description: `Pantry shopping ${day}`, lines, amount }
 }
 
@@ -1273,7 +1258,7 @@ budget.post('/import-laoka', async (c) => {
       `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id)
        VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)`
     )
-      .bind(id, new Date().toISOString().slice(0, 10), amount, categoryId, description, notes, user.id)
+      .bind(id, localDate(), amount, categoryId, description, notes, user.id)
       .run()
     transactionId = id
 
@@ -1414,7 +1399,7 @@ budget.post('/copy/:id', async (c) => {
   const original = await c.env.DB.prepare('SELECT * FROM transactions WHERE id = ?').bind(id).first<Transaction>()
   if (!original) return c.redirect('/budget')
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDate()
   const newId = generateId()
   await c.env.DB.prepare(
     `INSERT INTO transactions (id, date, amount, type, income_account_id, category_id, description, notes, added_by_user_id, is_recurring)

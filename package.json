@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
+    "db:local": "node scripts/db-migrate.mjs --local",
+    "db:remote": "node scripts/db-migrate.mjs --remote",
     "check": "tsc --noEmit",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"scripts/**/*.test.mjs\"",
     "smoke": "node scripts/smoke.mjs",
     "audit:remote": "node scripts/schema-audit.mjs",
     "audit:rules": "node scripts/rule-guards-audit.mjs",
@@ -14,7 +17,7 @@
     "audit:do-state": "node scripts/do-state-audit.mjs",
     "audit:basemaps": "node scripts/basemap-record-audit.mjs",
     "basemaps:record": "node scripts/basemap-record.mjs",
-    "verify": "npm run check && npm run smoke",
+    "verify": "npm run check && npm test && npm run smoke",
     "deploy:dry-run": "wrangler deploy --dry-run",
     "cf-typegen": "wrangler types"
   },

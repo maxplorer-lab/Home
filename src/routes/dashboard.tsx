@@ -5,7 +5,7 @@ import { Layout, Card, KineClientStats, TintStat } from '../views/layout'
 // doorways below can never drift from the tabs they open.
 import { HOME_TABS, Icon, ChatIconWithDot } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
-import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedColor } from '../lib/utils'
+import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedColor, localDate, TZ_SQL_MODIFIER } from '../lib/utils'
 import { classifyTransaction } from '../lib/notify'
 // The pantry's OWN queries. Home shows a summary of the shelves, and it has to
 // be the same arithmetic the Pantry screen draws from -- see `pantrySummary`.
@@ -62,10 +62,10 @@ dashboard.get('/', async (c) => {
        LEFT JOIN category_groups cg ON c.group_id = cg.id
        LEFT JOIN income_accounts ia ON t.income_account_id = ia.id
        LEFT JOIN users u ON t.added_by_user_id = u.id
-       WHERE date(t.created_at) = date('now')
+       WHERE date(t.created_at, ?) = ?
        ORDER BY t.created_at DESC
        LIMIT 8`
-    ).all<Transaction>()
+    ).bind(TZ_SQL_MODIFIER, localDate()).all<Transaction>()
   ])
 
   const totalIncome   = incomeRow?.total  ?? 0     // this month

@@ -32,6 +32,8 @@ public/
   chat/              the family chat document (its own page, WAY's engine)
   laoka/             Laoka SPA (namespaced: /laoka-ws, /laoka/api/…)
 scripts/smoke.mjs    `npm run smoke` — dependency-free end-to-end checks
+scripts/*.test.mjs   `npm test` — node --test: local-day helpers + the Laoka CSV parser
+scripts/db-migrate.mjs  `npm run db:local` — applies only what a DB is missing
 migrations-home/     home-db schema (the ONLY db Home owns)
 migrations-sompitra|way|laoka/   the modules' original migrations
 ```
@@ -44,8 +46,9 @@ expecting it to affect Home.
 
 ```bash
 npm run check          # tsc --noEmit (must pass before you claim done)
+npm test               # node --test: date helpers + the Laoka CSV parser (no server)
 npm run smoke          # end-to-end checks against a RUNNING dev server
-npm run verify         # check + smoke — what "tested locally" means here
+npm run verify         # check + test + smoke — what "tested locally" means here
 npm run audit:remote   # REMOTE schema vs migrations-* (read-only, exits 1 on a gap)
 npm run audit:module-state # module-scope request state in src/ (read-only; rule 38)
 npm run audit:do-state   # request data on a DO's `this` (read-only; rule 39)
@@ -55,6 +58,8 @@ npm run audit:basemaps   # the RECORDED basemap upstream still satisfies its rul
 npm run basemaps:record  # re-record it from the real tile host (prints what changed)
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
+npm run db:local       # bring the four LOCAL databases up to date (safe to re-run)
+npm run db:remote -- --yes  # the REAL four (irreversible — read rule 32 first)
 npm run deploy         # wrangler deploy (see rule 17 first)
 ```
 
@@ -63,6 +68,14 @@ npm run deploy         # wrangler deploy (see rule 17 first)
 regression, so it is safe to gate a deploy on. Defaults to the local dev
 seed account (`maxx`); override with `SMOKE_USER` / `SMOKE_PASS`. Set
 `SMOKE_ADMIN=0` when testing with a non-admin account.
+
+`npm test` is the other half: `node --test` over `scripts/*.test.mjs`, with no
+server, no database and no framework. It pins the pure helpers a type gate cannot
+see — the local-day/week/month date helpers (every case run under three process
+timezones, because Workers always run `TZ=UTC`) and the Laoka CSV hand-off parser,
+whose functions it extracts from the page's own inline `<script>` and evaluates
+rather than duplicating. Both files are mirrored in `../Sompitra/tests/`; keep the
+pairs in step.
 
 `npm run audit:remote` talks to the REAL databases (read-only selects only) and is
 the check rule 32 exists for: it answers "did every migration reach every
@@ -135,19 +148,38 @@ not something to run on every PR. **Marking a check REQUIRED is a repo setting a
 not a file:** Settings → Rules → require a status check, then pick `gates` (and
 `guards` if the anti-vacuity job should block a merge too).
 
-Local DB setup (first time only):
+Local DB setup (first time only) — one command, all four databases, in order:
 
 ```bash
-npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0001_identity.sql
-npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0002_notifications.sql
-npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0003_laoka_imports.sql
-npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0004_two_channels.sql
-npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0005_diagnostics.sql
-npx wrangler d1 execute HOME_DB      --local --file=migrations-home/0006_share_links.sql
-npx wrangler d1 execute DB           --local --file=migrations-sompitra/0001_initial_schema.sql   # + 0002…0009
-npx wrangler d1 execute WAY_DB       --local --file=migrations-way/0000_baseline.sql              # + 0001…0007
-npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.sql                # + 0002…0008
+npm run db:local                 # migrations-*/ → the local D1 in .wrangler/state
+npm run db:local -- --dry-run    # print the plan and apply nothing
+npm run db:local -- --only laoka # one module (name, directory or binding)
 ```
+
+`migrations-*/` is the ONLY source of the schema: it is what this builds and what
+`npm run audit:remote` judges. The module repos keep their own `migrations/`
+directories as history, and the two sets are **not** interchangeable — Laoka's
+stops at `0008` while `migrations-laoka/` carries `0009–0011` (the pantry), so
+building from the Laoka repo's directory left a database the app could not use
+(an audit finding, `audits/Home-audit-2026-10-01.md`). To apply one file by hand
+the shape is `npx wrangler d1 execute <BINDING> --local --file=migrations-<module>/<NNNN>_*.sql`.
+
+Applied files are not version-tracked — D1 records nothing about what has run — so
+the command works out what is missing by READING the database: it extracts each
+file's tables and columns from the SQL, reads the database's actual schema in one
+query, and applies only the files whose objects are absent. **It is safe to
+re-run**: a second run applies nothing and says so. A file that declares no
+objects (a seed, a settings default) cannot be judged from the schema at all, so
+those run on an empty database or with `--all` — every one of them is idempotent
+(`INSERT OR IGNORE`, or an UPDATE guarded by the old value), and a new one must be
+too. A file that looks HALF applied stops the run and names itself rather than
+guessing.
+
+WAY has one post-chain step, `scripts/repair-way-messages-fk.sql`:
+`migrations-way/0002_settings.sql` DROPS the `devices` table `0001_init.sql`
+created, and `messages.device_id` still references it, so a database built only
+from `migrations-way/` cannot accept a chat insert (rule 19). The same command
+applies it, and only when `devices` is missing.
 
 ## Non-obvious rules (violating these has caused real bugs)
 
@@ -370,10 +402,11 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     **A phone is given its topic by `/way/`'s Users & topics screen**, so that
     screen answers from identity too (`/way/api/users` → `topicSource`), and
     its generate button writes through `setWayTopic()` — which also MIRRORS the
-    value into `way-db`, because that is what a **rollback** publishes from
-    (`CUTOVER.md` §6: one `wrangler deploy` per module repo, D1 bound by id and
-    never owned by a Worker). Never delete either way-db copy without migrating
-    first, or every phone silently stops receiving. `adoptWayTopics()` (admin button in /settings) promotes W.A.Y's
+    value into `way-db`, because that is W.A.Y's own fallback for a username
+    `home-db` has never heard of (see the paragraph above). Never delete either
+    way-db copy without migrating first, or every phone silently stops
+    receiving. (`CUTOVER.md` §6: the module repos no longer deploy — their
+    worker configs and CI were retired on 2026-10-01.) `adoptWayTopics()` (admin button in /settings) promotes W.A.Y's
     topics into `way_topic` and never overwrites a channel someone already has.
 16. The household ntfy **server** lives in home-db (`home_settings`), with a
     fallback read of Sompitra's legacy `app_settings.ntfy_server` and then of
@@ -966,14 +999,17 @@ npx wrangler d1 execute LAOKA_DB     --local --file=migrations-laoka/0001_init.s
     it, and every refused attempt is receipted, so it is accountable even where
     it is not announced.
 
-32. **A schema change is NOT part of a deploy.** `migrations-home/*.sql` is applied
-    BY HAND, per environment (`npx wrangler d1 execute HOME_DB --remote --file=…`),
-    and nothing in `npm run check`, the build or the deploy touches it. So the code
-    can be live and correct while the table it writes does not exist — which is
-    exactly how live shares became un-mintable in production on 2026-09-20. After
-    adding a migration: apply it everywhere, then PROVE it landed with
-    `npm run audit:remote`, which compares all four remote databases against their
-    `migrations-*` directories in one read-only pass and exits 1 on any gap —
+32. **A schema change is NOT part of a deploy.** `migrations-*/*.sql` is applied
+    BY HAND, per environment, and nothing in `npm run check`, the build or the
+    deploy touches it. Two commands cover it: `npm run db:remote -- --yes` applies
+    every `migrations-*/` file to the real databases (`npm run db:local` does the
+    same locally), and both insist on the `--yes` so a stray run cannot rewrite
+    production. So the code can be live and correct while the table it writes does
+    not exist — which is exactly how live shares became un-mintable in production
+    on 2026-09-20. After adding a migration: apply it everywhere, then PROVE it
+    landed with `npm run audit:remote`, which compares all four remote databases
+    against their `migrations-*` directories in one read-only pass and exits 1 on
+    any gap —
     because the absence is otherwise invisible: no error, no log entry, no failed
     check (the run is spelled out in `CUTOVER.md` §1b). Two habits follow from the same fact: a write path that needs a
     new table must ANSWER with that fact (a named reason, never a bodiless 500),
@@ -1622,10 +1658,13 @@ freely. `main` is pushed and tracks `origin/main`.
 
 **Home is deployed**, at `https://home.<subdomain>.workers.dev`, and is now the
 ONLY host: the three original Workers (`sompitra`, `way`, `laoka`) were deleted
-on 2026-09-19, so `sompitra.<sub>`, `way.<sub>` and `laoka.<sub>` all answer
-404/1042 and the module repos hold the rollback (each is one `wrangler deploy`
-away, and no data was ever in them — D1 is bound by name, not owned by a
-Worker). It is built by the Cloudflare Git integration on `main` (the
+on 2026-09-19 and their standalone worker configs and CI were retired on
+2026-10-01, so `sompitra.<sub>`, `way.<sub>` and `laoka.<sub>` all answer
+404/1042 and nothing in the module repos can deploy any more. There is no
+rollback deploy to restore without recovering a config from git history, so
+treat Home as the only deployment. (No data was ever in those Workers — D1 is
+bound by name, not owned by a Worker, so the databases are intact either way.)
+Home is built by the Cloudflare Git integration on `main` (the
 default `npx wrangler deploy`; `.npmrc` carries `legacy-peer-deps=true` because
 wrangler 4.x wants `@cloudflare/workers-types` v5 while this project pins v4).
 Secrets (`AUTH_PEPPER`, `SESSION_SECRET`, `SETUP_TOKEN`) go in with `wrangler
@@ -1640,8 +1679,9 @@ objects. So any SHAs cited in older notes do not resolve now. Don't cite a
 Home SHA in a doc without checking it still resolves; prefer file paths and
 commit *subjects*.
 
-The three standalone sources under `../Sompitra`, `../W.A.Y`, `../Laoka`
-have their own separate repositories and their own history.
+The three module sources under `../Sompitra`, `../W.A.Y`, `../Laoka`
+have their own separate repositories and their own history. They carry no
+deploy config any more — Home is the only deployable repo.
 
 | Symptom | Look at |
 | --- | --- |
