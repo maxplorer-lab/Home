@@ -447,7 +447,7 @@ Test before you deploy (`npm test` needs no server; `npm run smoke` does):
 
 ```bash
 npm run check                                  # tsc --noEmit
-npm test                                       # node --test: date helpers + the CSV parser
+npm test                                       # node --test: date helpers, CSV parser, W.A.Y suites
 npm run smoke                                  # end-to-end checks, exit 0 = green
 BASE_URL=http://127.0.0.1:8793 npm run smoke   # non-default port
 npm run verify                                 # check + test + smoke, in order

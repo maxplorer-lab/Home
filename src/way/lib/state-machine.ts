@@ -16,7 +16,8 @@
 // All constants and logic below are a 1:1 port of the Python original --
 // see fleet_tracker.py for the reasoning behind each guard/threshold.
 
-import { Geofence, isInsideGeofence, distanceM, haversineKm, circleCrossingPoint } from "./geofence";
+import type { Geofence } from "./geofence";
+import { isInsideGeofence, distanceM, haversineKm, circleCrossingPoint } from "./geofence";
 import { WAY_CONFIG } from "../config";
 
 // ============================================================

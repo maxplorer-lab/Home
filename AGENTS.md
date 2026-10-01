@@ -32,7 +32,7 @@ public/
   chat/              the family chat document (its own page, WAY's engine)
   laoka/             Laoka SPA (namespaced: /laoka-ws, /laoka/api/…)
 scripts/smoke.mjs    `npm run smoke` — dependency-free end-to-end checks
-scripts/*.test.mjs   `npm test` — node --test: local-day helpers + the Laoka CSV parser
+scripts/*.test.mjs   `npm test` — node --test: local-day helpers, CSV parser, the W.A.Y mirrors
 scripts/db-migrate.mjs  `npm run db:local` — applies only what a DB is missing
 migrations-home/     home-db schema (the ONLY db Home owns)
 migrations-sompitra|way|laoka/   the modules' original migrations
@@ -46,7 +46,7 @@ expecting it to affect Home.
 
 ```bash
 npm run check          # tsc --noEmit (must pass before you claim done)
-npm test               # node --test: date helpers + the Laoka CSV parser (no server)
+npm test               # node --test: date helpers + CSV parser + W.A.Y mirrors (no server)
 npm run smoke          # end-to-end checks against a RUNNING dev server
 npm run verify         # check + test + smoke — what "tested locally" means here
 npm run audit:remote   # REMOTE schema vs migrations-* (read-only, exits 1 on a gap)
@@ -72,10 +72,16 @@ seed account (`maxx`); override with `SMOKE_USER` / `SMOKE_PASS`. Set
 `npm test` is the other half: `node --test` over `scripts/*.test.mjs`, with no
 server, no database and no framework. It pins the pure helpers a type gate cannot
 see — the local-day/week/month date helpers (every case run under three process
-timezones, because Workers always run `TZ=UTC`) and the Laoka CSV hand-off parser,
+timezones, because Workers always run `TZ=UTC`), the Laoka CSV hand-off parser,
 whose functions it extracts from the page's own inline `<script>` and evaluates
-rather than duplicating. Both files are mirrored in `../Sompitra/tests/`; keep the
-pairs in step.
+rather than duplicating, and the vendored W.A.Y engine: the tracking state
+machine, the CSV/KML builders, and the W-A3 export window extracted from
+`public/way/index.html`. The Sompitra and Laoka pairs are mirrored in
+`../Sompitra/tests/`; the W.A.Y suites in `scripts/way-*.test.mjs` mirror
+`../W.A.Y/tests/` (`scripts/way-ts-hooks.mjs`, preloaded by `npm test`, resolves
+their bundler-style extensionless imports). Keep each pair in step — but note the
+engine has drifted: Home's copy is ahead, so the cases marked DIVERGED in
+`way-tracking.test.mjs` pin Home's behaviour, not W.A.Y's.
 
 `npm run audit:remote` talks to the REAL databases (read-only selects only) and is
 the check rule 32 exists for: it answers "did every migration reach every

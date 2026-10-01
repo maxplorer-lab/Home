@@ -4,7 +4,7 @@
 // (LineString) + placemark shape, just built from D1 rows instead of
 // local SQLite.
 
-import { GpsPingRow } from "../types";
+import type { GpsPingRow } from "../types";
 
 export function buildCsv(pings: GpsPingRow[]): string {
   const header = [
