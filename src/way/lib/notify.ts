@@ -3,10 +3,10 @@
 //
 // Transport is ntfy: publish with a POST to <server>/<topic> (message in the
 // body, title/tags in headers), and the receiving phone's ntfy app follows
-// that user's own topic. The server root comes from NTFY_URL in
-// wrangler.jsonc and is a SELF-HOSTED instance (maxxntfy.duckdns.org) -- not
-// ntfy.sh, whose free daily message quota silently stops delivery once hit.
-// See docs/OPERATIONS.md, "ntfy".
+// that user's own topic. The server root is an admin setting, resolved in the
+// order below, and points at a SELF-HOSTED instance (maxxntfy.duckdns.org) --
+// not ntfy.sh, whose free daily message quota silently stops delivery once
+// hit. See docs/OPERATIONS.md, "ntfy".
 //
 // Routing model -- the part that is easy to get backwards: each user owns ONE
 // random topic, which is their private inbox, and their phone follows only
@@ -62,12 +62,19 @@ export const TZ_OFFSET_MS = 3 * 60 * 60 * 1000;
 // ------------------------------------------------------------
 //  Server configuration
 //
-//  The ntfy server root is an admin-editable setting (Settings -> Users &
-//  topics), not a hardcoded constant -- moving to a different push server
-//  must not require a code change and a redeploy. Resolution order, applied
-//  in FleetDO.getNotifyConfig()/notifyEvent():
+//  The ntfy server root is an admin-editable setting (Settings -> Notifications
+//  -> ntfy server), not a hardcoded constant -- moving to a different push
+//  server must not require a code change and a redeploy. Resolution order,
+//  applied in FleetDO.getNotifyConfig()/notifyEvent():
 //
-//    app_settings.ntfy_url  ->  env.NTFY_URL (wrangler.jsonc)  ->  DEFAULT_NTFY_URL
+//    home-db home_settings.ntfy_server   (the household setting)
+//      -> way-db app_settings.ntfy_url   (this module's pre-merge copy)
+//        -> env.NTFY_URL (wrangler.jsonc)
+//          -> DEFAULT_NTFY_URL ("https://ntfy.sh")
+//
+//  Note the two key spellings -- `ntfy_server` in home-db, `ntfy_url` in
+//  way-db. Nothing writes the way-db key any more; it survives only so a
+//  deployment that never re-set the server keeps notifying.
 // ------------------------------------------------------------
 export const NTFY_URL_SETTING_KEY = "ntfy_url";
 export const DEFAULT_NTFY_URL = "https://ntfy.sh";

@@ -36,8 +36,9 @@
     "PBKDF2_ITERATIONS": "5000",
     // Push notifications go to the self-hosted ntfy instance, not public
     // ntfy.sh (its free quota silently drops messages when hit). Self-hosted
-    // behind a DuckDNS name. This is only the THIRD layer: home-db's
-    // home_settings.ntfy_server wins, then Sompitra's app_settings copy.
+    // behind a DuckDNS name. This is only the THIRD layer of the resolution:
+    // home-db's home_settings.ntfy_server wins, then the legacy per-module
+    // copies (way-db app_settings.ntfy_url, Sompitra's ntfy_server).
     "NTFY_URL": "https://maxxntfy.duckdns.org"
   },
 
