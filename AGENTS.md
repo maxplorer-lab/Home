@@ -32,7 +32,7 @@ public/
   chat/              the family chat document (its own page, WAY's engine)
   laoka/             Laoka SPA (namespaced: /laoka-ws, /laoka/api/…)
 scripts/smoke.mjs    `npm run smoke` — dependency-free end-to-end checks
-scripts/*.test.mjs   `npm test` — node --test: local-day helpers, CSV parser, the W.A.Y mirrors
+scripts/*.test.mjs   `npm test` — node --test: local-day helpers, CSV parser, the W.A.Y mirrors, the workers' map cache
 scripts/db-migrate.mjs  `npm run db:local` — applies only what a DB is missing
 migrations-home/     home-db schema (the ONLY db Home owns)
 migrations-sompitra|way|laoka/   the modules' original migrations
@@ -76,7 +76,10 @@ timezones, because Workers always run `TZ=UTC`), the Laoka CSV hand-off parser,
 whose functions it extracts from the page's own inline `<script>` and evaluates
 rather than duplicating, and the vendored W.A.Y engine: the tracking state
 machine, the CSV/KML builders, and the W-A3 export window extracted from
-`public/way/index.html`. The Sompitra and Laoka pairs are mirrored in
+`public/way/index.html`, and the service workers' map cache (both files loaded
+into a bare `self`, then driven through their real fetch listeners with fake
+caches: cache-first tiles, background revalidation, the exclusions, and the
+trim). The Sompitra and Laoka pairs are mirrored in
 `../Sompitra/tests/`; the W.A.Y suites in `scripts/way-*.test.mjs` mirror
 `../W.A.Y/tests/` (`scripts/way-ts-hooks.mjs`, preloaded by `npm test`, resolves
 their bundler-style extensionless imports). Keep each pair in step — but note the
@@ -1810,6 +1813,7 @@ deploy config any more — Home is the only deployable repo.
 | A page you changed still looks old on a phone — the deploy is fine, the number did not move | first check WHICH build the phone is on: **WAY → Settings** prints `build 2026-09-19.6-superapp` under Log out (the marker only bumps when the WAY document itself changes). Each tab is a **fresh server-rendered page**, so switching tabs (or reopening the installed app) reloads it — but a tab that was already open through the deploy keeps its old document until you do. Assets are served `must-revalidate`, so it is never the HTTP cache. This is how the HUD's size change looked like it had not shipped: it had, and on a ≤420 px viewport it is only 33 px vs 30 px (the larger 42 px branch starts above 420 px, which is why a phone and a 423 px iframe render differently) |
 | The HUD/speed readout is smaller than the desktop screenshot | `.spd-num` is 42 px, and the `@media (max-width: 420px)` block in `public/way/index.html` drops it to 33 px with a 138 px card — a 1 px width change across that boundary is a 9 px jump. Change the branch, not the desktop value, when tuning for phones |
 | A cached page appeared for the wrong account, or an offline load showed a signed-in screen | a service worker cached a DOCUMENT. There are two (`public/sw.js` at `/`, `public/way/sw.js` at `/way/`) and the narrower scope wins for a /way/ URL, so both must keep the assets-only policy: no page in the precache list, and `req.mode === 'navigate' || req.destination === 'document'` returns before any cache is consulted. A policy change must also bump the cache name — that is what evicts the old entries. Smoke section 16 fails on both files |
+| The map is slow again, or the same tiles come back every visit | both workers keep the basemap host's bytes in ONE pool (`MAP_CACHE` = `home-map-v1`, shared across scopes because Cache Storage is per-ORIGIN, not per-scope) and `activate` in BOTH files has to keep that name or every update throws the map away. Tiles are cache-first — their URLs are versioned upstream, so a new planet version is a new URL — while style/TileJSON/glyphs/sprites are stale-while-revalidate; the pool trims itself to 200 entries, oldest first, on every 32nd put, because one z14 tile is 271 KB (measured 2026-10-02) against a 43 KB style. The failure mode to know is the host list (`MAP_HOSTS`): a declared basemap host missing from it is simply never cached, with nothing on screen to say so, so smoke §16 reads it against `/shared/basemaps.js` and `scripts/sw-map-cache.test.mjs` drives both workers directly. And the host's ten-year `Cache-Control` is not enough by itself: that is the browser cache, per-profile and evicted long before Cache Storage is |
 | A Kiné payment does not show up as budget income | the sync resolves its account (`kineIncomeAccount` in `src/routes/kine.tsx`): the signed-in person's own account whose name starts with `Kin%` first, then any `Kiné Privée`. No such account → the "Sync to Budget Income" checkbox is not even offered. It used to look for `username='niri'` specifically, which quietly broke the feature for anyone else |
 | The device emoji sits ON the position dot, so the dot — the thing that says moving / stationary / slow — is nowhere to be seen | the icon is a LABEL, not the position: the 14 px `placeTip` dot is the trail head and carries the point, and the Settings emoji floats `CONFIG.MARKER_BOX_PX - CONFIG.MARKER_GLYPH_PX` (32 px) above it inside a taller icon box anchored by the box's bottom edge. If the two are fused, `iconSize`/`iconAnchor` were set to the glyph's own size (`[30, 30] / [15, 30]`), or `MARKER_BOX_PX` was pulled down to the glyph's height — smoke section 15 fails on both, and on the second layer drawing the dot from anywhere but the playback clock's `placed` position |
 | A WAY track vanishes, or a trail stops growing | `resetTrail()` is the only thing that clears one (snapshot / track-eye / late `track` point). Check `trailFor(devId).drawnIdx` vs `devicePings[devId].length` in the console, and remember a hidden track (👁) still moves its marker |

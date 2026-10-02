@@ -9,9 +9,10 @@
 // page (or a stale one) the moment the network blinked. Navigations and
 // API calls therefore go straight to the network, always.
 //
-// Cached: static assets only (icons, images, CSS, fonts, scripts), which
-// are identical for everyone and are exactly what makes a cold start on
-// a phone feel instant.
+// Cached: static assets only (icons, images, CSS, fonts, scripts) — plus the
+// map host's own bytes (MAP_CACHE below), which are identical for everyone too
+// and are the largest thing the share fetches: one z14 vector tile measured
+// 271 KB on 2026-10-02.
 // Bump this whenever a cached asset's BEHAVIOUR changes in place — a /shared/*.js
 // module rewritten at the same URL, say. Entries are keyed by URL, so a new file
 // evicts itself and a rewrite does not: without a bump the load right after such
@@ -30,6 +31,63 @@ const PRECACHE = [
   '/icons/apple-touch-icon.png',
 ];
 
+// ─── The map's own bytes ──────────────────────────────────────────
+// Both maps draw OpenFreeMap (see /shared/basemaps.js), and its vector tiles
+// are the heaviest thing either page fetches: one z14 tile over Antananarivo
+// measured 271 KB on 2026-10-02. The host serves them with a ten-year
+// Cache-Control, but that is the BROWSER cache — per-profile, and evicted long
+// before Cache Storage is on a phone. These bytes are session-free (no cookie,
+// no query, identical for every viewer), so unlike a document they are safe to
+// keep, and both workers keep them in ONE pool: Cache Storage is per-ORIGIN,
+// so a tile /live paid for is a tile /way/ gets off disk.
+const MAP_CACHE = 'home-map-v1';
+// A basemap host is a dependency (the two provider blocks in /shared/basemaps.js
+// say why). A declared host missing from this list is simply never cached, so
+// smoke §16 reads the list and that file together; adding a raster key means
+// adding its host HERE, in both workers.
+const MAP_HOSTS = ['tiles.openfreemap.org'];
+// Tiles live under a versioned path upstream rotates (a new planet version is a
+// new URL), so they are cache-first: re-fetching 271 KB to prove it did not
+// change is exactly the cost this cache removes. Style, TileJSON, glyphs and
+// sprites sit at stable URLs with a day-to-week cache upstream, so those are
+// revalidated in the background while the stored copy answers.
+const MAP_METADATA = /^\/(?:styles|fonts|sprites)\//;
+const MAP_MAX_ENTRIES = 200;
+
+let mapPuts = 0;
+async function trimMapCache(cache) {
+  const keys = await cache.keys();
+  if (keys.length <= MAP_MAX_ENTRIES) return;
+  // Oldest first: keys come back in insertion order, and a re-fetched tile is
+  // re-put without moving, so the head of the list is the coldest. Trim in one
+  // pass, on every 32nd put rather than on every tile.
+  await Promise.all(keys.slice(0, keys.length - 120).map((k) => cache.delete(k))).catch(() => {});
+}
+function mapKind(url) {
+  if (!MAP_HOSTS.includes(url.hostname)) return null;
+  if (url.pathname === '/planet') return 'metadata';
+  if (MAP_METADATA.test(url.pathname)) return 'metadata';
+  return 'tile';
+}
+async function mapBytes(event, req, kind) {
+  const cache = await caches.open(MAP_CACHE);
+  const hit = await cache.match(req);
+  const load = () => fetch(req).then((response) => {
+    if (response && response.status === 200) {
+      cache.put(req, response.clone()).then(() => {
+        mapPuts += 1;
+        if (mapPuts % 32 === 0) trimMapCache(cache);
+      }).catch(() => {});
+    }
+    return response;
+  });
+  if (hit) {
+    if (kind === 'metadata') event.waitUntil(load().catch(() => {}));
+    return hit;
+  }
+  return load().catch(() => new Response('', { status: 504, statusText: 'offline' }));
+}
+
 // Paths that are session-gated server-rendered documents, never cached.
 const NEVER = ['/api/', '/way/api/', '/laoka/api/', '/ws'];
 
@@ -45,7 +103,9 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // MAP_CACHE is kept too: an update must not throw away the map bytes
+      // the whole point is to not download twice.
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== MAP_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -55,6 +115,20 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
+
+  // ── The map's bytes (see MAP_CACHE): cross-origin, session-free, and the
+  // heaviest thing on the page. Served BEFORE the same-origin rule below, which
+  // is what would otherwise hand every tile to the network. A navigation is
+  // never touched, and neither is a range request — a whole cached body is not
+  // a partial answer.
+  if (req.mode !== 'navigate' && req.destination !== 'document') {
+    const kind = mapKind(url);
+    if (kind && !req.headers.has('range')) {
+      event.respondWith(mapBytes(event, req, kind));
+      return;
+    }
+  }
+
   if (url.origin !== self.location.origin) return;
   if (NEVER.some((p) => url.pathname.startsWith(p))) return;
 

@@ -2727,6 +2727,17 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
   // for ONE signed-in person, on a device that may be shared, so a precached
   // shell (or an offline fallback to one) hands the next person a page that is
   // not theirs. /way/sw.js did exactly that until it was made static-only.
+  //
+  // They DO cache the map's own bytes (MAP_CACHE, session-free and identical
+  // for every viewer), and the host list is what decides whether the heaviest
+  // request either page makes is ever served off disk — one z14 tile measured
+  // 271 KB on 2026-10-02, against a 43 KB style. A declared basemap host that
+  // is missing from the list is not an error anywhere: the map re-downloads on
+  // every visit exactly as it did before, and looks like nothing at all. So the
+  // list and /shared/basemaps.js are read together here.
+  const declaredHosts = [...new Set([
+    ...(await body(await req('/shared/basemaps.js'))).matchAll(/\b(?:style|url):\s*'(https:\/\/[^']+)'/g),
+  ].map((m) => (m[1].match(/^https:\/\/([^/]+)\//) || [])[1]))].filter(Boolean).sort()
   for (const p of ['/sw.js', '/way/sw.js']) {
     const swRes = await req(p)
     const sw = await body(swRes)
@@ -2745,6 +2756,13 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
       /req\.mode === 'navigate' \|\| req\.destination === 'document'/.test(sw) &&
       !/caches\.match\('\/(way\/)?index\.html'\)/.test(sw),
       'a navigation can be answered from (or fall back to) a cached document')
+
+    const cachedHosts = (((sw.match(/const MAP_HOSTS = \[([^\]]*)\]/) || [])[1] || '').match(/'[^']+'/g) || [])
+      .map((h) => h.slice(1, -1)).sort()
+    check(`${p}: caches the map's bytes for every host the basemaps declare`,
+      declaredHosts.length > 0 && /const MAP_CACHE = '/.test(sw) &&
+        declaredHosts.every((h) => cachedHosts.includes(h)),
+      `declared ${declaredHosts.join(' ') || '(none)'} vs cached ${cachedHosts.join(' ') || '(none)'} — a host missing here is downloaded again on every visit, with nothing on screen to say so`)
   }
 
   // ── The chrome on every page, in both shapes ──

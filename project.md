@@ -374,7 +374,14 @@ same manifest, `apple-touch-icon` and `viewport-fit=cover` viewport.
   shell and fell back to a cached `/way/index.html` offline (cache
   `way-shell-v2-superapp`, dropped by the rename to `way-assets-v3`). Smoke now
   asserts both files: no document in the precache list, and a navigation never
-  answered from cache.
+  answered from cache. The one thing they cache that is not the app's own is
+  the map host's bytes (tiles, style, TileJSON, glyphs, sprites), in ONE
+  `home-map-v1` pool shared across scopes because Cache Storage is per-origin —
+  tiles cache-first (their URLs are versioned upstream, so a new version is a
+  new URL), metadata revalidated in the background, and the pool trimmed to 200
+  entries because one z14 tile measured 271 KB against a 43 KB style. The
+  host's own ten-year `Cache-Control` is not enough to rely on: that is the
+  browser cache — per-profile, and evicted long before Cache Storage is.
 * **Installation is offered, never promised:** the You tab shows *Install Home*
   only when the browser fires `beforeinstallprompt`, with an iOS hint and a
   browser-menu fallback line for everything else.
