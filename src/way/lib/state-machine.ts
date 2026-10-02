@@ -83,6 +83,14 @@ export interface MotionState {
   // legs while still drawing the whole day at once. 0 = no leg yet.
   legId: number;
   legOpen: boolean;
+  // A recording pause broke the leg (the DO's per-device "pause the log"
+  // switch; see applyRecordingPause). The break is spent by the first ping
+  // that MEASURES movement after it, opening the next leg -- a pause is a
+  // break even when the device never stopped, so waiting for a
+  // STAYING -> TRAVELING transition is not enough, and the flag survives a
+  // pause during which not a single ping arrived (a parked phone's uploader
+  // only sends after it has moved).
+  pendingLegCut: boolean;
   // Set by an UNWITNESSED fence crossing (see EXIT_WITNESS_GAP_S): the next
   // accepted ping re-anchors the motion engine at ITS OWN position with zero
   // distance, so a jump nobody watched leaves no leg and no distance behind.
@@ -111,6 +119,7 @@ export function initialMotionState(): MotionState {
     pendingExitEdge: null,
     legId: 0,
     legOpen: false,
+    pendingLegCut: false,
     settlePending: false,
   };
 }
@@ -243,6 +252,32 @@ export function reportedSpeedIsCredible(
 }
 
 // ============================================================
+//  RECORDING PAUSE -> LEG BREAK
+//  The DO's per-device "pause the log" switch is a control-plane action, but
+//  what it means for the day -- a break between two legs -- is leg
+//  bookkeeping, so the rule lives here beside the legs it cuts. Call it when
+//  the switch turns paused; RESUME needs nothing of its own, the pending cut
+//  is spent by the next movement (see processPing's leg block).
+// ============================================================
+
+/** Pause the log: the open leg ends where the pause lands, and the break is
+ *  left PENDING for the next movement to spend, so the resumed drive opens a
+ *  new leg even though the device never stopped.
+ *
+ *  Why a persisted flag rather than the gap the pause itself leaves behind: a
+ *  pause shorter than the trail's own break threshold would draw the two
+ *  halves as one line, and a pause with no pings in it -- a parked phone,
+ *  whose uploader only sends after it has moved -- has no gap to measure at
+ *  all. The flag rides in the same motion state the next ping reads, so it
+ *  survives a DO eviction, a deploy, and a pause that lasts a week. */
+export function applyRecordingPause(motion: MotionState): void {
+  // Nothing open, nothing to break: a movement that starts while paused opens
+  // its leg the natural way (STAYING -> TRAVELING) on its own.
+  if (motion.legOpen) motion.pendingLegCut = true;
+  motion.legOpen = false;
+}
+
+// ============================================================
 //  MAIN ENTRY POINT
 // ============================================================
 export function processPing(
@@ -262,6 +297,7 @@ export function processPing(
     pendingExitEdge: prior.pendingExitEdge ?? null,
     legId: prior.legId ?? 0,
     legOpen: prior.legOpen ?? false,
+    pendingLegCut: prior.pendingLegCut ?? false,
     settlePending: prior.settlePending ?? false,
   };
 
@@ -334,9 +370,24 @@ export function processPing(
   // arrival. Using "not traveling" here would end a fence-departure leg
   // immediately, since movement isn't confirmed yet during the guard.
   if (st.legOpen && (arrivedFence || outcome.result.isStationary)) st.legOpen = false;
-  if (!st.legOpen && !arrivedFence && ((!wasTraveling && nowTraveling) || leftFence)) {
+  // A RECORDING pause is a break too, and a persisted one (the DO stores it
+  // with the switch; see applyRecordingPause). It cannot wait for the
+  // STAYING -> TRAVELING transition below, because a pause in the middle of a
+  // drive has none -- the device never stops -- so the pending cut is spent
+  // by the first ping that MEASURES movement. That excludes a STAYING ping
+  // (departure candidates and parked drift both report isStationary), so a
+  // break armed over a park is spent on the departure itself.
+  const spendPendingCut =
+    st.pendingLegCut && !arrivedFence && !outcome.result.isStationary;
+  if (
+    spendPendingCut ||
+    (!st.legOpen && !arrivedFence && ((!wasTraveling && nowTraveling) || leftFence))
+  ) {
     st.legId += 1;
     st.legOpen = true;
+    // Either way the break has been honored -- an armed flag must never
+    // survive into the leg it opens, or the NEXT movement would cut it again.
+    st.pendingLegCut = false;
   }
   outcome.result.legId = st.legId;
   return outcome;

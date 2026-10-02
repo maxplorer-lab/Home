@@ -1458,6 +1458,17 @@ the follow it had just started.
   page must never say falsely. So a new branch must be counted, and counted
   once. `report-unbelievable` is a correction rather than a drop and is
   deliberately outside both sums (see "The diagnostics ledger" above).
+* **A pause is a break in the day, not just a gate on writes.** Pausing one
+  device's log (the Live/Paused toggle in the W.A.Y settings menu) ends the leg
+  that device was in and leaves a *pending* break in its motion state; the next
+  ping that measures movement opens a new leg, so the resumed drive is drawn,
+  exported and counted separately even though the device never stopped — and even
+  when the phone sent nothing at all between the pause and the resume. The break
+  is a stored flag rather than the time gap on purpose: a pause shorter than the
+  trail's own 90 s break threshold would otherwise be invisible, and a pause with
+  no ping in it has no gap to measure. Resuming needs no wire of its own, an
+  arrival at a fence never mints a leg (the departure does), and the live dot
+  keeps moving while paused — pause hides HISTORY, never the position.
 * One login per person, admin-managed; no self-signup anywhere. The one
   exception is the live share — and it is a **grant**, not a door left open: it
   shows exactly one device, chosen by the grant's own subject, mints no session

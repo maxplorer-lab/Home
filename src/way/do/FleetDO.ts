@@ -44,6 +44,7 @@ import {
 import {
   processPing,
   initialMotionState,
+  applyRecordingPause,
   isGlitch,
   accuracyIsAcceptable,
   reportedSpeedIsCredible,
@@ -1052,6 +1053,13 @@ export class FleetDO extends DurableObject<Env> {
    * keep updating regardless -- only pending_sync writes are gated. */
   private setRecordingPaused(deviceId: string, paused: boolean) {
     const stored = this.loadDeviceState(deviceId);
+    // A pause BREAKS the day's leg where it lands (applyRecordingPause):
+    // nothing is stored while paused, so the break reads at the last stored
+    // point, and the next movement after the resume opens a fresh leg --
+    // which is what keeps a paused stretch from being drawn as one
+    // continuous line. Only the TRANSITION acts: re-sending "paused" while
+    // already paused is not a second break.
+    if (paused && !stored.recordingPaused) applyRecordingPause(stored.motion);
     stored.recordingPaused = paused;
     this.saveDeviceState(deviceId, stored);
     this.broadcast({ type: "deviceControlState", deviceId, forcedMode: stored.forcedMode, recordingPaused: paused });
@@ -1299,10 +1307,20 @@ export class FleetDO extends DurableObject<Env> {
       speed: ping.vel ?? null,
       accuracy,
     };
+    // The control toggles (pause, forced mode) arrive on the WebSocket, and
+    // one can land while this handler awaited the geofence list above -- a
+    // save built from the snapshot at the top would silently undo it. They
+    // are a few flags in this same row, so re-read them just before the
+    // write. The MOTION stays this ping's own result, but a pause's pending
+    // leg break is carried onto it: it is one bit, the motion above was
+    // derived from the pre-pause state, and it is the only record that the
+    // log was broken between those two legs.
+    const controls = this.loadDeviceState(ping.deviceId);
+    if (controls.motion.pendingLegCut) newMotion.pendingLegCut = true;
     this.saveDeviceState(ping.deviceId, {
       motion: newMotion,
-      forcedMode: stored.forcedMode,
-      recordingPaused: stored.recordingPaused,
+      forcedMode: controls.forcedMode,
+      recordingPaused: controls.recordingPaused,
       lastStatus,
       exitBuffer,
     });

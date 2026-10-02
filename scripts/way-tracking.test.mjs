@@ -39,6 +39,7 @@ import {
   angularDiff,
 } from '../src/way/lib/geofence.ts'
 import {
+  applyRecordingPause,
   initialMotionState,
   isGlitch,
   processPing,
@@ -188,6 +189,7 @@ test('initialMotionState matches the DO row defaults', () => {
   assert.equal(s.pendingExitEdge, null)
   assert.equal(s.legId, 0)
   assert.equal(s.legOpen, false)
+  assert.equal(s.pendingLegCut, false, 'Home-only field: the recording pause is a leg break')
   assert.equal(s.settlePending, false, 'Home-only field: unwitnessed crossings')
   assert.deepEqual(s.speedBuffer, [])
 })
@@ -504,4 +506,110 @@ test('forcedMode overrides only the driving/walking call', () => {
   assert.equal(walking.results[3].distance, 0)
   assert.equal(driving.results[3].isDriving, true)
   assert.ok(driving.results[3].distance > 0)
+})
+
+// ─── State machine: the recording pause is a leg break ───────
+
+// DIVERGED: the DO's per-device "pause the log" switch exists in both copies,
+// but only Home's engine breaks the leg for it (applyRecordingPause + the
+// pendingLegCut flag); W.A.Y's standalone copy still joins the two halves of a
+// paused day into one leg. Back-port deliberately or not at all -- do not
+// "restore symmetry" by deleting these cases.
+
+test('pausing the recording breaks the open leg and leaves the break pending', () => {
+  const s = initialMotionState()
+  s.legId = 3
+  s.legOpen = true
+  applyRecordingPause(s)
+  assert.equal(s.legOpen, false, 'the leg ends where the pause lands')
+  assert.equal(s.pendingLegCut, true, 'the next movement must open a fresh leg')
+  assert.equal(s.legId, 3, 'the new id is minted by that movement, not by the pause')
+})
+
+test('pausing with nothing open arms nothing -- there is no leg to break', () => {
+  const s = initialMotionState()
+  applyRecordingPause(s)
+  assert.equal(s.legOpen, false)
+  assert.equal(s.pendingLegCut, false, 'a departure opens its leg the natural way instead')
+})
+
+test('a pause with no pings in it is still a break: the resumed drive is a new leg', () => {
+  // The pause is a stored BIT, not a gap in the points: the parked phone's
+  // uploader can send nothing at all between the pause and the resume, and a
+  // pause shorter than the trail's own break threshold leaves no gap to see.
+  // Either way the resumed drive must not be glued to the leg it followed.
+  const { state } = run(TRAVEL_PREFIX)
+  assert.equal(state.legOpen, true, 'the drive is one open leg')
+  applyRecordingPause(state)
+  const after = run([
+    ping(at(225), { ...north(700), vel: 40 }),
+    ping(at(240), { ...north(900), vel: 40 }),
+  ], { state })
+  // No STAYING -> TRAVELING transition here: the device never stopped, so the
+  // pending break is the only thing that can open the new leg.
+  assert.equal(after.results[0].isStationary, false, 'the resumed ping measures movement')
+  assert.equal(after.results[0].legId, 2, 'it opens leg 2')
+  assert.equal(after.results[1].legId, 2)
+  assert.equal(after.state.legId, 2)
+  assert.equal(after.state.legOpen, true)
+  assert.equal(after.state.pendingLegCut, false, 'the break is spent, not left armed for the next movement')
+})
+
+test('the break is spent by the first ping that measures movement, never by a resume event', () => {
+  // The pause gates STORING, never classifying -- pings keep flowing through
+  // the engine while it is on. So the break is spent where the movement is,
+  // and the first point stored after the resume already carries the new leg.
+  const { state } = run(TRAVEL_PREFIX)
+  applyRecordingPause(state)
+  const during = run([
+    ping(at(225), { ...north(700), vel: 40 }),
+    ping(at(255), { ...north(1000), vel: 40 }),
+  ], { state })
+  assert.equal(during.results[0].legId, 2, 'the new leg opens while the pause is still on')
+  assert.equal(during.results[1].legId, 2)
+  assert.equal(during.state.pendingLegCut, false)
+  const after = run([ping(at(285), { ...north(1300), vel: 40 })], { state: during.state })
+  assert.equal(after.results[0].legId, 2, 'the first stored point after the resume is the new leg')
+})
+
+test('a break armed mid-drive survives a stop and is spent exactly once', () => {
+  const { state } = run(TRAVEL_PREFIX)
+  applyRecordingPause(state)
+  const after = run([
+    ping(at(495), { ...north(679), vel: 0 }), // 5 min of silence: the stop
+    ping(at(525), { ...north(900), vel: 30 }), // departure candidate (reports a stay)
+    ping(at(540), { ...north(1100), vel: 30 }), // 15 s sustained: movement
+    ping(at(570), { ...north(1400), vel: 30 }),
+  ], { state })
+  assert.equal(after.results[0].isStationary, true, 'the stop is confirmed by the silence')
+  assert.equal(after.state.legId, 2, 'one new leg -- the break is not spent again on every movement ping')
+  assert.equal(after.results[2].legId, 2)
+  assert.equal(after.results[3].legId, 2)
+  assert.equal(after.state.pendingLegCut, false)
+})
+
+test('a break armed on the way home waits for the departure, not the arrival', () => {
+  // Leg 1 opens as the device drives away, THEN the household pauses: the
+  // break is armed. The device turns around and comes home instead. An
+  // arrival is not a movement -- spending the break there would mint a leg
+  // inside the fence, and the next real departure would cut itself in two.
+  const started = run([ping(at(0)), ping(at(30), { ...north(200) })])
+  assert.equal(started.state.legOpen, true, 'the drive away is one open leg')
+  applyRecordingPause(started.state)
+  const arrived = run([ping(at(45), { ...north(50) })], { state: started.state })
+  assert.equal(arrived.results[0].isInside, true, 'back inside the fence')
+  assert.equal(arrived.state.geoState, 'CONFIRMED_INSIDE')
+  assert.equal(arrived.state.legId, 1, 'arriving home does not mint a leg')
+  assert.equal(arrived.state.legOpen, false)
+  assert.equal(arrived.state.pendingLegCut, true, 'the break waits for the next departure')
+  const out = run([
+    ping(at(90), { ...north(200) }),
+    ping(at(105), { ...north(220) }),
+    ping(at(120), { ...north(240) }),
+  ], { state: arrived.state })
+  assert.equal(out.state.geoState, 'OUTSIDE')
+  assert.equal(out.state.motionMode, 'TRAVELING')
+  assert.equal(out.state.legId, 2, 'the departure spends the break exactly once')
+  assert.equal(out.state.legOpen, true)
+  assert.equal(out.state.pendingLegCut, false)
 })

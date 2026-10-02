@@ -3545,6 +3545,23 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   check('no persistence branch can count the same ping twice',
     /else if \(stored\.recordingPaused && !unwitnessed\) \{/.test(doLedgerSrc),
     'the paused branch counts unwitnessed pings too, so one ping lands in two of the four branches and `accepted = drawn + collapsed + unwitnessed + paused` cannot hold')
+  // The pause is not only a gate, it is a BREAK in the day: the engine's rule
+  // and the flag that carries it across a pause with NO ping in it are
+  // unit-tested in scripts/way-tracking.test.mjs — what that suite cannot see
+  // is the wire between the WebSocket toggle and the engine, which is this.
+  check('pausing the log is wired to the day\u2019s leg break',
+    /applyRecordingPause\(stored\.motion\)/.test(doLedgerSrc) &&
+      /if \(paused && !stored\.recordingPaused\)/.test(doLedgerSrc),
+    'setRecordingPaused no longer breaks the leg, so a paused stretch is drawn as one continuous journey and the resumed drive is glued to the leg it followed')
+  // The toggles arrive on the WebSocket and the ping handler awaits the
+  // geofence list mid-flight — a save built from the snapshot taken before
+  // that await would silently undo whichever toggle landed during it (this
+  // lost-update was live for `recordingPaused` and `forcedMode` themselves).
+  check('a ping\u2019s save cannot silently undo a control toggle that landed mid-ping',
+    /const controls = this\.loadDeviceState\(ping\.deviceId\)/.test(doLedgerSrc) &&
+      /if \(controls\.motion\.pendingLegCut\) newMotion\.pendingLegCut = true;/.test(doLedgerSrc) &&
+      /recordingPaused: controls\.recordingPaused,/.test(doLedgerSrc),
+    'the ingest save writes the control flags from the pre-await snapshot (or drops the pending leg break), so pausing during a ping is undone by that ping\u2019s own save')
 
   check('the intake ledger cannot itself break ingest',
     /private countGate[\s\S]{0,2500}?\} catch \{/.test(doLedgerSrc),

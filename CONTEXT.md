@@ -78,6 +78,7 @@ it always used (AGENTS.md rule 41).
 | **a ping / a fix** | One stored position for one device. `gps_pings.distance_km` is the engine's own segment distance, a *different* quantity from a day's km (rule 34). |
 | **a stored point** | A ping the map is allowed to draw, by `HomeTripLegs.shouldDrawPoint`. Collapsed and non-moving fixes are not points, which is why a day's km is computed rather than summed. |
 | **a leg** | The run between two *consecutive stored points*, split by classification; a change of mode breaks the line exactly where a gap does. |
+| **a backend leg** | The engine's own movement episode (`legId` / `legOpen` in `state-machine.ts`), written onto every stored point as `leg_id` and what a day's drawing and totals split at: opened by a confirmed departure or a fence exit, closed by a stop, a fence arrival — or a **recording pause**, which also leaves the break pending so the resumed drive opens a NEW leg even though the device never stopped. |
 | **the verdict** | `HomeMeet.decision` — one answer for one pair, asked by both the pill and the bar, so they cannot disagree. Its gates are `HomeMeet.CONFIG`. |
 | **the pill** | The live meeting ETA on the map (`meetEtaFor`): a promise about the next few seconds, so it goes dark on a stale fix. |
 | **the bar / the gauge** | The distance ruler under the map (`HomeMeetStrip`), which measures to one **subject**: a picked person or place, else the nearest on the current source. |
