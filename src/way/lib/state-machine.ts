@@ -317,7 +317,7 @@ export function processPing(
 
   const outcome = (s.geoState === "CONFIRMED_INSIDE" || s.geoState === "EXITING")
     ? processConfirmedInside(s, inside, fenceName, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode, prevLat, prevLon, prevTs, geofences)
-    : processOutside(s, inside, fenceName, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode);
+    : processOutside(s, inside, fenceName, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode, prevLat, prevLon, prevTs);
 
   // ---- Leg tracking (backend-only) ----
   // A leg OPENS when movement is confirmed (STAYING -> TRAVELING) or the
@@ -432,7 +432,7 @@ function processConfirmedInside(
     };
   }
 
-  const motionResult = processMotion(s, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode);
+  const motionResult = processMotion(s, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode, prevLat, prevLon, prevTs);
 
   const elapsed = (new Date(dt).getTime() - new Date(s.exitStartTime as string).getTime()) / 1000;
   if (elapsed < EXIT_GUARD_SECONDS) {
@@ -477,7 +477,8 @@ function processOutside(
   fenceName: string | null,
   lat: number, lon: number, dt: string,
   avgSpeed: number, impliedSpeedKmh: number,
-  forcedMode: ForcedMode
+  forcedMode: ForcedMode,
+  prevLat: number | null, prevLon: number | null, prevTs: string | null
 ): { state: MotionState; result: PingResult } {
   if (inside) {
     s.settlePending = false;
@@ -516,7 +517,7 @@ function processOutside(
     s.pendingFenceName = null;
   }
 
-  const motionResult = processMotion(s, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode);
+  const motionResult = processMotion(s, lat, lon, dt, avgSpeed, impliedSpeedKmh, forcedMode, prevLat, prevLon, prevTs);
   return {
     state: s,
     result: { ...motionResult.result, isInside: false, geofenceName: null },
@@ -570,7 +571,8 @@ function processMotion(
   s: MotionState,
   lat: number, lon: number, dt: string,
   avgSpeed: number, impliedSpeedKmh: number,
-  forcedMode: ForcedMode
+  forcedMode: ForcedMode,
+  prevLat: number | null, prevLon: number | null, prevTs: string | null
 ): { state: MotionState; result: PingResult } {
   // First ping after an unwitnessed crossing: it becomes the new anchor, so
   // the jump nobody watched contributes no leg and no distance. Persisted as a
@@ -635,6 +637,40 @@ function processMotion(
   }
 
   // motionMode === "TRAVELING"
+
+  // ---- Silence is dwell evidence ---------------------------------------
+  // The phone's own uploader only sends a point once the device has MOVED
+  // (µlogger's minimum-distance setting), so a silence longer than
+  // STOP_CONFIRM_SECONDS means "nothing moved far enough to be heard" -- the
+  // same fact EXIT_WITNESS_GAP_S reads in the other direction. If the device
+  // is still inside ANCHOR_RADIUS_M of where that silence began, and the
+  // silence itself implies less than STATIONARY_SPEED_THRESHOLD of movement,
+  // the leg ended during it: this ping is a parked fix, wherever GNSS drift
+  // moved it, not a track point. Without the rule a stop needs a lucky pair
+  // of drift pings to land inside one 20 m bubble -- and the pings that would
+  // prove stillness are exactly the ones the client's own filter hides, which
+  // is why a parked phone could look like it never stopped.
+  //
+  // Both halves earn their place. The radius is the mirror of the departure
+  // test (> ANCHOR_RADIUS_M sustained for MOVEMENT_CONFIRM_SECONDS is a
+  // departure, so <= ANCHOR_RADIUS_M across STOP_CONFIRM_SECONDS is a stop),
+  // and the speed floor is what stops the rule cutting a WALK in half: 20 m
+  // in 30 s is 2.4 km/h, which the departure test accepts as movement, so a
+  // purely positional test would call every 30 s of a slow walk a stop. At
+  // today's constants the floor implies the radius (2 km/h for 30 s is 17 m),
+  // but the two stay separately tunable in config.ts.
+  const sinceLastPingS =
+    prevTs === null ? 0 : (new Date(dt).getTime() - new Date(prevTs).getTime()) / 1000;
+  if (
+    prevLat !== null && prevLon !== null && prevTs !== null &&
+    sinceLastPingS >= STOP_CONFIRM_SECONDS &&
+    distanceM(prevLat, prevLon, lat, lon) <= ANCHOR_RADIUS_M &&
+    speedFromPositions(prevLat, prevLon, prevTs, lat, lon, dt) < STATIONARY_SPEED_THRESHOLD
+  ) {
+    resetMotionAnchor(s, lat, lon, dt);
+    return { state: s, result: stayResult(0.0) };
+  }
+
   const { isDriving, distance } = computeDriving(s, avgSpeed, impliedSpeedKmh, lat, lon, dt, forcedMode);
 
   // Candidate-stop detection: has the device settled near one spot long

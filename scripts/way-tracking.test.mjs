@@ -381,19 +381,25 @@ test('a leg opens at fence departure and survives a brief driving->walking dip',
 test('a confirmed stop closes the leg; the next movement opens a new one', () => {
   const { state, results } = run([
     ...TRAVEL_PREFIX,
-    ping(at(225), { ...north(670), vel: 0 }), // average below 2: candidate stop
-    ping(at(255), { ...north(670), vel: 0 }), // 30 s at the same spot: stop confirmed
+    ping(at(225), { ...north(670), vel: 0 }), // 30 s of silence in the same spot: stop
+    ping(at(255), { ...north(670), vel: 0 }), // still parked
     ping(at(285), { ...north(670), vel: 0 }), // still parked, still leg 1
     ping(at(315), { ...north(900), vel: 30 }), // moving again, not yet confirmed
     ping(at(330), { ...north(1200), vel: 30 }), // 15 s sustained: leg 2
   ])
-  // DIVERGED: the stop lands one ping earlier than in the W.A.Y copy. The
-  // deployed reported-speed filter disbelieves the walk's 3 km/h (10 m between
-  // pings is inside REPORTED_SPEED_MIN_MOVE_M), so the rolling average is 2.4,
-  // not 3.0, and it crosses the "< 2" line at at(225) instead of at(255).
-  assert.equal(results[10].isStationary, true, 'the confirmed stop reports stationary')
-  assert.equal(results[10].legId, 1, 'the stop belongs to leg 1')
-  assert.equal(results[11].isStationary, true, 'and stays parked')
+  // DIVERGED, two ways. The stop lands one ping earlier than in the W.A.Y
+  // copy, and the reason is now the silence rule rather than the average: the
+  // deployed engine confirms a stop on 30 s without a fix while still inside
+  // ANCHOR_RADIUS_M of the last one, where W.A.Y waits for the rolling average
+  // to fall under STATIONARY_SPEED_THRESHOLD -- which the deployed
+  // reported-speed filter delays further, by disbelieving the walk's 3 km/h
+  // (10 m between pings is inside REPORTED_SPEED_MIN_MOVE_M), so the average
+  // is 2.4 rather than 3.0. The two silence cases below pin the parked-phone
+  // bug that rule exists for.
+  assert.equal(results[9].isStationary, true, 'the stop is confirmed on the silence itself')
+  assert.equal(results[9].legId, 1, 'the stop belongs to leg 1')
+  assert.equal(results[10].isStationary, true, 'and stays parked')
+  assert.equal(results[11].isStationary, true, 'still parked 30 s later')
   assert.equal(results[12].legId, 1, 'the first movement ping is still the old leg')
   assert.equal(results[13].legId, 2, 'leg 2 opens only because leg 1 closed at the stop')
   assert.equal(results[13].isDriving, true)
@@ -401,6 +407,86 @@ test('a confirmed stop closes the leg; the next movement opens a new one', () =>
   assert.equal(state.legId, 2)
   assert.equal(state.motionMode, 'TRAVELING')
   assert.equal(state.legOpen, true, 'leg 2 is open at the end of the run')
+})
+
+// The parked-phone bug these two pin: the phone's uploader only sends a point
+// once the device has MOVED (µlogger's own minimum-distance setting), so a
+// phone that stops moving goes SILENT. The case above still passes at a 30 s
+// cadence, but the moment the client's filter withholds those pings there is
+// nothing inside the candidate's 20 m bubble to accumulate a dwell span, and a
+// device that stopped looks like it never did -- the leg stays open through the
+// whole park and the "stopped" push never fires.
+test('a silence longer than the confirmation window is itself a confirmed stop', () => {
+  const { state, results } = run([
+    ...TRAVEL_PREFIX, // the drive ends parked at north(670)
+    ping(at(495), { ...north(679), vel: 0 }), // 5 min of silence, 9 m of drift
+  ])
+  assert.equal(results[9].isStationary, true, 'silence inside the anchor is a stop')
+  assert.equal(results[9].legId, 1, 'the stop belongs to the leg it ended')
+  assert.equal(results[9].distance, 0, 'the drift that broke the silence is not a track point')
+  assert.equal(state.motionMode, 'STAYING')
+  assert.equal(state.legOpen, false, 'the leg is closed by the silence')
+})
+
+test('a silence with real distance in it is not a stop -- the drive continues', () => {
+  const { state, results } = run([
+    ...TRAVEL_PREFIX,
+    ping(at(495), { ...north(3670), vel: 60 }), // 3 km up the road, 5 min later
+  ])
+  assert.equal(results[9].isStationary, false, 'the device is 3 km from where it was last heard')
+  assert.equal(results[9].isDriving, true)
+  assert.ok(results[9].distance > 2.9, 'the silent stretch is counted, not collapsed (km)')
+  assert.equal(state.legOpen, true, 'the leg is still open')
+})
+
+test('a backlog is judged on the fixes\' own timestamps, not on when they arrive', () => {
+  // The phone lost signal mid-drive, so µlogger queued the fixes and offloaded
+  // them in one burst later; each still carries the second it was captured at.
+  // Nothing in this engine reads the wall clock, so the replayed burst reaches
+  // the same conclusions it would have live -- and the one long gap in it (the
+  // 2 min the app itself captured nothing) is a real 1.1 km of movement, which
+  // is what keeps it from being mistaken for a stop.
+  const { state, results } = run([
+    ping(at(0)),
+    ping(at(30), { ...north(200), vel: 50 }), // EXITING
+    ping(at(60), { ...north(700), vel: 50 }), // OUTSIDE
+    ping(at(75), { ...north(950), vel: 50 }), // 15 s sustained: leg 1 opens
+    // ...offline from here; the queue below is uploaded in one go...
+    ping(at(195), { ...north(2100), vel: 50 }), // 1.15 km across the 2 min gap
+    ping(at(225), { ...north(2850), vel: 50 }),
+    ping(at(255), { ...north(3600), vel: 50 }),
+  ])
+  for (const i of [4, 5, 6]) {
+    assert.equal(results[i].isStationary, false, `backlog ping ${i} is not a stop`)
+    assert.equal(results[i].isDriving, true)
+  }
+  assert.ok(results[4].distance > 1.1, 'the whole silent stretch is charged as driven km')
+  assert.ok(results[5].distance > 0.7)
+  assert.ok(results[6].distance > 0.7)
+  assert.equal(state.legId, 1, 'one leg, not a leg per burst')
+  assert.equal(state.legOpen, true)
+  assert.equal(state.motionMode, 'TRAVELING')
+})
+
+test('the silence rule fires at STOP_CONFIRM_SECONDS, not a second earlier', () => {
+  // Same drive, same parked drift; the two runs differ only in WHEN the first
+  // fix after the silence arrives. The rolling average is still ~40 km/h in
+  // both (the pre-park 60 km/h samples are only three deep), so the older
+  // candidate-stop path cannot fire in either run -- the silence rule is the
+  // only thing that can, which is what makes the pair a boundary test.
+  const driveOut = [
+    ping(at(0)),
+    ping(at(30), { ...north(200), vel: 60 }),
+    ping(at(45), { ...north(450), vel: 60 }),
+    ping(at(60), { ...north(700), vel: 60 }),
+  ]
+  const early = run([...driveOut, ping(at(89), { ...north(708), vel: 0 })])
+  const onTime = run([...driveOut, ping(at(90), { ...north(708), vel: 0 })])
+  assert.equal(early.results[4].isStationary, false, '29 s of silence is not yet a stop')
+  assert.equal(early.results[4].isDriving, true, 'and the 8 m of drift is still driven km')
+  assert.ok(early.results[4].distance > 0)
+  assert.equal(onTime.results[4].isStationary, true, '30 s of silence is')
+  assert.equal(onTime.results[4].distance, 0, 'and the drift is not a track point')
 })
 
 test('forcedMode overrides only the driving/walking call', () => {
