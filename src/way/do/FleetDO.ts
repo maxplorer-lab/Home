@@ -12,8 +12,12 @@
 //                              a server-side entry point for future bot/system
 //                              messages)
 //   POST /flush                copy pending_sync + chat_messages into D1
-//   POST /reload-geofences     invalidate the geofence cache
-//   POST /reload-notifications invalidate the subscriber/topic cache
+//   POST /reload-geofences     invalidate the geofence cache (and signal the
+//                              dashboards that fences changed)
+//   POST /reload-notifications invalidate the subscriber/topic cache (and
+//                              signal the dashboards)
+//   POST /config-changed       relay a config-change signal to every socket
+//                              (topic validated; see lib/config-topics.ts)
 //   GET  /debug-notify         last notification decision + cooldowns
 //   GET  /ws (Upgrade)         dashboard WebSocket, snapshot on connect
 //
@@ -55,6 +59,7 @@ import {
   ForcedMode,
 } from "../lib/state-machine";
 import { WAY_CONFIG } from "../config";
+import { isConfigTopic } from "../lib/config-topics";
 
 /** Household ntfy server, in home-db (the unified settings own it). */
 const NTFY_SERVER_HOME_KEY = "ntfy_server";
@@ -75,7 +80,7 @@ function clipChatLine(text: string): string {
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v18-snapshot-controls";
+const DO_BUILD = "notify-v19-config-signal";
 
 /**
  * How many unread chat lines the `chat-latest` readout hands back.
@@ -674,13 +679,35 @@ export class FleetDO extends DurableObject<Env> {
       }
     }
 
+    // Both reload routes are ALSO the change signal for the facts they own:
+    // the Worker calls them after the matching write (see
+    // lib/config-topics.ts for why a signal rather than the data). The cache
+    // drop is what makes the DO's own next ping see the new rows; the broadcast
+    // is what makes every OTHER open page re-read its copy.
     if (url.pathname === "/reload-geofences" && request.method === "POST") {
       await this.reloadGeofences();
+      this.broadcast({ type: "config", topic: "fences" });
       return new Response(null, { status: 204 });
     }
 
     if (url.pathname === "/reload-notifications" && request.method === "POST") {
       this.notifyCache = null;
+      this.broadcast({ type: "config", topic: "notifications" });
+      return new Response(null, { status: 204 });
+    }
+
+    // Config change signal for the facts this object does NOT cache: the
+    // dashboard's device list, share grants, invite codes, the push server, a
+    // profile. The topic is validated against the shared list, so a caller
+    // cannot make this push arbitrary text to every socket.
+    if (url.pathname === "/config-changed" && request.method === "POST") {
+      const topic = url.searchParams.get("topic");
+      if (!isConfigTopic(topic)) {
+        return new Response(JSON.stringify({ error: true, message: "Unknown config topic" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      this.broadcast({ type: "config", topic });
       return new Response(null, { status: 204 });
     }
 
@@ -764,9 +791,19 @@ export class FleetDO extends DurableObject<Env> {
             //       a pre-rename session or a differently-spelled device must
             //       still route, and a v15 instance routes NOTHING for them
             //       while still reporting a send.
+            // v17 = /chat-latest hands back the unread LINES (a count plus a
+            //       bounded window of previews), not just a count, so the
+            //       Home card can say what was missed instead of how much.
             // v18 = the connect snapshot carries each device's control toggles
             //       (forced mode, recording pause), so a phone opened after the
             //       PC paused the log reads Paused instead of Live.
+            // v19 = the config-change SIGNAL: /reload-geofences and
+            //       /reload-notifications also broadcast {type:"config",topic},
+            //       and POST /config-changed relays a validated topic -- so a
+            //       fence, an emoji, a share or the push server changed on one
+            //       device reaches every other open page instead of waiting for
+            //       a reload (rule 46). An older instance ignores the topic it
+            //       does not know, which is why the marker moves.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask

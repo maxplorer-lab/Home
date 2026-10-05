@@ -1542,6 +1542,69 @@ applies it, and only when `devices` is missing.
       reverted fix, a NEW `.js` file with a fault, a relaxed option set and a
       renamed audit script each have to go red.
 
+46. **Every fact a client caches has a CARRIER, and every write to one announces
+    itself.** The live feed converges by itself (frames plus a connect snapshot
+    that carries the whole world again), and the config half — a fence, a
+    device's emoji, a share grant, an invite code, the push server, a profile —
+    used to converge only by luck: a page kept the copy it loaded when it opened,
+    so a fence added on the PC was invisible on the phone until a reload, which
+    reads exactly like the save having failed. Now a write tells the fleet DO
+    (`signalConfigChange`, `POST /config-changed`), the DO relays a validated
+    TOPIC, and each dashboard re-reads that slice. A signal, not the data: the DO
+    does not own those rows, and relaying them would invent a second source of
+    truth. The contract is deliberately best-effort — a failed signal must never
+    fail the write — which is why every client ALSO re-reads on reconnect and when
+    the page becomes visible again, so a lost signal costs a delay, never a lie.
+
+    * **The vocabulary is one list.** `src/way/lib/config-topics.ts` holds it; a
+      topic the DO does not know is refused rather than relayed, so a forged
+      request cannot push arbitrary text to every socket.
+    * **The three halves are declared together** in
+      `scripts/lib/client-state.mjs` (the fact, its carriers, and the reason it
+      needs none) and checked against the code by `npm run audit:client-state`:
+      a fact whose slice the dashboard stopped re-reading, whose write stopped
+      signalling, or whose source could not be read is a fault — the last one so
+      a scan that lost its input can never report a clean tree.
+    * **A fact may declare that it needs no live carrier** (client-owned
+      preferences; a trip fetched per request). That is a declared answer printed
+      by the audit, not an omission.
+    * Falsified by smoke §30 over in-memory source edits — a removed slice, a
+      removed signal and a blinded scan each have to go red — and live: a socket
+      is opened, a profile save lands through the real route, and the `config`
+      frame must reach the socket that did not make the write.
+
+47. **A call that can reject is CARRIED, and a silent failure says why.** Three
+    shapes compile, typecheck and look like ordinary code while turning a real
+    failure into nothing at all: an async call used as a statement (its rejection
+    is unhandled and the code below runs as if the work had happened), a caught
+    error discarded where nobody can read it, and `await` inside a
+    `forEach`/`map`/`filter`/`some`/`every`/`find` callback (those five do not
+    wait, so a rejection inside is unhandled and `filter`/`some`/`every` take a
+    Promise as a boolean). `npm run audit:functions` walks every function the app
+    ships — `src/`, `public/**.js` and the inline scripts of the pages — and
+    reports all three.
+
+    * **Outcomes, not style.** A call inside a `try` is carried; an async
+      function whose own body wraps its work in `try/catch` cannot reject to
+      anybody, so calling it bare costs nothing; a top-level `boot()` is the app
+      starting, not a dropped promise; and a name declared async in one place and
+      sync in another is UNRESOLVABLE and skipped rather than guessed. Each of
+      those is a control in `scripts/function-consistency.test.mjs`, so the scan
+      going quieter fails a test rather than a review.
+    * **A page-level net counts, and is COUNTED.** A page that installs
+      `unhandledrejection` and reports through something a person reads (`toast`,
+      `alert`, `reportError`, …) carries the rejections nobody awaited — the DOM
+      drops an onclick handler's promise, so there is no caller left to catch it.
+      The audit then reports those call sites as `covered-by-net` with a count,
+      so how much rests on the net stays readable instead of invisible. A net that
+      only writes to the console is not a net.
+    * **An exception is a decision, and a stale one is a fault.** An intentional
+      bare call is an entry in `FUNCTION_POLICY` with the reason it is
+      intentional; an entry that stops matching anything is itself reported, so an
+      excuse cannot outlive the code it excused.
+    * Falsified by smoke §30's fixtures (a dropped call, a carried call, a silent
+      catch) plus the fifteen cases in `scripts/function-consistency.test.mjs`.
+
 ## The rule → guard map
 
 A promise kept only in prose cannot go stale loudly: rename a smoke section,
@@ -1634,6 +1697,10 @@ is one of:
 | 45 | js-inside-the-gate | audit:laoka-types | driver scripts/one-off/2026-09-27-laoka-types/mutate.mjs |
 | 45 | js-inside-the-gate | smoke §29 | — |
 | 45 | js-inside-the-gate | smoke §22 | — |
+| 46 | every-cached-fact-has-a-carrier | audit:client-state | — |
+| 46 | every-cached-fact-has-a-carrier | smoke §30 | — |
+| 47 | carried-async | audit:functions | — |
+| 47 | carried-async | smoke §30 | — |
 
 ### Sections that guard no numbered rule
 

@@ -541,7 +541,11 @@ async function loadCurrentUser() {
         if (!resp.ok) return;
         const me = await resp.json();
         currentUser = { id: me.id, username: me.username, emoji: me.emoji, color: me.color, role: me.role };
-    } catch (e) {}
+    } catch (e) {
+        // Best effort: the profile only decides which bubbles read as "mine". A
+        // failure leaves currentUser null, which every caller already handles
+        // (the composer still sends, and the server stamps the real sender).
+    }
 }
 
 async function boot() {

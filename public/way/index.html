@@ -832,7 +832,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-09-30.2-vector';
+const WAY_BUILD = '2026-10-05.1-config-signal';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -2795,7 +2795,8 @@ async function apiJson(method, path, body) {
         return { ok: false, status: 0, data: { message: 'Could not reach the server — check your connection and try again.' } };
     }
     let data = null;
-    try { data = await resp.json(); } catch (e) {}
+    try { data = await resp.json(); }
+    catch (e) { /* not JSON — a 204 or an HTML error page: the status is the answer, so data stays null */ }
     return { ok: resp.ok, status: resp.status, data: data };
 }
 
@@ -3333,7 +3334,8 @@ async function regenTopic(userId) {
 }
 
 async function logout() {
-    try { await fetch('/way/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
+    try { await fetch('/way/api/auth/logout', { method: 'POST', credentials: 'include' }); }
+    catch (e) { /* best effort: the /logout navigation below ends the session either way */ }
     // Signed out everywhere — the super app owns the session.
     window.top.location.href = '/logout';
 }
@@ -3363,7 +3365,15 @@ function connectWebSocket() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host + '/ws'); // /ws is app-global (handled by the Home Worker, NOT under /way/)
 
-    ws.onopen = function() { wsReconnectDelay = CONFIG.WS_RECONNECT_BASE_MS; };
+    ws.onopen = function() {
+        wsReconnectDelay = CONFIG.WS_RECONNECT_BASE_MS;
+        // A RECONNECT is when this page's cached copies are most likely to be
+        // stale: every config signal sent while the socket was down reached
+        // nobody. The first connect needs nothing — boot() has just loaded
+        // everything — so only a re-open re-reads.
+        if (socketHasOpened) resyncConfig();
+        socketHasOpened = true;
+    };
 
     ws.onmessage = function(evt) {
         let data;
@@ -3381,6 +3391,11 @@ function connectWebSocket() {
             renderBadges();
             if (currentTab === 'settings') renderSettingsMenu();
         }
+        // A config fact this page caches changed somewhere else (a fence, an
+        // emoji, a share, an invite code, the push server, a profile). The frame
+        // carries the TOPIC only — the rows live in D1, so the page re-reads
+        // that slice from the API that owns it (see CONFIG_SLICES below).
+        else if (data.type === 'config') void applyConfigSlice(data.topic);
     };
 
     ws.onclose = function() {
@@ -3836,7 +3851,12 @@ async function loadCurrentUser() {
         currentUser = { id: me.id, username: me.username, emoji: me.emoji, color: me.color, role: me.role };
         userPrefs.followZoom = (typeof me.followZoom === 'number') ? me.followZoom : CONFIG.FOLLOW_ZOOM_LEVEL;
         userPrefs.homeFence = me.homeFence || null;
-    } catch (e) {}
+    } catch (e) {
+        // Best effort: the profile carries the role and the two preferences. A
+        // failure leaves the defaults in place — which is what a signed-out or
+        // freshly-provisioned session should get anyway — and the socket's own
+        // snapshot is what the map draws from.
+    }
 }
 
 function goHome() {
@@ -3900,6 +3920,12 @@ async function boot() {
     // The radar is anchored on a badge's screen position, so anything that can
     // move that card moves the radar with it: a rotated phone, a resized
     // window, or the strip scrolled past its first cards.
+    // Whatever changed while this page was not being looked at — a phone asleep,
+    // a tab in the background — is re-read the moment it is looked at again. That
+    // is also the answer to a config signal that arrived while the socket was
+    // down, which is why the two share one function.
+    document.addEventListener('visibilitychange', function() { if (!document.hidden) resyncConfig(); });
+
     window.addEventListener('resize', renderApproachRadar);
     window.addEventListener('orientationchange', renderApproachRadar);
     document.getElementById('badge-strip').addEventListener('scroll', renderApproachRadar);
@@ -3912,6 +3938,63 @@ async function boot() {
     document.addEventListener('click', stripPickerAway);
     document.addEventListener('keydown', function(ev) { if (ev.key === 'Escape') closeStripPicker(); });
 }
+
+// ── The config slices ────────────────────────────────────────────
+// WHAT this page caches from the API — as opposed to the live feed, which the
+// socket converges by itself — and HOW each slice re-reads itself. One table,
+// because three carriers share it: the DO's config signal (which names a
+// topic), a reconnect, and the page becoming visible again. Adding a fact is a
+// topic in src/way/lib/config-topics.ts plus a row here, and
+// scripts/lib/client-state.mjs checks the two halves against each other.
+const CONFIG_SLICES = {
+    // One fetch for both: the devices and the fences come from the same call and
+    // both redraw the map (badges and circles) and the settings list.
+    fences: function() { return loadDevicesAndGeofences().then(function() { drawGeofenceCircles(); renderSettingsMenu(); }); },
+    devices: function() { return loadDevicesAndGeofences().then(function() { renderBadges(); renderSettingsMenu(); }); },
+    shares: function() { return loadShareState(); },
+    invites: function() { return loadInviteCodes(); },
+    notifications: function() { return loadNotifConfig(); },
+    settings: function() { return loadAdminUsers(); },
+    profile: function() { return loadCurrentUser(); }
+};
+let socketHasOpened = false;
+let lastConfigSyncAt = 0;
+// Focus, reconnect and a signal can all land in the same second — a phone waking
+// up does exactly that — so the catch-all re-read is throttled. A SIGNAL is not:
+// it names a fact that provably changed, and holding it back for five seconds is
+// the staleness this whole mechanism exists to remove.
+const CONFIG_SYNC_MIN_MS = 5000;
+
+async function applyConfigSlice(topic) {
+    const slice = CONFIG_SLICES[topic];
+    if (slice) await slice();
+}
+
+function resyncConfig() {
+    const now = Date.now();
+    if (now - lastConfigSyncAt < CONFIG_SYNC_MIN_MS) return;
+    lastConfigSyncAt = now;
+    // Which slices were missed is not knowable, so all of them are re-read; the
+    // panes that are closed are the cheap ones (a slice is a small JSON read).
+    Object.keys(CONFIG_SLICES).forEach(function(topic) { void applyConfigSlice(topic); });
+}
+
+// ── The last line: a promise nobody carried ──────────────────────
+// Everything that must not fail silently reports itself: a failed save alerts,
+// a dead network is answered in-band by apiJson. This is for the failure nobody
+// answered — a rejection from a callback the DOM invoked, where there is no
+// caller left to catch it. The console line the browser writes for it is read by
+// nobody holding a phone, so it is made visible instead; once per distinct
+// message, so a repeating failure cannot become an alert storm.
+let lastPageFailure = { text: '', at: 0 };
+window.addEventListener('unhandledrejection', function(ev) {
+    const reason = ev ? ev.reason : null;
+    const text = (reason && reason.message) ? reason.message : String(reason || 'unknown error');
+    const now = Date.now();
+    if (text === lastPageFailure.text && now - lastPageFailure.at < 30000) return;
+    lastPageFailure = { text: text, at: now };
+    alert('Something went wrong: ' + text);
+});
 
 boot();
 

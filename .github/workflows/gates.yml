@@ -94,6 +94,23 @@ jobs:
       - name: Every .js under src/ typechecks
         run: npm run audit:laoka-types
 
+      # rule 46. Every fact a client caches declares a carrier (the connect
+      # snapshot, a change signal, a re-read on reconnect/visible) and the code
+      # still has it — a fence added on one device must reach the page open on
+      # the other. Read-only; it also refuses to report clean when a source it
+      # reads is missing, because "nothing to check" and "nothing wrong" must
+      # not look alike.
+      - name: Every cached fact still has a carrier
+        run: npm run audit:client-state
+
+      # rule 47. Every function the app ships, over src/ and the pages: nothing
+      # starts async work and drops the promise, no catch empties itself without
+      # saying why, no await is lost in a forEach/map/filter callback. Read-only,
+      # no server, and it reports how many call sites rest on a page's rejection
+      # net rather than hiding them.
+      - name: Every started call is carried
+        run: npm run audit:functions
+
       # rule 41. The basemap checks judge somebody else's server — a style JSON,
       # its TileJSON and one real tile — so they judge a RECORD of it
       # (scripts/fixtures/basemaps/, refreshed deliberately with

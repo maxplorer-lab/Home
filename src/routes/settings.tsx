@@ -7,6 +7,7 @@ import { HOME_TABS, Icon } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
 import { ntfyServer, pushNtfyTo } from '../lib/notify'
 import { reloadWayNotifications } from '../way/worker'
+import { signalConfigChange } from '../way/lib/config-topics'
 import { inQuietHours } from '../way/lib/notify'
 import {
   findHomeUserByName,
@@ -602,6 +603,11 @@ settings.post('/notifications', async (c) => {
   const { setSetting } = await import('../lib/notify')
   await setSetting(c.env.DB, 'ntfy_server', server)
   await reloadWayNotifications(c.env)
+  // The push server is ALSO a fact the dashboard caches (its admin card shows
+  // the winning layer), and this page is where it is written from. The DO's
+  // reload above drops its cache but says nothing about the topic, so the
+  // signal is named here — one fact, one vocabulary (rule 46).
+  await signalConfigChange(c.env, 'settings')
   return c.redirect('/settings?ok=Server saved')
 })
 

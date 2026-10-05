@@ -6155,6 +6155,153 @@ log('\n29. The JavaScript type pass (every .js under src/)')
 }
 
 // ─── summary ─────────────────────────────────────────────────────
+// ─── 30. one carrier per cached fact, one carrier per started call ──────
+// Two guards, one section, because they answer the same shape of question. A
+// fact a client caches needs a way for a change made ELSEWHERE to reach it
+// (the connect snapshot, a change signal, a re-read on reconnect/visible); a
+// call that can reject needs a place for that rejection to land (an await, a
+// try around it, or a page-level net that tells the person). Both scans are
+// read-only and both run here over the REAL tree, then over fixtures that MUST
+// fail: a scan whose input silently emptied — or whose checks stopped biting —
+// reports a green tree forever, which is the lesson sections 24/25 learned
+// about their own controls.
+log('\n30. Every cached fact has a carrier, and every started call is carried')
+{
+  // ── A. The config a client caches ──
+  const { scanClientState, formatFaults: clientFaults, loadSources: loadClientSources } = await import('./lib/client-state.mjs')
+  const sources = loadClientSources(fileURLToPath(new URL('..', import.meta.url)))
+  const clientLive = clientFaults(scanClientState({ sources }).faults)
+  check('every fact a client caches declares a carrier, and the code still has it',
+    clientLive.length === 0,
+    clientLive.slice(0, 2).join(' | '))
+
+  const wrongClientSources = (mutate) => {
+    const copy = { ...sources }
+    mutate(copy)
+    return clientFaults(scanClientState({ sources: copy }).faults)
+  }
+  const sliceGone = wrongClientSources((s) => {
+    s.wayClient = s.wayClient.replace(/^\s{4}fences: function\(\)[^\n]*\n/m, '')
+  })
+  check('…and a cached fact the dashboard stopped re-reading is noticed',
+    sliceGone.some((f) => f.includes('client-slice-missing') && f.includes('geofences')),
+    sliceGone.join(' | ') || 'no fault — the registry is decoration')
+  // EVERY announcement of the fact, not the first one: the share routes mint
+  // and revoke through two doors, and a control that strips one of them proves
+  // nothing (it did not — the remaining call kept the scan green, which is how
+  // this control was falsified the first time it ran).
+  const signalGone = wrongClientSources((s) => {
+    s.wayRoutes = s.wayRoutes.split('signalConfigChange(env, "shares")').join('')
+  })
+  check('…and a write that stopped announcing itself is noticed',
+    signalGone.some((f) => f.includes('no-signal') && f.includes('live-share')),
+    signalGone.join(' | ') || 'no fault — a mint would again be invisible to the other phone')
+  const frameGone = wrongClientSources((s) => {
+    s.do = s.do.split('type: "deviceControlState"').join('type: "__moved__"')
+  })
+  check('…and a fact whose frame stopped being broadcast is noticed',
+    frameGone.some((f) => f.includes('frame-not-broadcast') && f.includes('control toggles')),
+    frameGone.join(' | ') || 'no fault — a toggle would again reach only the page that flipped it')
+  const blindScan = clientFaults(scanClientState({ sources: { ...sources, do: null } }).faults)
+  check('…and a scan that lost its input says so instead of reporting clean',
+    blindScan.some((f) => f.includes('sources-unreadable')),
+    blindScan.join(' | ') || 'an unreadable source read as "nothing to check"')
+  const thinScan = clientFaults(scanClientState({ sources, registry: [{ fact: 'one lonely fact', owner: 'nowhere', clients: [] }] }).faults)
+  check('…and a registry that stopped looking is refused rather than trusted',
+    thinScan.some((f) => f.includes('registry-thin')),
+    thinScan.join(' | ') || 'a one-fact registry reported a clean tree — the scan can go quietly blind')
+
+  // ── B. What every function starts ──
+  const { scanFunctions, formatFaults: fnFaults } = await import('./lib/function-consistency.mjs')
+  const fnLive = fnFaults(scanFunctions().faults)
+  check('no floating promise, silent catch or await lost in a sync callback',
+    fnLive.length === 0,
+    fnLive.slice(0, 2).join(' | '))
+
+  const fnFixture = (text) => fnFaults(scanFunctions({ paths: [], extraSources: [{ path: 'fixture.js', text }] }).faults)
+  const dropped = fnFixture('async function save() { await api(); }\nfunction onClick() { save(); }')
+  check('…and a call whose rejection nobody carries is noticed',
+    dropped.some((f) => f.includes('floating-async')),
+    dropped.join(' | ') || 'no fault — a rejection would leave the screen unchanged and say nothing')
+  const carried = fnFixture('async function save() { await api(); }\nfunction onClick() { try { save(); } catch (e) { toast(e.message); } }')
+  check('…and a call the caller carries is left alone',
+    carried.length === 0, carried.join(' | '))
+  const silentCatch = fnFixture('async function load() { try { await fetch("/x"); } catch (e) {} }')
+  check('…and a silent catch around work that can fail is noticed',
+    silentCatch.some((f) => f.includes('empty-catch')),
+    silentCatch.join(' | ') || 'no fault — the reason a screen stayed empty would be thrown away')
+
+  // ── C. The carrier, live ──
+  // The real proof, and the one a source check cannot give: a page is open, a
+  // write lands through the Worker, and the frame reaches THAT socket. The write
+  // is a profile save carrying the values it already has, so the probe leaves no
+  // trace while still being a genuine write through the real route. Needs the
+  // `ws` client (the global WebSocket cannot send the Cookie header).
+  let WS = null
+  try { WS = createRequire(new URL('../node_modules/wrangler/package.json', import.meta.url))('ws') } catch (e) {}
+  if (!WS) {
+    check('the config-signal proof can run (it needs the ws client wrangler already ships)',
+      false,
+      "could not load 'ws' from node_modules/wrangler, so the signal stays proven by source alone")
+  } else {
+    let sock = null
+    try {
+      // This probe is the first SERVER call after the long source-only sections
+      // above (§26-§29), and the connection pool can still be holding a socket
+      // the dev server closed while it was idle: the reset that comes back is the
+      // transport's, not the app's. Retried ONCE, on a fresh connection — the
+      // checks themselves are about the frames, and a stale socket must not be
+      // able to report a broken carrier.
+      const freshReq = async (path, init) => {
+        try { return await req(path, init) } catch (e) {
+          await new Promise((r) => setTimeout(r, 250))
+          return await req(path, init)
+        }
+      }
+      const meRes = await freshReq('/way/api/users/me')
+      const me = meRes.status === 200 ? JSON.parse(await body(meRes)) : null
+      if (!me || !me.username) {
+        check('the config-signal proof can run (it needs a signed-in device)', false,
+          `GET /way/api/users/me answered ${meRes.status}: the live half of the carrier is unproven`)
+      } else {
+        sock = new WS(BASE.replace(/^http/, 'ws') + '/ws', { headers: { Cookie: cookieHeader() } })
+        const frames = []
+        sock.on('message', (raw) => { try { frames.push(JSON.parse(String(raw))) } catch (e) {} })
+        const waitFor = async (predicate, timeoutMs = 8000) => {
+          const started = Date.now()
+          let i = 0
+          while (true) {
+            if (i < frames.length) {
+              const f = frames[i++]
+              if (predicate(f)) return f
+            } else if (Date.now() - started > timeoutMs) {
+              return null
+            } else {
+              await new Promise((r) => setTimeout(r, 20))
+            }
+          }
+        }
+        const opened = await waitFor((f) => f.type === 'snapshot')
+        check('the signal probe\u2019s socket is live (it got a connect snapshot)', !!opened,
+          'no snapshot within 8s, so the frame below would prove nothing')
+
+        const put = await freshReq('/way/api/users/me', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ emoji: me.emoji || null, color: me.color || null }),
+        })
+        check('a profile write answers through the real route', put.status === 200, `status ${put.status}`)
+        const signal = await waitFor((f) => f.type === 'config' && (f.topic === 'devices' || f.topic === 'profile'))
+        check('a write on one page is announced to a socket that did not make it',
+          !!signal,
+          'no config frame within 8s: the other phone keeps the device list it loaded when it opened, which reads exactly like the write having failed')
+      }
+    } finally {
+      if (sock) try { sock.close() } catch (e) {}
+    }
+  }
+}
+
 log('')
 if (failures.length === 0) {
   log(`\x1b[32m\x1b[1mAll ${pass} checks passed.\x1b[0m\n`)

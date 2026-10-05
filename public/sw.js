@@ -76,7 +76,10 @@ async function mapBytes(event, req, kind) {
     if (response && response.status === 200) {
       cache.put(req, response.clone()).then(() => {
         mapPuts += 1;
-        if (mapPuts % 32 === 0) trimMapCache(cache);
+        // Carried, not dropped: the trim is best-effort, but a rejection here
+        // would escape the `.catch` above (it belongs to THIS promise, not the
+        // one chained there) and be reported as an unhandled rejection.
+        if (mapPuts % 32 === 0) trimMapCache(cache).catch(() => {});
       }).catch(() => {});
     }
     return response;

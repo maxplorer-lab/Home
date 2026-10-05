@@ -2576,7 +2576,8 @@ async function revokeInvite(inv) {
 
 async function signOut() {
   // End the whole Home session (all modules), not just Laoka's cookie.
-  try { await api('POST', '/api/auth/logout', {}); } catch (e) {}
+  try { await api('POST', '/api/auth/logout', {}); }
+  catch (e) { /* best effort: the /logout navigation below ends the session either way */ }
   window.location.href = '/logout';
 }
 
@@ -2808,5 +2809,13 @@ async function removeUser(u) {
   if (!ok) return;
   try { await api('DELETE', '/api/users/' + u.id); state.users = null; render(); } catch (e) { reportError(e); }
 }
+
+// ── The last line: a promise nobody carried ──────────────────────
+// Handlers the DOM invokes have no caller left to catch them, and a rejection
+// there is a console line nobody opens. reportError is how this page already
+// shows a failure, so an unexpected rejection reaches the household too.
+window.addEventListener('unhandledrejection', function (ev) {
+  reportError(ev && ev.reason ? ev.reason : new Error('unknown error'));
+});
 
 boot();

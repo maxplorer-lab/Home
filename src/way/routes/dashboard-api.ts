@@ -36,6 +36,7 @@ import {
   NOTIFY_EVENT_TYPES, NotifyEventType, generateNtfyTopic,
   NTFY_URL_SETTING_KEY, DEFAULT_NTFY_URL, normalizeNtfyServer,
 } from "../lib/notify";
+import { signalConfigChange } from "../lib/config-topics";
 
 function jsonError(message: string, status = 400): Response {
   return new Response(JSON.stringify({ error: true, message }), {
@@ -88,12 +89,17 @@ function resolveRange(url: URL): { start: string; end: string } {
   return { start, end };
 }
 
+/** Invalidate the DO's geofence cache AND signal every dashboard. The two
+ *  halves are one call on purpose: a CRUD site that forgot the signal would
+ *  leave open pages drawing a fence list that no longer exists, which is the
+ *  failure this pair exists to make impossible. */
 async function reloadGeofences(env: Env): Promise<void> {
   const id = env.FLEET_DO.idFromName("fleet");
   const stub = env.FLEET_DO.get(id);
   await stub.fetch("https://fleet-do/reload-geofences", { method: "POST" });
 }
 
+/** Same pair for the notification config: the DO's cache, plus the signal. */
 async function reloadNotifications(env: Env): Promise<void> {
   const id = env.FLEET_DO.idFromName("fleet");
   const stub = env.FLEET_DO.get(id);
@@ -223,6 +229,11 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     }
     await updateUserProfile(env.WAY_DB, user.id, { emoji, color });
     await updateUserPrefs(env.WAY_DB, user.id, { followZoom, homeFence });
+    // Two facts are written here, so two slices are signalled: the emoji and the
+    // colour are this device's face on every other map, and the role and the two
+    // preferences are what a fresh page reads for who-you-are.
+    await signalConfigChange(env, "devices");
+    await signalConfigChange(env, "profile");
     return jsonSuccess({ id: user.id, username: user.username, emoji, color, role: user.role, followZoom, homeFence });
   }
 
@@ -273,6 +284,8 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     const code = await generateUniqueInviteCode(env.WAY_DB);
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     await createInviteCode(env.WAY_DB, code, user.id, expiresAt);
+    // An admin's other open page lists these; so does anyone who just signed up.
+    await signalConfigChange(env, "invites");
     return jsonSuccess({ code, expiresAt });
   }
   if (pathname === "/api/invite-codes" && request.method === "GET") {
@@ -365,6 +378,9 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     // create, so a failed mint leaves a working code alone rather than revoking
     // it and then failing.
     const replaced = await replaceOpenShares(shareEnv, device, created.share.id);
+    // The share list is cached by the settings pane (and by the map's own share
+    // row), so a mint on one device has to reach the other.
+    await signalConfigChange(env, "shares");
     // The ONE response that ever carries the pin.
     return jsonSuccess({
       pin: created.pin, device, label: created.share.label, replaced,
@@ -385,6 +401,7 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
     const open = (await listShares(shareEnv, "active")).filter((s) => s.subject === device);
     let revoked = 0;
     for (const s of open) if (await revokeShare(shareEnv, s.id)) revoked++;
+    await signalConfigChange(env, "shares");
     return jsonSuccess({ device, revoked });
   }
 
@@ -526,8 +543,11 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
         await setAppSetting(env.WAY_DB, NTFY_URL_SETTING_KEY, normalized);
       }
       // The DO caches this; without the reload the old server keeps being used
-      // until the instance happens to be evicted.
+      // until the instance happens to be evicted. The reload also signals the
+      // 'notifications' slice (the DO route broadcasts it), and the push-server
+      // card itself is the 'settings' slice, so it is named too.
       await reloadNotifications(env);
+      await signalConfigChange(env, "settings");
     } catch (e) {
       // Same rule as /api/flush: an unexpected failure must still be JSON.
       return jsonError(e instanceof Error ? e.message : "Could not save settings", 500);
