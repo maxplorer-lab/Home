@@ -98,12 +98,23 @@ self.addEventListener('install', (event) => {
   );
 });
 
+// A name this worker used before the static-only policy, purged on sight: it
+// precached the signed-in shell, and no phone should keep one.
+const LEGACY = ['way-shell-v2-superapp'];
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      // MAP_CACHE is kept too: an update must not throw away the map bytes
-      // the whole point is to not download twice.
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== MAP_CACHE).map((k) => caches.delete(k))))
+      // Only this worker's own names — never "everything that is not mine".
+      // `keys()` lists the whole ORIGIN, not just the `/way/` scope: the root
+      // worker's `home-*` asset cache is live for `/`, and the shared
+      // `home-map-*` pool is why the map is not downloaded twice. Neither is
+      // this worker's to delete.
+      .then((keys) => Promise.all(
+        keys
+          .filter((k) => (k.startsWith('way-assets-') || LEGACY.includes(k)) && k !== CACHE)
+          .map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });

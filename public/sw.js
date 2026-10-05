@@ -100,12 +100,25 @@ self.addEventListener('install', (event) => {
   );
 });
 
+// A name this worker used before Home existed, purged on sight: the Sompitra
+// build cached documents (`/` itself was in its precache), and a phone that
+// installed back then still holds one.
+const LEGACY = ['sompitra-v1'];
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      // MAP_CACHE is kept too: an update must not throw away the map bytes
-      // the whole point is to not download twice.
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== MAP_CACHE).map((k) => caches.delete(k))))
+      // Only this worker's own names — never "everything that is not mine".
+      // Cache Storage is per-ORIGIN, not per-scope, so a `keys()` here also
+      // lists the nested /way/ worker's `way-assets-*`, and deleting that is
+      // every /way/ module re-downloaded on its next visit. MAP_CACHE must
+      // survive the family rule too (`home-map-*` matches `home-`): throwing
+      // away the map bytes is the exact cost the pool exists to remove.
+      .then((keys) => Promise.all(
+        keys
+          .filter((k) => (k.startsWith('home-') || LEGACY.includes(k)) && k !== CACHE && k !== MAP_CACHE)
+          .map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });

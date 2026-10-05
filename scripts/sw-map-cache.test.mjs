@@ -19,7 +19,11 @@
  *
  * Each case runs against BOTH files because the scope rule makes the narrower
  * worker win for a /way/ URL: one file breaking policy is enough to break it,
- * and the two are edited by hand.
+ * and the two are edited by hand. They also share one ORIGIN — Cache Storage
+ * is per-origin, not per-scope, so each worker's `caches.keys()` lists the
+ * other's whole cache. The activate cases at the bottom run them over ONE
+ * store for that reason: a clean-up that looks right inside a single file can
+ * still empty the other scope's assets, which is the regression they pin down.
  *
  * Run: `npm test`.
  */
@@ -29,9 +33,13 @@ import { readFileSync } from 'node:fs'
 
 const ORIGIN = 'https://home.example'
 const POOL = 'home-map-v1'
+// `own` is the cache the worker keeps; `stale` a previous version of it,
+// `other` the other worker's live cache, and `legacy` a name this worker
+// itself used before a rename. Only `own`, `other` and the pool may survive an
+// activate; every other name above belongs to the worker's own graveyard.
 const FILES = [
-  { name: 'public/sw.js', own: 'home-v3' },
-  { name: 'public/way/sw.js', own: 'way-assets-v3' },
+  { name: 'public/sw.js', own: 'home-v3', stale: 'home-v2', other: 'way-assets-v3', legacy: 'sompitra-v1' },
+  { name: 'public/way/sw.js', own: 'way-assets-v3', stale: 'way-assets-v2', other: 'home-v3', legacy: 'way-shell-v2-superapp' },
 ].map((f) => ({ ...f, src: readFileSync(new URL(`../${f.name}`, import.meta.url), 'utf8') }))
 
 const TILE = 'https://tiles.openfreemap.org/planet/20260927_080001_pt/14/10355/9068.pbf'
@@ -86,7 +94,7 @@ function fakeCaches(names = []) {
  *  that the worker could be accidentally right about — `self`, `caches` and
  *  `fetch` are the only injected names, so a worker reaching for another one
  *  fails loudly instead of passing by accident. */
-function loadWorker(file, { failFetch = false } = {}) {
+function loadWorker(file, { failFetch = false, caches = fakeCaches() } = {}) {
   const listeners = {}
   const self = {
     addEventListener(type, fn) {
@@ -96,7 +104,6 @@ function loadWorker(file, { failFetch = false } = {}) {
     skipWaiting: async () => {},
     clients: { claim: async () => {} },
   }
-  const caches = fakeCaches()
   const fetched = []
   const fetch = async (req) => {
     fetched.push(keyOf(req))
@@ -273,18 +280,52 @@ test('every basemap host the pages declare is one both workers cache', async () 
   }
 })
 
-test('an update keeps the shared pool and deletes only its own stale caches', async () => {
+test('an update keeps the pool and the other scope, and deletes only its own dead names', async () => {
   for (const file of FILES) {
     const worker = loadWorker(file)
     worker.caches.store.set(file.own, fakeCache())
     worker.caches.store.set(POOL, fakeCache())
-    worker.caches.store.set('some-old-cache-v1', fakeCache())
+    worker.caches.store.set(file.stale, fakeCache())
+    worker.caches.store.set(file.legacy, fakeCache())
+    worker.caches.store.set(file.other, fakeCache())
     const waits = []
     for (const fn of worker.listeners.activate || []) fn({ waitUntil: (p) => waits.push(p) })
     await Promise.all(waits)
     assert.ok(worker.caches.store.has(POOL), `${file.name}: activate deleted the map pool — every tile would be re-downloaded`)
     assert.ok(worker.caches.store.has(file.own), `${file.name}: activate deleted its own asset cache`)
-    assert.equal(worker.caches.store.has('some-old-cache-v1'), false, `${file.name}: activate left a stale cache behind`)
+    assert.equal(worker.caches.store.has(file.stale), false, `${file.name}: activate left ${file.stale}, its own previous version, behind`)
+    assert.equal(worker.caches.store.has(file.legacy), false, `${file.name}: activate left ${file.legacy} behind — a name this worker itself used, and the shell it may hold is exactly what a single-origin cache must not keep`)
+    assert.ok(worker.caches.store.has(file.other), `${file.name}: activate deleted ${file.other} — the OTHER worker's asset cache. Cache Storage is per-origin, so that scope now re-downloads every module it held`)
+  }
+})
+
+test('activating in either order, the two workers leave each other and the pool alone', async () => {
+  // What this pins down: each worker used to delete every cache that was not
+  // its own name, so whichever activated second emptied the other's assets — a
+  // /way/ visit emptied `home-v3`, and the next `/` visit re-downloaded the
+  // whole set. One store, both workers, both orders: the origin as the browser
+  // hands it to them.
+  const seed = () => fakeCaches([
+    FILES[0].own, FILES[0].stale, FILES[0].legacy,
+    FILES[1].own, FILES[1].stale, FILES[1].legacy,
+    POOL,
+    'another-app-v1', // neither worker owns this name, so neither may delete it
+  ])
+  for (const order of [FILES, [...FILES].reverse()]) {
+    const shared = seed()
+    for (const file of order) {
+      const worker = loadWorker(file, { caches: shared })
+      const waits = []
+      for (const fn of worker.listeners.activate || []) fn({ waitUntil: (p) => waits.push(p) })
+      await Promise.all(waits)
+    }
+    const ran = order.map((f) => f.name).join(' then ')
+    for (const live of [FILES[0].own, FILES[1].own, POOL, 'another-app-v1']) {
+      assert.ok(shared.store.has(live), `${ran}: ${live} is live and did not survive both activations`)
+    }
+    for (const dead of [FILES[0].stale, FILES[1].stale, FILES[0].legacy, FILES[1].legacy]) {
+      assert.equal(shared.store.has(dead), false, `${ran}: ${dead} is a dead name its owner must still purge`)
+    }
   }
 })
 
