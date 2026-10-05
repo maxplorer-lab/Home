@@ -3410,6 +3410,23 @@ function handleSnapshot(data) {
         if (p) approachPulses[devId] = p;
     }
 
+    // The device-control toggles live in the DO, not in the browser that set
+    // them: a pause flipped on the PC must greet a phone opened later as
+    // Paused. The snapshot is the whole world again, so it repopulates them
+    // -- change broadcasts only ever reach whoever already had a socket.
+    // An older backend sends no `controls` key at all; an absent entry is
+    // left unset and renders as the Live/Auto default, exactly as before.
+    deviceControlState = {};
+    const snapshotControls = data.controls || {};
+    for (const devId of DEVICES) {
+        const c = snapshotControls[devId];
+        if (!c) continue;
+        deviceControlState[devId] = {
+            forcedMode: c.forcedMode || null,
+            recordingPaused: c.recordingPaused === true,
+        };
+    }
+
     for (const devId of DEVICES) {
         const status = toPing(devId, data.devices[devId]);
         if (status) latestPing[devId] = status;
@@ -3427,6 +3444,9 @@ function handleSnapshot(data) {
     redrawAllTracks();
     for (const devId of DEVICES) if (latestPing[devId]) updateMarker(devId, latestPing[devId]);
     renderBadges();
+    // If the settings tab is open while a (re)connect lands, its pills must
+    // repaint from the snapshot too, or they keep the state they guessed.
+    if (currentTab === 'settings') renderSettingsMenu();
     updateTogetherAndETA();
     if (!selectedDevice && DEVICES.length) selectSpeedoDevice(DEVICES[0]);
     else updateSpeedoHUD();

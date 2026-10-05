@@ -75,7 +75,7 @@ function clipChatLine(text: string): string {
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v17-unread-lines";
+const DO_BUILD = "notify-v18-snapshot-controls";
 
 /**
  * How many unread chat lines the `chat-latest` readout hands back.
@@ -764,6 +764,9 @@ export class FleetDO extends DurableObject<Env> {
             //       a pre-rename session or a differently-spelled device must
             //       still route, and a v15 instance routes NOTHING for them
             //       while still reporting a send.
+            // v18 = the connect snapshot carries each device's control toggles
+            //       (forced mode, recording pause), so a phone opened after the
+            //       PC paused the log reads Paused instead of Live.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
@@ -853,6 +856,10 @@ export class FleetDO extends DurableObject<Env> {
   private buildSnapshot(): {
     type: "snapshot";
     devices: Record<string, LiveDeviceStatus | null>;
+    /** Per-device control toggles (forced driving/walking mode, recording
+     * pause). Additive like `approaches`: a client that does not know the key
+     * just ignores it. */
+    controls: Record<string, { forcedMode: ForcedMode; recordingPaused: boolean }>;
     tracks: Record<string, unknown[]>;
     chat: unknown[];
     /** In-flight badge pulses (see approachPulses). Additive: a client that
@@ -861,10 +868,20 @@ export class FleetDO extends DurableObject<Env> {
   } {
     const rows = this.sql.exec<{ device_id: string; state_json: string }>(`SELECT device_id, state_json FROM device_state`).toArray();
     const devices: Record<string, LiveDeviceStatus | null> = {};
+    // The toggles live in THIS row, not in the browser that set them. The
+    // snapshot is the only frame that can tell a device which connects later
+    // what the other one left behind: broadcast frames only reach whoever is
+    // already on a socket, so without these a pause set on the PC reads as
+    // Live on the phone -- a lie about what is being recorded.
+    const controls: Record<string, { forcedMode: ForcedMode; recordingPaused: boolean }> = {};
     for (const row of rows) {
       try {
         const parsed = JSON.parse(row.state_json) as Partial<StoredDeviceState>;
         devices[row.device_id] = parsed.lastStatus ?? null;
+        controls[row.device_id] = {
+          forcedMode: parsed.forcedMode ?? null,
+          recordingPaused: parsed.recordingPaused ?? false,
+        };
       } catch {
         devices[row.device_id] = null;
       }
@@ -889,7 +906,7 @@ export class FleetDO extends DurableObject<Env> {
       Array.from(this.approachPulses.entries()).map(([devId, p]) => [devId, { ...p, ageMs: Math.max(0, now - p.at) }])
     );
 
-    return { type: "snapshot", devices, tracks, chat, approaches };
+    return { type: "snapshot", devices, controls, tracks, chat, approaches };
   }
 
   /**

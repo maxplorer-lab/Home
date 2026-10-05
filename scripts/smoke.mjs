@@ -3447,7 +3447,7 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   // set, no channel configured, a push that throws), so the paths that cannot be
   // reached here are read instead.
   let notifySrc = '', diagSrc = '', adminSrc = '', idxSrc = '', doLedgerSrc = '', ingestSrc = '', querySrc = ''
-  let wayWorkerSrc = '', shareSrc = '', chatSrc = ''
+  let wayWorkerSrc = '', shareSrc = '', chatSrc = '', wayClientSrc = ''
   try { notifySrc = readFileSync(new URL('../src/lib/notify.ts', import.meta.url), 'utf8') } catch (e) {}
   try { diagSrc = readFileSync(new URL('../src/lib/diagnostics.ts', import.meta.url), 'utf8') } catch (e) {}
   try { adminSrc = readFileSync(new URL('../src/routes/admin.tsx', import.meta.url), 'utf8') } catch (e) {}
@@ -3458,6 +3458,7 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   try { wayWorkerSrc = readFileSync(new URL('../src/way/worker.ts', import.meta.url), 'utf8') } catch (e) {}
   try { shareSrc = readFileSync(new URL('../src/lib/share.ts', import.meta.url), 'utf8') } catch (e) {}
   try { chatSrc = readFileSync(new URL('../public/chat/index.html', import.meta.url), 'utf8') } catch (e) {}
+  try { wayClientSrc = readFileSync(new URL('../public/way/index.html', import.meta.url), 'utf8') } catch (e) {}
 
   // The rename's two contracts, read rather than assumed: the password check
   // must fold case (or the tracker is stricter than the login that shares its
@@ -3562,6 +3563,20 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
       /if \(controls\.motion\.pendingLegCut\) newMotion\.pendingLegCut = true;/.test(doLedgerSrc) &&
       /recordingPaused: controls\.recordingPaused,/.test(doLedgerSrc),
     'the ingest save writes the control flags from the pre-await snapshot (or drops the pending leg break), so pausing during a ping is undone by that ping\u2019s own save')
+  // The toggles live in the DO, not in the browser that set them. Broadcast
+  // frames only reach whoever already had a socket, so a phone opened after
+  // the PC paused the log learns the truth from the CONNECT SNAPSHOT or not
+  // at all -- and "not at all" reads as Live, a lie about what is recorded.
+  check('the connect snapshot carries the device-control toggles',
+    /controls: Record<string, \{ forcedMode: ForcedMode; recordingPaused: boolean \}>/.test(doLedgerSrc) &&
+      /controls\[row\.device_id\] = \{/.test(doLedgerSrc) &&
+      /return \{ type: "snapshot", devices, controls,/.test(doLedgerSrc),
+    'buildSnapshot sends lastStatus but not forcedMode/recordingPaused, so a browser that did not witness the toggle shows Auto/Live no matter what the DO actually stored')
+  check('\u2026and the dashboard applies them on connect, not only on change frames',
+    /deviceControlState = \{\};[\s\S]{0,200}?const snapshotControls = data\.controls \|\| \{\};/.test(wayClientSrc) &&
+      /deviceControlState\[devId\] = \{[\s\S]{0,120}?recordingPaused: c\.recordingPaused === true,/.test(wayClientSrc) &&
+      (wayClientSrc.match(/if \(currentTab === 'settings'\) renderSettingsMenu\(\);/g) || []).length >= 2,
+    'the controls are read only from deviceControlState broadcast frames, so a reloaded page (or the other phone) keeps showing the default Live/Auto -- the exact state it was left in is what must be shown')
 
   check('the intake ledger cannot itself break ingest',
     /private countGate[\s\S]{0,2500}?\} catch \{/.test(doLedgerSrc),
@@ -3603,6 +3618,98 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   check('the diagnostics page is linked where an admin will find it',
     /href="\/admin\/diagnostics"/.test(adminSrc),
     'the surface exists but nothing links to it')
+
+  // ── The control toggles survive a DEVICE SWITCH ───────────────────────────
+  // The toggles live in the DO, so the contract that matters is: flip Pause on
+  // the PC, open the phone, the phone reads Paused. A broadcast frame can
+  // never prove that -- it only reaches sockets that were ALREADY open -- so
+  // the proof is a brand-new connection whose CONNECT SNAPSHOT carries the
+  // toggle. Driven live here through the same `ws` client the socket checks
+  // above use (the global WebSocket cannot send the Cookie header this
+  // handshake needs). Restored in a finally: a device left paused would
+  // silently change every count this suite asserts after it.
+  if (!WSClient) {
+    check('the control-sync proof can run (it needs the ws client wrangler already ships)',
+      false,
+      "could not load 'ws' from node_modules/wrangler, so the state a device switch depends on stays unproven")
+  } else {
+    let pcSocket = null
+    let controlDevice = null
+    try {
+      const wsUrl = BASE.replace(/^http/, 'ws') + '/ws'
+      const openSocket = async () => {
+        const sock = new WSClient(wsUrl, { headers: { Cookie: cookieHeader() } })
+        const frames = []
+        sock.on('message', (raw) => { try { frames.push(JSON.parse(String(raw))) } catch (e) {} })
+        const waitForFrame = async (predicate, from = 0, timeoutMs = 8000) => {
+          const started = Date.now()
+          let i = from
+          while (true) {
+            if (i < frames.length) {
+              const f = frames[i++]
+              if (predicate(f)) return { frame: f, next: i }
+            } else if (Date.now() - started > timeoutMs) {
+              throw new Error(`no matching frame within ${timeoutMs}ms`)
+            } else {
+              await new Promise((r) => setTimeout(r, 20))
+            }
+          }
+        }
+        return { sock, frames, waitForFrame }
+      }
+
+      pcSocket = await openSocket()
+      const snapshot = (await pcSocket.waitForFrame((f) => f.type === 'snapshot')).frame
+      controlDevice = Object.keys((snapshot && snapshot.controls) || {})[0] || null
+      if (!controlDevice) {
+        check('the control-sync proof can run (it needs one device in device_state)',
+          false,
+          'the snapshot arrived with no device controls in it whatever -- nothing has ever uploaded here, so the cross-device contract has no subject to prove')
+      } else {
+        check('the connect snapshot speaks the toggles in their stored types',
+          typeof snapshot.controls[controlDevice].recordingPaused === 'boolean' &&
+            'forcedMode' in snapshot.controls[controlDevice],
+          `controls[${controlDevice}] = ${JSON.stringify(snapshot.controls[controlDevice])} -- a missing or mistyped control field is a dashboard left guessing`)
+
+        // The PC flips Pause...
+        pcSocket.sock.send(JSON.stringify({ type: 'setRecordingPaused', deviceId: controlDevice, paused: true }))
+        const ack = await pcSocket.waitForFrame(
+          (f) => f.type === 'deviceControlState' && f.deviceId === controlDevice && f.recordingPaused === true
+        ).then((r) => r.frame, () => null)
+        check('…the flip is applied and echoed to the socket that sent it',
+          !!ack,
+          'no deviceControlState echo -- the toggle did not reach the DO, so the pill would claim a state nothing stored')
+
+        // …and the PHONE, a socket that never saw the click, must read it
+        // from its own snapshot.
+        const phone = await openSocket()
+        try {
+          const phoneSnapshot = await phone.waitForFrame((f) => f.type === 'snapshot')
+            .then((r) => r.frame, () => null)
+          const seen = phoneSnapshot && phoneSnapshot.controls ? phoneSnapshot.controls[controlDevice] : null
+          check('a phone opened AFTER the PC paused reads Paused from its snapshot alone',
+            !!seen && seen.recordingPaused === true,
+            `the new socket's snapshot carried ${JSON.stringify(seen)} -- this is the device switch that used to greet the phone with Live while the log was actually paused`)
+        } finally {
+          try { phone.sock.close() } catch (e) {}
+        }
+      }
+    } catch (e) {
+      check('the control-sync proof ran to completion',
+        false,
+        `the live probe threw: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      if (pcSocket && controlDevice) {
+        try {
+          pcSocket.sock.send(JSON.stringify({ type: 'setRecordingPaused', deviceId: controlDevice, paused: false }))
+          await pcSocket.waitForFrame(
+            (f) => f.type === 'deviceControlState' && f.deviceId === controlDevice && f.recordingPaused === false
+          )
+        } catch (e) {}
+      }
+      if (pcSocket) { try { pcSocket.sock.close() } catch (e) {} }
+    }
+  }
 }
 
 // ─── 20. the live share (the ONE page an outsider can open) ──────
