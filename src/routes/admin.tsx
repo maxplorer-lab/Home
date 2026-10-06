@@ -78,8 +78,8 @@ async function renderAdmin(
   const rows = await Promise.all(users.map(async (u) => {
     const [sompitra, way, laoka] = await Promise.all([
       c.env.DB.prepare('SELECT id FROM users WHERE lower(username) = lower(?1)').bind(u.username).first().catch(() => null),
-      c.env.WAY_DB.prepare('SELECT id FROM users WHERE lower(username) = lower(?1)').bind(u.username).first().catch(() => null),
-      c.env.LAOKA_DB.prepare('SELECT id FROM users WHERE lower(username) = lower(?1)').bind(u.username).first().catch(() => null),
+      c.env.WAY_DB.prepare('SELECT id FROM way_users WHERE lower(username) = lower(?1)').bind(u.username).first().catch(() => null),
+      c.env.LAOKA_DB.prepare('SELECT id FROM laoka_users WHERE lower(username) = lower(?1)').bind(u.username).first().catch(() => null),
     ])
     return { u, sompitra: !!sompitra, way: !!way, laoka: !!laoka }
   }))
@@ -435,7 +435,8 @@ admin.post('/users/:id/toggle', async (c) => {
 // same ledger every module writes to: money and Kiné notifications refuse or
 // skip into home-db's diag_events, tracking gates count themselves in the
 // FleetDO's own SQLite (they are far too frequent for D1), and module health
-// probes all four databases.
+// probes every module's data — which lives in TWO databases since the four
+// originals were merged on 2026-10-06 (see wrangler.jsonc).
 
 interface ModuleHealth { name: string; ok: boolean; detail: string; ms: number }
 
@@ -507,9 +508,9 @@ async function buildDiagnostics(c: Context<any>) {
   const [home, sompitra, way, laoka, indexes] = await Promise.all([
     probe(env.HOME_DB, 'home-db', 'SELECT (SELECT COUNT(*) FROM users) AS people, (SELECT COUNT(*) FROM diag_events) AS ledger'),
     probe(env.DB, 'sompitra-db', 'SELECT COUNT(*) AS transactions FROM transactions'),
-    probe(env.WAY_DB, 'way-db', 'SELECT COUNT(*) AS pings FROM gps_pings'),
-    probe(env.LAOKA_DB, 'laoka', 'SELECT COUNT(*) AS weeks FROM weeks'),
-    probe(env.WAY_DB, 'way-db indexes', "SELECT COUNT(*) AS on_pings FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('gps_pings', 'messages')"),
+    probe(env.WAY_DB, 'way (in home-db)', 'SELECT COUNT(*) AS pings FROM gps_pings'),
+    probe(env.LAOKA_DB, 'laoka (in sompitra-db)', 'SELECT COUNT(*) AS weeks FROM weeks'),
+    probe(env.WAY_DB, 'way indexes (in home-db)', "SELECT COUNT(*) AS on_pings FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('gps_pings', 'messages')"),
   ])
 
   const ingest = await readIngest(env)
@@ -534,7 +535,7 @@ async function buildDiagnostics(c: Context<any>) {
     ingest: ingest ? { ...ingest, gates, checks: { received: n('received'), sumIn, sumInHolds: n('received') === sumIn, accepted: n('accepted'), sumOut, sumOutHolds: n('accepted') === sumOut } } : null,
     ledger,
     indexWarning: indexes.ok && /on_pings=0\b/.test(indexes.detail)
-      ? 'way-db has NO index on gps_pings or messages: every history load scans the whole table, which is the one schema fact that becomes a same-day outage as real data accumulates. See DB-REDESIGN.md §1a.'
+      ? 'the W.A.Y tables have NO index on gps_pings or messages: every history load scans the whole table, which is the one schema fact that becomes a same-day outage as real data accumulates. See DB-REDESIGN.md §1a.'
       : null,
   }
 }

@@ -1,5 +1,7 @@
 // ─── Home — the family super app ─────────────────────────────────
-// One Worker, three modules, ONE login, four databases:
+// One Worker, three modules, ONE login, TWO databases (the four original ones
+// were merged on 2026-10-06: HOME_DB + WAY_DB are one database, DB + LAOKA_DB
+// are the other — see wrangler.jsonc):
 //
 //   /            Sompitra — finance suite (Hono JSX, DB = sompitra-db)
 //   /way/*       W.A.Y    — GPS tracking (WAY_DB + FLEET_DO)

@@ -4,8 +4,12 @@
 --
 -- users.email carries a UNIQUE constraint, and SQLite refuses to drop a column
 -- that is indexed, so the table is rebuilt rather than altered.
+--
+-- 2026-10-06: the table is `laoka_users`, and its session table is
+-- `laoka_sessions`. Laoka's tables now share a database with Sompitra's, which
+-- already owns `users` and `sessions` -- so both are prefixed here.
 
-CREATE TABLE users_new (
+CREATE TABLE laoka_users_new (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   username            TEXT NOT NULL,
   role                TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),
@@ -19,37 +23,37 @@ CREATE TABLE users_new (
 
 -- Carry anyone who already existed over as a named account without a password.
 -- They will need an invite, or the setup token, to set one.
-INSERT INTO users_new (id, username, role, display_name, created_at)
+INSERT INTO laoka_users_new (id, username, role, display_name, created_at)
 SELECT
   id,
   CASE WHEN instr(email, '@') > 0 THEN substr(email, 1, instr(email, '@') - 1) ELSE email END,
   role,
   display_name,
   created_at
-FROM users;
+FROM laoka_users;
 
-DROP TABLE users;
-ALTER TABLE users_new RENAME TO users;
+DROP TABLE laoka_users;
+ALTER TABLE laoka_users_new RENAME TO laoka_users;
 
-CREATE UNIQUE INDEX idx_users_username ON users(lower(username));
+CREATE UNIQUE INDEX idx_laoka_users_username ON laoka_users(lower(username));
 
-CREATE TABLE sessions (
+CREATE TABLE laoka_sessions (
   token_hash   TEXT PRIMARY KEY,
-  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id      INTEGER NOT NULL REFERENCES laoka_users(id) ON DELETE CASCADE,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at   TEXT NOT NULL,
   last_seen_at TEXT
 );
-CREATE INDEX idx_sessions_user ON sessions(user_id);
-CREATE INDEX idx_sessions_expiry ON sessions(expires_at);
+CREATE INDEX idx_laoka_sessions_user ON laoka_sessions(user_id);
+CREATE INDEX idx_laoka_sessions_expiry ON laoka_sessions(expires_at);
 
 CREATE TABLE invites (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   code       TEXT NOT NULL UNIQUE,
-  created_by INTEGER REFERENCES users(id),
+  created_by INTEGER REFERENCES laoka_users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL,
-  used_by    INTEGER REFERENCES users(id),
+  used_by    INTEGER REFERENCES laoka_users(id),
   used_at    TEXT
 );
 

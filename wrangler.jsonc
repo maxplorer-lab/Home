@@ -7,7 +7,7 @@
   "workers_dev": true,
 
   // ────────────────────────────────────────────────────────
-  // ONE Worker, THREE modules, ONE login, FOUR databases.
+  // ONE Worker, THREE modules, ONE login, TWO databases.
   //
   //   Sompitra (finance suite, Hono JSX SSR) → served at /
   //   W.A.Y    (GPS tracking + chat, DO)     → served at /way/*
@@ -16,13 +16,21 @@
   // The whole thing is branded "Home" — one app for the whole household.
   // The login is ONE username + password per person, created by an admin,
   // stored in the central home-db. On login the Worker provisions the
-  // person into each module's own database (first time only) and mints
-  // every module's session cookie — see src/identity.ts.
+  // person into each module (first time only) and mints every module's
+  // session cookie — see src/identity.ts.
   //
-  //   central:  HOME_DB    home-db      users + sessions (the login)
-  //   Sompitra: DB         sompitra-db  finance data + its sessions
-  //   W.A.Y:    WAY_DB     way-db       tracking + accounts
-  //   Laoka:    LAOKA_DB   laoka        meal plans + its sessions
+  // The four original databases (home-db, sompitra-db, way-db, laoka) were
+  // merged into these TWO on 2026-10-06. A binding PAIR points at one physical
+  // database: the bindings stay separate because each module's code asks for
+  // its own, and the tables that would have collided carry the owning module's
+  // prefix (way_users, laoka_users, laoka_sessions).
+  //
+  //   HOME_DB + WAY_DB    home-db      identity (users + sessions — the login)
+  //                                    AND W.A.Y (way_users, gps_pings,
+  //                                    messages, geofences, …)
+  //   DB      + LAOKA_DB  sompitra-db  Sompitra finance (users, sessions,
+  //                                    transactions, …) AND Laoka
+  //                                    (laoka_users, laoka_sessions, weeks, …)
   //
   // Durable Objects:
   //   FLEET_DO → W.A.Y live fleet + chat
@@ -57,14 +65,18 @@
     "not_found_handling": "none"
   },
 
-  // The pre-existing module databases, unchanged — plus the new central
-  // identity database. Create home-db with:
-  //   wrangler d1 create home-db    → then paste its database_id here.
+  // TWO databases behind four bindings. HOME_DB and WAY_DB share the id of the
+  // (pre-existing) home-db; DB and LAOKA_DB share sompitra-db's. The superseded
+  // `way-db` (e098df3d) and `laoka` (24acf3ed) databases were folded into these
+  // on 2026-10-06 and are kept only as rollback copies — remove them once the
+  // merged pair has proved itself in production.
+  //
+  // Create one with:  wrangler d1 create <name>   → then paste its id here.
   "d1_databases": [
     { "binding": "HOME_DB", "database_name": "home-db", "database_id": "fd140c5d-ce90-40eb-a35d-5fc265e4cdf8" },
+    { "binding": "WAY_DB", "database_name": "home-db", "database_id": "fd140c5d-ce90-40eb-a35d-5fc265e4cdf8" },
     { "binding": "DB", "database_name": "sompitra-db", "database_id": "701cd942-a736-442c-bd00-265061101494" },
-    { "binding": "WAY_DB", "database_name": "way-db", "database_id": "e098df3d-585b-4804-923b-65d0ae74c820" },
-    { "binding": "LAOKA_DB", "database_name": "laoka", "database_id": "24acf3ed-531d-4117-ac7c-f9c7aa1c02c5" }
+    { "binding": "LAOKA_DB", "database_name": "sompitra-db", "database_id": "701cd942-a736-442c-bd00-265061101494" }
   ],
 
   // W.A.Y's Fleet DO (live tracking/chat) and Laoka's Lobby DO (fan-out).

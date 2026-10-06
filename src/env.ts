@@ -1,10 +1,13 @@
 // env.ts — the Home super app's bindings, one interface for all modules.
 //
-// Binding name → purpose:
+// Binding name → purpose. Since 2026-10-06 these bind TWO databases, not four:
+// the bindings stay separate because each module's code asks for its own, but
+// HOME_DB and WAY_DB resolve to the same database, and DB and LAOKA_DB to the
+// other. Tables that would have collided carry the owning module's prefix.
 //   HOME_DB    → home-db      (central identity: users + sessions — THE login)
+//   WAY_DB     → home-db      (W.A.Y tracking + chat history — way_users, …)
 //   DB         → sompitra-db  (Sompitra finance data + its sessions)
-//   WAY_DB     → way-db       (W.A.Y tracking, chat history, accounts)
-//   LAOKA_DB   → laoka        (Laoka meal plans + its sessions)
+//   LAOKA_DB   → sompitra-db  (Laoka meals — laoka_users, laoka_sessions, …)
 //   FLEET_DO   → FleetDO      (W.A.Y Durable Object: live state + chat)
 //   LOBBY      → Lobby        (Laoka Durable Object: realtime fan-out)
 //   ASSETS     → ./public     (Home shell + /way PWA bits + /laoka files)

@@ -184,7 +184,7 @@ export interface ShareTarget {
 /** The shareable people are `devices` INNER JOINed to `users` on the id, written
  *  once so the picker and the check that guards the mint cannot drift apart. */
 const SHARE_TARGET_SQL = `SELECT d.device_id AS deviceId, d.display_name AS name, d.emoji AS emoji, d.color AS color
-   FROM devices d JOIN users u ON u.username = d.device_id`
+   FROM devices d JOIN way_users u ON u.username = d.device_id`
 
 /**
  * The people this household can share, for the pickers.
@@ -211,7 +211,7 @@ export async function listShareTargets(env: Env): Promise<ShareTarget[]> {
 async function accountTargets(env: Env): Promise<ShareTarget[]> {
   try {
     const { results } = await env.WAY_DB
-      .prepare(`SELECT username AS deviceId, username AS name, emoji, color FROM users ORDER BY username COLLATE NOCASE`)
+      .prepare(`SELECT username AS deviceId, username AS name, emoji, color FROM way_users ORDER BY username COLLATE NOCASE`)
       .all<ShareTarget>()
     return results ?? []
   } catch {
@@ -238,7 +238,7 @@ export async function resolveShareTarget(env: Env, subject: string): Promise<str
   }
   try {
     const row = await env.WAY_DB
-      .prepare(`SELECT username FROM users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1`)
+      .prepare(`SELECT username FROM way_users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1`)
       .bind(id)
       .first<{ username: string }>()
     return row?.username ?? null
@@ -269,7 +269,7 @@ export async function subjectName(env: Env, subject: string): Promise<string> {
     /* a deployment with no devices table still has the account name below */
   }
   try {
-    const row = await env.WAY_DB.prepare(`SELECT username FROM users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1`).bind(id).first<{ username: string }>()
+    const row = await env.WAY_DB.prepare(`SELECT username FROM way_users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1`).bind(id).first<{ username: string }>()
     if (row?.username) return row.username
   } catch {
     /* fall through to the subject itself */

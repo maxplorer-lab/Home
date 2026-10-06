@@ -11,8 +11,12 @@ import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
- * [migrations directory, binding, SQL that must follow that chain] — the four
- * databases Home serves, in build order.
+ * [migrations directory, binding, SQL that must follow that chain] — every set
+ * Home serves, in build order. Since the 2026-10-06 merge there are TWO
+ * databases behind FOUR bindings (`HOME_DB`+`WAY_DB` are home-db, `DB`+`LAOKA_DB`
+ * are sompitra-db), and this list stays per-BINDING on purpose: each binding's
+ * files are still applied and judged independently, and because the two entries
+ * of a pair resolve to one database that is exactly what builds the merge.
  *
  * The third element is for statements a database built from the chain still
  * needs. WAY has exactly one: `0002_settings.sql` DROPS the `devices` table

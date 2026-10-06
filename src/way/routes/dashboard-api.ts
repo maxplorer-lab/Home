@@ -425,7 +425,10 @@ export async function handleDashboardApi(request: Request, env: Env, pathname: s
           id: u.id, username: u.username, emoji: u.emoji, color: u.color,
           role: u.role,
           ntfyTopic: known ? channels.get(u.username.toLowerCase()) ?? null : u.ntfy_topic,
-          topicSource: known ? "identity" : "way-db",
+          // "legacy", not "way-db": since the databases merged, that fallback
+          // column (ntfy_topic) lives in home-db too. What the label has to say
+          // is WHICH SOURCE won, not which database file it came out of.
+          topicSource: known ? "identity" : "legacy",
         };
       })
     );

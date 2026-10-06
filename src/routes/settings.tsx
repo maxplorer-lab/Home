@@ -53,7 +53,7 @@ function errMessage(code: string): string {
 async function quietWindow(env: Env, username: string): Promise<{ start: number; end: number; active: boolean } | null> {
   try {
     const row = await env.WAY_DB
-      .prepare('SELECT quiet_start, quiet_end FROM users WHERE lower(username) = lower(?)')
+      .prepare('SELECT quiet_start, quiet_end FROM way_users WHERE lower(username) = lower(?)')
       .bind(username)
       .first<{ quiet_start: number | null; quiet_end: number | null }>()
     if (!row) return null
@@ -98,8 +98,8 @@ async function wayFollowing(env: Env): Promise<Map<string, Following>> {
         `SELECT lower(su.username) AS subscriber, lower(src.username) AS source,
                 su.quiet_start, su.quiet_end
          FROM notification_subs s
-         JOIN users su  ON su.id  = s.subscriber_id
-         JOIN users src ON src.id = s.source_id`
+         JOIN way_users su  ON su.id  = s.subscriber_id
+         JOIN way_users src ON src.id = s.source_id`
       )
       .all<{ subscriber: string; source: string; quiet_start: number | null; quiet_end: number | null }>()
     for (const row of results ?? []) {

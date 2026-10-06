@@ -22,7 +22,7 @@ CREATE TABLE devices (
   color           TEXT,
   username        TEXT NOT NULL UNIQUE,   -- uLogger Basic Auth username
   password_hash   TEXT NOT NULL,          -- uLogger Basic Auth password (hashed)
-  owner_user_id   INTEGER REFERENCES users(id),
+  owner_user_id   INTEGER REFERENCES way_users(id),
   created_at      TEXT DEFAULT CURRENT_TIMESTAMP
 );
 

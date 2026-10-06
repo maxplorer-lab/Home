@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS devices (
   color           TEXT,
   username        TEXT NOT NULL UNIQUE,   -- μlogger Basic Auth username
   password_hash   TEXT NOT NULL,          -- μlogger Basic Auth password (hashed)
-  owner_user_id   INTEGER REFERENCES users(id),
+  owner_user_id   INTEGER REFERENCES way_users(id),
   created_at      TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -58,5 +58,5 @@ SELECT device_id, device_id, device_id, 'CHANGE_ME_fk_parent_only'
 FROM (
   SELECT DISTINCT device_id FROM gps_pings WHERE device_id IS NOT NULL AND device_id <> ''
   UNION
-  SELECT DISTINCT username  FROM users      WHERE username  IS NOT NULL AND username  <> ''
+  SELECT DISTINCT username  FROM way_users  WHERE username  IS NOT NULL AND username  <> ''
 );

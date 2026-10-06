@@ -279,7 +279,7 @@ auth.get('/logout', async (c) => {
   const laokaToken = getCookie(c, LAOKA_COOKIE)
   if (laokaToken) {
     const hash = await sha256Hex(laokaToken).catch(() => null)
-    if (hash) await c.env.LAOKA_DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(hash).run().catch(() => {})
+    if (hash) await c.env.LAOKA_DB.prepare('DELETE FROM laoka_sessions WHERE token_hash = ?').bind(hash).run().catch(() => {})
   }
   // W.A.Y's token is stateless — expiring the cookie is all there is.
 

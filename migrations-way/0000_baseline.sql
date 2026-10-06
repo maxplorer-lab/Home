@@ -28,9 +28,9 @@
 -- SCOPE: base columns ONLY, exactly as they stood before 0001. Later
 -- migrations add the rest, so nothing here may duplicate them:
 --   0001 -> messages.device_id
---   0002 -> users.follow_zoom, users.home_fence; creates invite_codes
+--   0002 -> way_users.follow_zoom, way_users.home_fence; creates invite_codes
 --   0003 -> gps_pings.leg_id
---   0004 -> users.ntfy_topic, users.quiet_start, users.quiet_end;
+--   0004 -> way_users.ntfy_topic, way_users.quiet_start, way_users.quiet_end;
 --           creates notification_subs
 --   0005 -> app_settings
 --   0006 -> messages.reply_to_id, messages.reply_to_sender,
@@ -39,12 +39,13 @@
 -- migration with "duplicate column name".
 
 -- ============================================================
---  users
+--  way_users  (renamed from `users` on 2026-10-06: W.A.Y's tables now live in
+--  the same database as the central login, and that one owns the name `users`.)
 --  The single credential table: a dashboard login AND the μlogger upload
 --  credential (one person == one tracked device). The first admin is
 --  inserted by hand -- see README "One-time setup" step 4.
 -- ============================================================
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS way_users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   username      TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,          -- "salt:hash", PBKDF2-SHA256 (lib/auth-crypto.ts)

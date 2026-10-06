@@ -2,16 +2,21 @@
 // ONE login per person for the whole super app: username + password,
 // created by an admin. Stored in the central home-db (HOME_DB).
 //
-// The three modules keep their own databases and their own session
-// mechanisms — this engine bridges them:
+// TWO databases, FOUR modules — this engine bridges them. Since 2026-10-06 the
+// original four databases are two (see wrangler.jsonc): HOME_DB and WAY_DB
+// resolve to the SAME database, and DB and LAOKA_DB resolve to the other one.
+// The bindings stay separate because each module's code asks for its own, and
+// the tables that would have collided carry the owning module's prefix
+// (`way_users`, `laoka_users`, `laoka_sessions`):
 //
 //   home-db    HOME_DB    users + sessions (THE login)
+//              WAY_DB     way_users + the tracking tables (W.A.Y)
 //   Sompitra   DB         find-or-create its user row (uuid TEXT ids);
 //                         pages auth via its D1 `sessions` table + cookie `session`
-//   W.A.Y      WAY_DB     find-or-create its user row; auth via stateless
+//   W.A.Y      WAY_DB     find-or-create its way_users row; auth via stateless
 //                         HMAC token cookie `way_user_session` (SESSION_SECRET)
-//   Laoka      LAOKA_DB   find-or-create its user row; auth via D1-backed
-//                         `sessions` table + cookie `laoka_session`
+//   Laoka      LAOKA_DB   find-or-create its `laoka_users` row; auth via
+//                         D1-backed `laoka_sessions` + cookie `laoka_session`
 //
 // On every login (and on any module 401 while a Home session lives — the
 // "auto-repair" path) this engine:
@@ -336,13 +341,13 @@ export async function ensureModuleAccounts(env: Env, user: HomeUser, password: s
   // hash doubles as the μlogger Basic Auth credential, so it must be
   // W.A.Y-compatible). Existing rows keep their password untouched.
   try {
-    const found = await env.WAY_DB.prepare('SELECT id, username FROM users WHERE lower(username) = lower(?1)').bind(name).first<{ id: number; username: string }>()
+    const found = await env.WAY_DB.prepare('SELECT id, username FROM way_users WHERE lower(username) = lower(?1)').bind(name).first<{ id: number; username: string }>()
     if (found) {
       out.way = found
     } else if (password) {
       const passwordHash = await wayHashPassword(password)
       const made = await env.WAY_DB.prepare(
-        "INSERT INTO users (username, password_hash, role) VALUES (?1, ?2, ?3)"
+        "INSERT INTO way_users (username, password_hash, role) VALUES (?1, ?2, ?3)"
       ).bind(name, passwordHash, user.role === 'admin' ? 'admin' : 'member').run()
       out.way = { id: Number(made.meta.last_row_id), username: name }
     }
@@ -352,19 +357,19 @@ export async function ensureModuleAccounts(env: Env, user: HomeUser, password: s
   // gets its credentials filled in, merging the old account.
   try {
     const found = await env.LAOKA_DB.prepare(
-      'SELECT id, username, password_hash FROM users WHERE lower(username) = lower(?1)'
+      'SELECT id, username, password_hash FROM laoka_users WHERE lower(username) = lower(?1)'
     ).bind(name).first<{ id: number; username: string; password_hash: string | null }>()
     if (found) {
       out.laoka = { id: found.id, username: found.username }
       if (!found.password_hash && password && pepperConfigured(env)) {
         const hashed = await hashPassword(env, password)
-        await env.LAOKA_DB.prepare('UPDATE users SET password_hash = ?1, password_salt = ?2, password_iterations = ?3 WHERE id = ?4')
+        await env.LAOKA_DB.prepare('UPDATE laoka_users SET password_hash = ?1, password_salt = ?2, password_iterations = ?3 WHERE id = ?4')
           .bind(hashed.hash, hashed.salt, hashed.iterations, found.id).run()
       }
     } else if (password && pepperConfigured(env)) {
       const hashed = await hashPassword(env, password)
       const made = await env.LAOKA_DB.prepare(
-        'INSERT INTO users (username, role, display_name, password_hash, password_salt, password_iterations) VALUES (?1, ?2, ?3, ?4, ?5, ?6)'
+        'INSERT INTO laoka_users (username, role, display_name, password_hash, password_salt, password_iterations) VALUES (?1, ?2, ?3, ?4, ?5, ?6)'
       ).bind(name, user.role === 'admin' ? 'admin' : 'member', display, hashed.hash, hashed.salt, hashed.iterations).run()
       out.laoka = { id: Number(made.meta.last_row_id), username: name }
     }
@@ -420,7 +425,7 @@ export async function mintModuleCookies(env: Env, user: HomeUser, secure: boolea
       const token = randomTokenB64url()
       const hash = await sha256Hex(token)
       await env.LAOKA_DB.prepare(
-        "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))"
+        "INSERT INTO laoka_sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))"
       ).bind(hash, accounts.laoka.id, '+' + LAOKA_SESSION_DAYS + ' days').run()
       out.push({ name: LAOKA_COOKIE, value: setCookieValue(LAOKA_COOKIE, token, LAOKA_SESSION_DAYS * 24 * 60 * 60, secure) })
     } catch { /* skip */ }
@@ -585,7 +590,7 @@ async function mirrorWayTopic(env: ChannelEnv, username: string | undefined, top
   if (!username || !env.WAY_DB) return
   try {
     await env.WAY_DB
-      .prepare('UPDATE users SET ntfy_topic = ? WHERE lower(username) = lower(?)')
+      .prepare('UPDATE way_users SET ntfy_topic = ? WHERE lower(username) = lower(?)')
       .bind(topic, username)
       .run()
   } catch {
@@ -614,7 +619,7 @@ export async function adoptWayTopics(env: ChannelEnv): Promise<number> {
   try {
     if (!env.WAY_DB) return 0
     const way = await env.WAY_DB
-      .prepare('SELECT username, ntfy_topic FROM users WHERE ntfy_topic IS NOT NULL AND ntfy_topic != \'\'')
+      .prepare('SELECT username, ntfy_topic FROM way_users WHERE ntfy_topic IS NOT NULL AND ntfy_topic != \'\'')
       .all<{ username: string; ntfy_topic: string }>()
     for (const row of way.results ?? []) {
       const res = await env.HOME_DB

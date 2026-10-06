@@ -885,7 +885,7 @@ log('\n11. Two channels per person: the feed, and tracking')
         mine && mine.ntfyTopic === (tracking || null),
         `screen=${mine?.ntfyTopic ?? '(missing)'} settings=${tracking || '(none)'}`)
       check('and says which side answered, so a dead topic cannot look live',
-        !!mine && (mine.topicSource === 'identity' || mine.topicSource === 'way-db'),
+        !!mine && (mine.topicSource === 'identity' || mine.topicSource === 'legacy'),
         `topicSource=${mine?.topicSource}`)
     } else {
       bad("WAY's Users & topics screen answers", `status ${wayUsers.status}`)
@@ -1157,8 +1157,9 @@ log('\n13. Laoka shopping list → one itemized Sompitra expense (no CSV hop)')
   })
   const ghostBody = await body(ghost)
   // 404 (no such week) rather than 400 (no week given) is the difference
-  // between Sompitra actually READING the `laoka` database and merely echoing a
-  // guard. (The probe label is the real database name, not `laoka-db`.)
+  // between Sompitra actually READING Laoka's tables and merely echoing a
+  // guard. (Laoka's tables now live inside Sompitra's own database; the probe
+  // labels them `laoka (in sompitra-db)`.)
   check(
     'an unknown week is a LOOKUP miss, so laoka is really read',
     ghost.status === 404 && /no such week/i.test(ghostBody),
@@ -3155,10 +3156,14 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   check('the diagnostics JSON answers', diagRes.status === 200 && !!diag, `status ${diagRes.status}`)
 
   const dbNames = (diag?.modules || []).map((m) => m.name)
-  check('it probes all four databases',
-    ['home-db', 'sompitra-db', 'way-db', 'laoka'].every((n) => dbNames.includes(n)),
+  // Every MODULE's data, even though the four original databases are now two
+  // (HOME_DB+WAY_DB and DB+LAOKA_DB — see wrangler.jsonc). The labels say which
+  // database each module's rows actually live in, so the card never shows a
+  // database that no longer exists.
+  check('it probes every module database',
+    ['home-db', 'sompitra-db', 'way (in home-db)', 'laoka (in sompitra-db)'].every((n) => dbNames.includes(n)),
     `saw ${dbNames.join(', ') || 'nothing'}`)
-  const broken = (diag?.modules || []).filter((m) => !m.ok && m.name !== 'way-db indexes')
+  const broken = (diag?.modules || []).filter((m) => !m.ok && m.name !== 'way indexes (in home-db)')
   check('every database answers on a healthy deployment',
     broken.length === 0, broken.map((m) => `${m.name}: ${m.detail}`).join(' | '))
 
@@ -3490,7 +3495,7 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
     /Object\.keys\(users\)\.find\(\(k\) => k\.toLowerCase\(\) === reactor\.toLowerCase\(\)\)/.test(doLedgerSrc),
     'a person who reacted before a rename keeps a second key, so their one reaction counts twice and the pill never toggles off')
   check('…a share code minted for any casing resolves to the account',
-    /SELECT username FROM users WHERE lower\(username\) = lower\(\?1\)/.test(shareSrc) &&
+    /SELECT username FROM way_users WHERE lower\(username\) = lower\(\?1\)/.test(shareSrc) &&
       !/WHERE username = \?1/.test(shareSrc),
     'the share resolver is back to an exact match, so a code minted as "niri" resolves to nobody — the viewer waits on a name that cannot arrive')
   check('…and the chat page folds names when it decides what is YOURS',
@@ -4062,7 +4067,7 @@ log('\n20. The live share: one device, one code, until midnight UTC')
   // empty string (the difference between a guard that fails and one that lies).
   const apiSrc20 = readFileSync(new URL('../src/way/routes/dashboard-api.ts', import.meta.url), 'utf8')
   check('a shareable person is a device WITH AN ACCOUNT, decided in one place',
-    /FROM devices d JOIN users u ON u\.username = d\.device_id/.test(shareSrc) &&
+    /FROM devices d JOIN way_users u ON u\.username = d\.device_id/.test(shareSrc) &&
     /export async function resolveShareTarget/.test(shareSrc) &&
     /export async function listShareTargets/.test(shareSrc) &&
     // and the mint asks it, rather than testing a list of its own

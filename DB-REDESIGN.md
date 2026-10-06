@@ -7,6 +7,11 @@ disposable **except Sompitra**.
 This is a proposal, not a plan of record. Most of it is still unbuilt — but
 **not all of it any more**, and the difference matters when reading §2 and §4:
 
+* **§1a's index exists** (2026-10-06). `migrations-way/0008_way_indexes.sql` put
+  `(device_id, timestamp)` on `gps_pings` and `(created_at)` on `messages`, so
+  both history reads plan as `SEARCH … USING INDEX …` with no temp B-tree and
+  `/admin/diagnostics`'s `indexWarning` is gone. §1b and §1c — retention and the
+  daily roll-up — are still open.
 * **§4's button exists**, in a different shape. Laoka's export sheet has
   **Send to Sompitra**, which posts the priced week straight into a Sompitra
   expense — no CSV, no file lifecycle. The idempotency §4 asks for is real;
@@ -90,10 +95,21 @@ The contrast inside our own app is the honest framing of this. **Sompitra is
 carefully indexed** — `transactions(date)`, `transactions(type)`,
 `transactions(added_by_user_id)`, `attendance_ticks(contract_id/tick_date)`,
 payment FKs — because it was built as the serious module. W.A.Y was the
-side-project that grew a large volume of append-only telemetry, and it carries
-no indexes at all. So the merged app inherited the weakest schema in its
-highest-volume module, and the free tier is precisely where that shows up
-first.
+side-project that grew a large volume of append-only telemetry, and it carries  no indexes at all. So the merged app inherited the weakest schema in its
+  highest-volume module, and the free tier is precisely where that shows up
+  first.
+
+> **Landed 2026-10-06.** `migrations-way/0008_way_indexes.sql` adds both indexes:
+> `idx_pings_device_ts ON gps_pings(device_id, timestamp)` and
+> `idx_messages_created ON messages(created_at)`. On production
+> `EXPLAIN QUERY PLAN` for a history window now reads
+> `SEARCH gps_pings USING INDEX idx_pings_device_ts (device_id=? AND timestamp>? AND timestamp<?)`
+> with no `USE TEMP B-TREE FOR ORDER BY`, and `/admin/diagnostics`'s
+> `indexWarning` is null. The audit had to learn to see indexes first: a
+> `CREATE INDEX` file declares no table, so `db:remote` filed it as "data-only"
+> (never applied to a live database) and `audit:remote` called it applied whether
+> or not it had ever run. `scripts/lib/migration-schema.mjs` now tracks index
+> names the way it tracks tables and columns.
 
 ### 1b. Pings are rows, kept forever
 
@@ -126,9 +142,11 @@ the D1 side toward the ceiling. Worth measuring before optimising blindly.
 
 ### What I'd do, in this order
 
-1. **Add the index**: `CREATE INDEX idx_pings_device_ts ON gps_pings(device_id,
-   timestamp)` (same for `messages`). One line, and it de-fangs the read budget
-   — the constraint most likely to cause a *same-day* outage.
+1. ~~**Add the index**~~ — **done, 2026-10-06**
+   (`migrations-way/0008_way_indexes.sql`): `idx_pings_device_ts` on
+   `gps_pings(device_id, timestamp)` and `idx_messages_created` on
+   `messages(created_at)`. It de-fangs the read budget, the constraint most
+   likely to cause a *same-day* outage.
 2. **Stop storing what carries no information.** The DO already computes
    `is_stationary`, `is_keep_alive` and `distance_km`. A phone parked overnight
    produces thousands of identical points; those should collapse at ingest to

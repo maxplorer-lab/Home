@@ -5,7 +5,7 @@
 -- SINGLE-USE: SQLite's ALTER TABLE ADD COLUMN is not idempotent, so running
 -- this file twice fails with "duplicate column name: ntfy_topic". That error
 -- means the migration ALREADY applied -- it does not mean it half-applied.
--- (Check with: PRAGMA table_info(users); and look for notification_subs.)
+-- (Check with: PRAGMA table_info(way_users); and look for notification_subs.)
 --
 -- Model: each user owns ONE ntfy topic (their "inbox"); their phone's ntfy
 -- app follows only their own topic. The recipients' checkbox grid decides
@@ -18,11 +18,11 @@
 -- the ONLY thing protecting its messages -- a guessable name would expose
 -- the household's location events to anyone.
 
-ALTER TABLE users ADD COLUMN ntfy_topic TEXT;
+ALTER TABLE way_users ADD COLUMN ntfy_topic TEXT;
 -- Quiet hours: hours in the household timezone (Africa/Nairobi, UTC+3).
 -- During the window only chat notifications are delivered.
-ALTER TABLE users ADD COLUMN quiet_start INTEGER NOT NULL DEFAULT 22;
-ALTER TABLE users ADD COLUMN quiet_end INTEGER NOT NULL DEFAULT 6;
+ALTER TABLE way_users ADD COLUMN quiet_start INTEGER NOT NULL DEFAULT 22;
+ALTER TABLE way_users ADD COLUMN quiet_end INTEGER NOT NULL DEFAULT 6;
 
 -- Subscription grid: "subscriber wants <event_type> events about <source>".
 -- Grew naturally as users join -- every user simply appears as a new row for
@@ -37,4 +37,4 @@ CREATE TABLE notification_subs (
 -- Backfill: users created before this migration have no topic yet. Give them
 -- one now (same shape as lib/notify.ts generateNtfyTopic: "way-" + 20 chars).
 -- Any of these can be regenerated from Settings -> Users & topics.
-UPDATE users SET ntfy_topic = 'way-' || lower(hex(randomblob(10))) WHERE ntfy_topic IS NULL;
+UPDATE way_users SET ntfy_topic = 'way-' || lower(hex(randomblob(10))) WHERE ntfy_topic IS NULL;

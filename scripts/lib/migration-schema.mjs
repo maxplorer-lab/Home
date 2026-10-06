@@ -8,7 +8,7 @@
 // either script can answer at all, which is why the two must not grow separate
 // copies of it.
 //
-// Reading these files naively lies in four ways, each hit while writing this:
+// Reading these files naively lies in five ways, each hit while writing this:
 //   1. COMMENTS. `-- every statement is CREATE TABLE IF NOT EXISTS, so…` is prose,
 //      but a regex that does not strip comments reads it as DDL and reports a
 //      table named "IF". Stripped below, both `--` and `/* */`.
@@ -23,6 +23,11 @@
 //   4. RENAMES. Laoka's 0005 builds `users_new` and renames it to `users`. The
 //      intermediate name never exists in a finished database, so it is not
 //      expected either — and the credit for creating the table follows the rename.
+//   5. INDEXES. A `CREATE INDEX` declares no table and no column, so a file whose
+//      only statement it is looked like a seed: `db-migrate.mjs` filed it under
+//      "data-only" (never applied to a live database) and `audit:remote` could not
+//      see it missing. `migrations-way/0008_way_indexes.sql` is the first file of
+//      that shape, which is what surfaced this.
 import { readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
@@ -52,12 +57,18 @@ function replay(entries) {
   const dropped = new Map()
   const createdBy = new Map()
   const addedBy = new Map()
+  const indexes = new Set()
+  const indexedBy = new Map()
 
   for (const { path, key: display } of entries) {
     const sql = stripComments(readFileSync(path, 'utf8'))
     for (const m of sql.matchAll(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+["'`]?(\w+)["'`]?/gi)) {
       tables.add(m[1])
       if (!createdBy.has(m[1])) createdBy.set(m[1], display)
+    }
+    for (const m of sql.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+["'`]?(\w+)["'`]?/gi)) {
+      indexes.add(m[1])
+      if (!indexedBy.has(m[1])) indexedBy.set(m[1], display)
     }
     for (const m of sql.matchAll(/ALTER TABLE\s+["'`]?(\w+)["'`]?\s+ADD COLUMN\s+["'`]?(\w+)["'`]?/gi)) {
       if (!added.has(m[1])) added.set(m[1], new Set())
@@ -81,6 +92,10 @@ function replay(entries) {
       for (const column of added.get(m[1]) ?? []) addedBy.delete(key(m[1], column))
       added.delete(m[1])
     }
+    for (const m of sql.matchAll(/DROP\s+INDEX(?:\s+IF\s+EXISTS)?\s+["'`]?(\w+)["'`]?/gi)) {
+      indexes.delete(m[1])
+      indexedBy.delete(m[1])
+    }
     // A rename means the source name was an intermediate: nobody's database has
     // `users_new` in it once the migration finishes — and whoever created the old
     // name created the new one.
@@ -94,7 +109,7 @@ function replay(entries) {
     }
   }
 
-  return { tables, added, createdBy, addedBy }
+  return { tables, added, createdBy, addedBy, indexes, indexedBy }
 }
 
 /** Every `.sql` in a directory, in the order the prefix says to apply it. */
@@ -105,8 +120,8 @@ function filesIn(absDir) {
 /** Replay a directory's migrations in order into the schema they promise. */
 export function expectedSchema(root, dir) {
   const at = resolveDir(root, dir)
-  const { tables, added, createdBy, addedBy } = replay(filesIn(at).map((f) => ({ path: join(at, f), key: f })))
-  return { tables, added, createdBy, addedBy }
+  const { tables, added, createdBy, addedBy, indexes } = replay(filesIn(at).map((f) => ({ path: join(at, f), key: f })))
+  return { tables, added, createdBy, addedBy, indexes }
 }
 
 /**
@@ -131,17 +146,18 @@ export function objectsForPaths(root, paths) {
   return objectsFrom(replay(paths.map((p) => ({ path: isAbsolute(p) ? p : join(root, p), key: p }))))
 }
 
-function objectsFrom({ tables, added, createdBy, addedBy }) {
+function objectsFrom({ tables, added, createdBy, addedBy, indexes, indexedBy }) {
   const byFile = new Map()
-  const add = (display, table, column) => {
-    if (!display) return
-    if (!byFile.has(display)) byFile.set(display, { tables: [], columns: [] })
-    const entry = byFile.get(display)
-    if (column) entry.columns.push([table, column])
-    else entry.tables.push(table)
+  const bucket = (display) => {
+    if (!display) return null
+    if (!byFile.has(display)) byFile.set(display, { tables: [], columns: [], indexes: [] })
+    return byFile.get(display)
   }
-  for (const table of tables) add(createdBy.get(table), table, null)
-  for (const [table, columns] of added) for (const column of columns) add(addedBy.get(key(table, column)), table, column)
+  for (const table of tables) bucket(createdBy.get(table))?.tables.push(table)
+  for (const [table, columns] of added) {
+    for (const column of columns) bucket(addedBy.get(key(table, column)))?.columns.push([table, column])
+  }
+  for (const name of indexes) bucket(indexedBy.get(name))?.indexes.push(name)
   return byFile
 }
 
@@ -156,23 +172,29 @@ function objectsFrom({ tables, added, createdBy, addedBy }) {
 export function buildSchemaQuery(byFile) {
   const tables = new Set()
   const added = new Map()
-  for (const { tables: t, columns } of byFile.values()) {
+  const indexes = new Set()
+  for (const { tables: t, columns, indexes: ix } of byFile.values()) {
     for (const table of t) tables.add(table)
     for (const [table, column] of columns) {
       if (!added.has(table)) added.set(table, new Set())
       added.get(table).add(column)
     }
+    for (const name of ix) indexes.add(name)
   }
-  return schemaQueryFor({ tables, added })
+  return schemaQueryFor({ tables, added, indexes })
 }
 
-/** The same query from a replayed promise ({ tables, added } as expectedSchema returns). */
-export function schemaQueryFor({ tables, added }) {
+/** The same query from a replayed promise ({ tables, added, indexes } as expectedSchema returns). */
+export function schemaQueryFor({ tables, added, indexes = new Set() }) {
   const cols = [...added.keys()].map((t) => `(SELECT group_concat(name) FROM pragma_table_info('${t}')) AS ${columnAlias(t)}`)
+  // A second one-off subquery, and only when the files declare an index: it is
+  // how a `CREATE INDEX` file's work becomes visible to both callers.
+  const ix = indexes.size ? ", (SELECT group_concat(name) FROM sqlite_master WHERE type='index') AS indexes" : ''
   return {
     tables: [...tables],
     added,
-    sql: `SELECT (SELECT group_concat(name) FROM sqlite_master WHERE type='table') AS tables${cols.length ? ', ' + cols.join(', ') : ''}`,
+    indexes,
+    sql: `SELECT (SELECT group_concat(name) FROM sqlite_master WHERE type='table') AS tables${cols.length ? ', ' + cols.join(', ') : ''}${ix}`,
   }
 }
 

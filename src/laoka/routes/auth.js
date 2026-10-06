@@ -115,7 +115,7 @@ export default [
       const salt = newSalt();
       const made = await hashPassword(password, ctx.env, salt, iterationsFor(ctx.env));
       const inserted = await ctx.env.DB.prepare(
-        'INSERT INTO users (username, role, display_name, password_hash, password_salt, password_iterations, last_login_at) ' +
+        'INSERT INTO laoka_users (username, role, display_name, password_hash, password_salt, password_iterations, last_login_at) ' +
         "VALUES (?1, ?2, ?1, ?3, ?4, ?5, datetime('now'))"
       ).bind(username, role, made.hash, made.salt, made.iterations).run();
 
@@ -158,7 +158,7 @@ export default [
       }
 
       await clearAttempts(ctx.env, gateKey);
-      await ctx.env.DB.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?1").bind(user.id).run();
+      await ctx.env.DB.prepare("UPDATE laoka_users SET last_login_at = datetime('now') WHERE id = ?1").bind(user.id).run();
       const token = await createSession(ctx.env, user.id);
       const fresh = await publicUser(ctx.env, user.id);
       return jsonWithCookie({ ok: true, user: fresh }, sessionCookie(ctx.request, token));
@@ -193,7 +193,7 @@ export default [
       const salt = newSalt();
       const made = await hashPassword(next, ctx.env, salt, iterationsFor(ctx.env));
       await ctx.env.DB.prepare(
-        'UPDATE users SET password_hash = ?1, password_salt = ?2, password_iterations = ?3 WHERE id = ?4'
+        'UPDATE laoka_users SET password_hash = ?1, password_salt = ?2, password_iterations = ?3 WHERE id = ?4'
       ).bind(made.hash, made.salt, made.iterations, ctx.user.id).run();
       return ok({});
     }

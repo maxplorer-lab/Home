@@ -47,10 +47,10 @@ export async function createSession(env, userId) {
   const token = randomToken();
   const hash = await sha256Hex(token);
   await env.DB.prepare(
-    "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))"
+    "INSERT INTO laoka_sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))"
   ).bind(hash, userId, '+' + SESSION_DAYS + ' days').run();
   // Opportunistic tidy up, so the table cannot grow without bound.
-  await env.DB.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
+  await env.DB.prepare("DELETE FROM laoka_sessions WHERE expires_at < datetime('now')").run();
   return token;
 }
 
@@ -58,36 +58,36 @@ export async function destroySession(env, request) {
   const token = readCookie(request, SESSION_COOKIE);
   if (!token) return;
   const hash = await sha256Hex(token);
-  await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?1').bind(hash).run();
+  await env.DB.prepare('DELETE FROM laoka_sessions WHERE token_hash = ?1').bind(hash).run();
 }
 
 export async function destroyAllSessions(env, userId) {
-  await env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId).run();
+  await env.DB.prepare('DELETE FROM laoka_sessions WHERE user_id = ?1').bind(userId).run();
 }
 
 export async function userCount(env) {
-  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
+  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM laoka_users').first();
   return row ? row.n : 0;
 }
 
 export async function findUserByName(env, username) {
   return await env.DB.prepare(
-    'SELECT ' + USER_COLUMNS + ', password_hash, password_salt, password_iterations FROM users WHERE lower(username) = lower(?1)'
+    'SELECT ' + USER_COLUMNS + ', password_hash, password_salt, password_iterations FROM laoka_users WHERE lower(username) = lower(?1)'
   ).bind(String(username || '')).first();
 }
 
 export async function publicUser(env, id) {
-  return await env.DB.prepare('SELECT ' + USER_COLUMNS + ' FROM users WHERE id = ?1').bind(id).first();
+  return await env.DB.prepare('SELECT ' + USER_COLUMNS + ' FROM laoka_users WHERE id = ?1').bind(id).first();
 }
 
 // Returns the signed in user, or null. DEV_MODE is an explicit opt in that
 // only ever appears in .dev.vars, never in the deployed configuration.
 export async function resolveUser(request, env) {
   if (String(env.DEV_MODE) === 'true') {
-    let dev = await env.DB.prepare('SELECT ' + USER_COLUMNS + ' FROM users ORDER BY id LIMIT 1').first();
+    let dev = await env.DB.prepare('SELECT ' + USER_COLUMNS + ' FROM laoka_users ORDER BY id LIMIT 1').first();
     if (!dev) {
       const made = await env.DB.prepare(
-        "INSERT INTO users (username, role, display_name) VALUES ('dev', 'admin', 'dev')"
+        "INSERT INTO laoka_users (username, role, display_name) VALUES ('dev', 'admin', 'dev')"
       ).run();
       dev = await publicUser(env, made.meta.last_row_id);
     }
@@ -99,7 +99,7 @@ export async function resolveUser(request, env) {
   const hash = await sha256Hex(token);
   const row = await env.DB.prepare(
     'SELECT u.' + USER_COLUMNS.split(', ').join(', u.') + ', s.token_hash ' +
-    'FROM sessions s JOIN users u ON u.id = s.user_id ' +
+    'FROM laoka_sessions s JOIN laoka_users u ON u.id = s.user_id ' +
     "WHERE s.token_hash = ?1 AND s.expires_at > datetime('now')"
   ).bind(hash).first();
   if (!row) return null;

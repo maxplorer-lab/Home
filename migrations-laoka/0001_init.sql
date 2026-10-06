@@ -10,7 +10,7 @@ CREATE TABLE settings (
   value TEXT NOT NULL
 );
 
-CREATE TABLE users (
+CREATE TABLE laoka_users (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   email        TEXT NOT NULL UNIQUE,
   role         TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member')),

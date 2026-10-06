@@ -1,0 +1,3 @@
+# The exports the merge script writes before applying them. They are copies of
+# production rows — regenerated on every run, never committed.
+out/

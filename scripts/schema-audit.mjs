@@ -14,7 +14,7 @@
 // perfectly happily while `share_links` was missing, and only pressing Generate
 // revealed it. AGENTS.md rule 32.
 //
-// It is a table/column audit, not a diff: it tells you a migration is MISSING,
+// It is a table/column/index audit, not a diff: it tells you a migration is MISSING,
 // which is the failure that happens in practice. It is READ-ONLY — SELECT only,
 // nothing is written, so it is safe to point at production — and it exits 1 on a
 // gap so it can gate a release.
@@ -82,8 +82,8 @@ function askRemote(binding, command) {
 
 let gaps = 0
 for (const [dir, binding] of TARGETS) {
-  const { tables, added } = expectedSchema(ROOT, dir)
-  const row = askRemote(binding, schemaQueryFor({ tables, added }).sql)
+  const { tables, added, indexes } = expectedSchema(ROOT, dir)
+  const row = askRemote(binding, schemaQueryFor({ tables, added, indexes }).sql)
 
   const have = new Set(String(row.tables || '').split(',').filter(Boolean))
   const missingTables = [...tables].filter((t) => !have.has(t))
@@ -94,16 +94,26 @@ for (const [dir, binding] of TARGETS) {
     for (const c of columns) if (!present.has(c)) missingCols.push(`${table}.${c}`)
   }
 
-  const bad = missingTables.length + missingCols.length
+  // Indexes are checked for the same reason the tables are: a `CREATE INDEX`
+  // file declares no table, so without this a migration that never ran would
+  // audit as "applied" — which is exactly how the W.A.Y history indexes stayed
+  // missing while every binding reported green (DB-REDESIGN.md §1a).
+  const haveIndexes = new Set(String(row.indexes || '').split(',').filter(Boolean))
+  const missingIndexes = [...indexes].filter((n) => !haveIndexes.has(n))
+
+  const bad = missingTables.length + missingCols.length + missingIndexes.length
   gaps += bad
   console.log(`${binding.padEnd(9)} ${String(have.size).padStart(3)} tables on ${local ? 'local ' : 'remote'} · ${tables.size} promised by ${dir}`)
   if (missingTables.length) console.log(`  \x1b[31mMISSING TABLES:  ${missingTables.join(', ')}\x1b[0m`)
   if (missingCols.length) console.log(`  \x1b[31mMISSING COLUMNS: ${missingCols.join(', ')}\x1b[0m`)
+  if (missingIndexes.length) console.log(`  \x1b[31mMISSING INDEXES: ${missingIndexes.join(', ')}\x1b[0m`)
   if (!bad) console.log('  \x1b[32m✓ every migration is applied here\x1b[0m')
 }
 
 if (gaps === 0) {
-  console.log(`\n\x1b[32m\x1b[1m${local ? 'All four local' : 'All four remote'} databases match their migration files.\x1b[0m\n`)
+  // FOUR BINDINGS, TWO DATABASES (2026-10-06): each binding is judged against
+  // its own directory, and a pair resolving to one database is what the merge is.
+  console.log(`\n\x1b[32m\x1b[1mEvery ${local ? 'local' : 'remote'} binding matches its migration files.\x1b[0m\n`)
   process.exit(0)
 }
 console.log(`\n\x1b[31m\x1b[1m${gaps} gap(s). Apply the missing file(s) to that database:\x1b[0m`)

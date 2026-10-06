@@ -1,4 +1,4 @@
--- WAY (Where Are You) - migration 0002: users-as-devices consolidation + settings
+-- WAY (Where Are You) - migration 0002: way_users-as-devices consolidation + settings
 -- Run with:
 --   wrangler d1 execute way-db --remote --file=migrations/0002_settings.sql
 --
@@ -10,10 +10,10 @@
 -- create the real people as users instead.
 
 -- ============================================================
---  users: add per-user settings columns
+--  way_users: add per-user settings columns
 -- ============================================================
-ALTER TABLE users ADD COLUMN follow_zoom INTEGER NOT NULL DEFAULT 16;
-ALTER TABLE users ADD COLUMN home_fence TEXT; -- geofence name for the map's "home" view; NULL = default center
+ALTER TABLE way_users ADD COLUMN follow_zoom INTEGER NOT NULL DEFAULT 16;
+ALTER TABLE way_users ADD COLUMN home_fence TEXT; -- geofence name for the map's "home" view; NULL = default center
 
 -- ============================================================
 --  invite_codes: replaces the single INVITE_CODE secret. 6-digit numeric,
@@ -22,10 +22,10 @@ ALTER TABLE users ADD COLUMN home_fence TEXT; -- geofence name for the map's "ho
 CREATE TABLE invite_codes (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   code       TEXT NOT NULL UNIQUE,
-  created_by INTEGER REFERENCES users(id),
+  created_by INTEGER REFERENCES way_users(id),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   expires_at TEXT NOT NULL,
-  used_by    INTEGER REFERENCES users(id),
+  used_by    INTEGER REFERENCES way_users(id),
   used_at    TEXT
 );
 

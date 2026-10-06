@@ -114,8 +114,9 @@ function classify(byFile, key, read) {
   if (!objects) return { state: 'data-only', total: 0, found: 0 }
   const found =
     objects.tables.filter((t) => read.has(t)).length +
-    objects.columns.filter(([t, c]) => read.columns(t).has(c)).length
-  const total = objects.tables.length + objects.columns.length
+    objects.columns.filter(([t, c]) => read.columns(t).has(c)).length +
+    objects.indexes.filter((n) => read.indexes.has(n)).length
+  const total = objects.tables.length + objects.columns.length + objects.indexes.length
   return { state: found === total ? 'applied' : found === 0 ? 'missing' : 'partial', total, found }
 }
 
@@ -130,7 +131,13 @@ function planFor(binding, dir, support) {
   const row = readSchema(binding, sql)
 
   const have = new Set(String(row.tables || '').split(',').filter(Boolean))
-  const read = { has: (t) => have.has(t), columns: (t) => new Set(String(row[columnAlias(t)] || '').split(',').filter(Boolean)) }
+  const read = {
+    has: (t) => have.has(t),
+    columns: (t) => new Set(String(row[columnAlias(t)] || '').split(',').filter(Boolean)),
+    // Index names arrive from sqlite_master alongside the tables, and only when
+    // the files declare one — a `CREATE INDEX` file has nothing else to go on.
+    indexes: new Set(String(row.indexes || '').split(',').filter(Boolean)),
+  }
   // "Empty" is judged on the migrations' own tables: a state file created by the
   // first `d1 execute` (or `_cf_METADATA`) must not make a fresh database look used.
   const empty = promised.every((t) => !have.has(t))

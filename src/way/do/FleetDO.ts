@@ -80,7 +80,7 @@ function clipChatLine(text: string): string {
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v19-config-signal";
+const DO_BUILD = "notify-v20-way-users";
 
 /**
  * How many unread chat lines the `chat-latest` readout hands back.
@@ -804,6 +804,11 @@ export class FleetDO extends DurableObject<Env> {
             //       device reaches every other open page instead of waiting for
             //       a reload (rule 46). An older instance ignores the topic it
             //       does not know, which is why the marker moves.
+            // v20 = W.A.Y's account table is `way_users`, not `users` (the two
+            //       databases were merged on 2026-10-06 and the central login
+            //       owns the bare name). Every statement here that read `users`
+            //       reads `way_users`; a v19 instance would fail to load the
+            //       notify cache at all, which is why the marker moves.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
@@ -1813,7 +1818,7 @@ export class FleetDO extends DurableObject<Env> {
   private async getNotifyConfig() {
     if (this.notifyCache) return this.notifyCache;
     const { results: users } = await this.env.WAY_DB
-      .prepare("SELECT id, username, ntfy_topic AS legacy_topic, quiet_start, quiet_end FROM users")
+      .prepare("SELECT id, username, ntfy_topic AS legacy_topic, quiet_start, quiet_end FROM way_users")
       .all<{ id: number; username: string; legacy_topic: string | null; quiet_start: number | null; quiet_end: number | null }>();
     const { results: subs } = await this.env.WAY_DB
       .prepare("SELECT subscriber_id, source_id, event_type FROM notification_subs")

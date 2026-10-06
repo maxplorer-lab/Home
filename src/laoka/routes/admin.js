@@ -161,7 +161,7 @@ export default [
       const admin = await requireAdmin(ctx.request, ctx.env);
       if (admin.error) return admin.error;
       const rows = await ctx.env.DB.prepare(
-        'SELECT id, username, role, display_name, created_at, last_login_at FROM users ORDER BY id'
+        'SELECT id, username, role, display_name, created_at, last_login_at FROM laoka_users ORDER BY id'
       ).all();
       return ok({ users: rows.results || [] });
     }
@@ -230,12 +230,12 @@ export default [
       if (!sets.length) return fail(400, 'nothing to update');
 
       if (body.role !== undefined && body.role !== 'admin') {
-        const admins = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").first();
+        const admins = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM laoka_users WHERE role = 'admin'").first();
         if (admins && admins.n <= 1) return fail(409, 'the last admin cannot be demoted');
       }
 
       binds.push(id);
-      const sql = 'UPDATE users SET ' + sets.join(', ') + ' WHERE id = ?' + binds.length;
+      const sql = 'UPDATE laoka_users SET ' + sets.join(', ') + ' WHERE id = ?' + binds.length;
       await ctx.env.DB.prepare(sql).bind(...binds).run();
       return ok({});
     }
@@ -248,16 +248,16 @@ export default [
       if (admin.error) return admin.error;
       const id = toInt(ctx.params.id);
 
-      const target = await ctx.env.DB.prepare('SELECT id, username, role FROM users WHERE id = ?1').bind(id).first();
+      const target = await ctx.env.DB.prepare('SELECT id, username, role FROM laoka_users WHERE id = ?1').bind(id).first();
       if (!target) return fail(404, 'no such user');
       if (target.id === admin.user.id) return fail(409, 'you cannot remove your own account');
       if (target.role === 'admin') {
-        const admins = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").first();
+        const admins = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM laoka_users WHERE role = 'admin'").first();
         if (admins && admins.n <= 1) return fail(409, 'the last admin cannot be removed');
       }
       await ctx.env.DB.batch([
-        ctx.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(id),
-        ctx.env.DB.prepare('DELETE FROM users WHERE id = ?1').bind(id)
+        ctx.env.DB.prepare('DELETE FROM laoka_sessions WHERE user_id = ?1').bind(id),
+        ctx.env.DB.prepare('DELETE FROM laoka_users WHERE id = ?1').bind(id)
       ]);
       return ok({});
     }

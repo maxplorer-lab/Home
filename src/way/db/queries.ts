@@ -24,17 +24,17 @@ import { generateNtfyTopic } from "../lib/notify";
 // checks through this same function), so the tie-break is a backstop.
 export async function getUserByUsername(db: D1Database, username: string): Promise<UserRow | null> {
   return db
-    .prepare("SELECT * FROM users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1")
+    .prepare("SELECT * FROM way_users WHERE lower(username) = lower(?1) ORDER BY CASE WHEN username = ?1 THEN 0 ELSE 1 END LIMIT 1")
     .bind(username)
     .first<UserRow>();
 }
 
 export async function getUserById(db: D1Database, id: number): Promise<UserRow | null> {
-  return db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+  return db.prepare("SELECT * FROM way_users WHERE id = ?").bind(id).first<UserRow>();
 }
 
 export async function getUsers(db: D1Database): Promise<UserRow[]> {
-  const { results } = await db.prepare("SELECT * FROM users ORDER BY username").all<UserRow>();
+  const { results } = await db.prepare("SELECT * FROM way_users ORDER BY username").all<UserRow>();
   return results;
 }
 
@@ -45,7 +45,7 @@ export async function createUser(
   // Every user gets their own random ntfy topic at creation -- the admin
   // copies it out of the Users section and shares it with that person.
   await db
-    .prepare("INSERT INTO users (username, password_hash, role, emoji, color, ntfy_topic) VALUES (?, ?, ?, ?, ?, ?)")
+    .prepare("INSERT INTO way_users (username, password_hash, role, emoji, color, ntfy_topic) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(fields.username, fields.passwordHash, fields.role, fields.emoji ?? null, fields.color ?? null, generateNtfyTopic())
     .run();
   const created = await getUserByUsername(db, fields.username);
@@ -54,7 +54,7 @@ export async function createUser(
 }
 
 export async function updateUserTopic(db: D1Database, userId: number, topic: string): Promise<void> {
-  await db.prepare("UPDATE users SET ntfy_topic = ? WHERE id = ?").bind(topic, userId).run();
+  await db.prepare("UPDATE way_users SET ntfy_topic = ? WHERE id = ?").bind(topic, userId).run();
 }
 
 export async function updateUserQuietHours(
@@ -64,7 +64,7 @@ export async function updateUserQuietHours(
   quietEnd: number
 ): Promise<void> {
   await db
-    .prepare("UPDATE users SET quiet_start = ?, quiet_end = ? WHERE id = ?")
+    .prepare("UPDATE way_users SET quiet_start = ?, quiet_end = ? WHERE id = ?")
     .bind(quietStart, quietEnd, userId)
     .run();
 }
@@ -111,13 +111,13 @@ export async function updateUserProfile(
   fields: { emoji: string | null; color: string | null }
 ): Promise<void> {
   await db
-    .prepare("UPDATE users SET emoji = ?, color = ? WHERE id = ?")
+    .prepare("UPDATE way_users SET emoji = ?, color = ? WHERE id = ?")
     .bind(fields.emoji, fields.color, userId)
     .run();
 }
 
 export async function updateUserPassword(db: D1Database, userId: number, passwordHash: string): Promise<void> {
-  await db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(passwordHash, userId).run();
+  await db.prepare("UPDATE way_users SET password_hash = ? WHERE id = ?").bind(passwordHash, userId).run();
 }
 
 export async function updateUserPrefs(
@@ -126,7 +126,7 @@ export async function updateUserPrefs(
   fields: { followZoom: number; homeFence: string | null }
 ): Promise<void> {
   await db
-    .prepare("UPDATE users SET follow_zoom = ?, home_fence = ? WHERE id = ?")
+    .prepare("UPDATE way_users SET follow_zoom = ?, home_fence = ? WHERE id = ?")
     .bind(fields.followZoom, fields.homeFence, userId)
     .run();
 }

@@ -34,8 +34,13 @@ public/
 scripts/smoke.mjs    `npm run smoke` — dependency-free end-to-end checks
 scripts/*.test.mjs   `npm test` — node --test: local-day helpers, CSV parser, the W.A.Y mirrors, the workers' map cache
 scripts/db-migrate.mjs  `npm run db:local` — applies only what a DB is missing
-migrations-home/     home-db schema (the ONLY db Home owns)
-migrations-sompitra|way|laoka/   the modules' original migrations
+migrations-home/     home-db schema — identity + W.A.Y since the 2026-10-06 merge
+migrations-way/      W.A.Y schema, applied to the WAY_DB binding — which since
+                     the merge is the SAME database as home-db (`way_users`)
+migrations-sompitra/ Sompitra schema — its finance tables, `users`, `sessions`
+migrations-laoka/    Laoka schema, applied to the LAOKA_DB binding — which since
+                     the merge is the SAME database as sompitra-db
+                     (`laoka_users`, `laoka_sessions`)
 ```
 
 Original standalone projects live outside this repo: `../Sompitra`,
@@ -58,8 +63,9 @@ npm run audit:basemaps   # the RECORDED basemap upstream still satisfies its rul
 npm run basemaps:record  # re-record it from the real tile host (prints what changed)
 npm run deploy:dry-run # builds + resolves bindings without deploying
 npm run dev            # wrangler dev on :8787 (use another port if taken)
-npm run db:local       # bring the four LOCAL databases up to date (safe to re-run)
-npm run db:remote -- --yes  # the REAL four (irreversible — read rule 32 first)
+npm run db:local       # bring the local databases up to date (TWO databases since
+                       # 2026-10-06 — four bindings; safe to re-run)
+npm run db:remote -- --yes  # the REAL two (irreversible — read rule 32 first)
 npm run deploy         # wrangler deploy (see rule 17 first)
 ```
 
@@ -157,7 +163,8 @@ not something to run on every PR. **Marking a check REQUIRED is a repo setting a
 not a file:** Settings → Rules → require a status check, then pick `gates` (and
 `guards` if the anti-vacuity job should block a merge too).
 
-Local DB setup (first time only) — one command, all four databases, in order:
+Local DB setup (first time only) — one command, both databases (each via its own
+binding), in order:
 
 ```bash
 npm run db:local                 # migrations-*/ → the local D1 in .wrangler/state
@@ -233,6 +240,11 @@ applies it, and only when `devices` is missing.
     renders as someone else's.
 12. Don't rename the D1 binding `DB` (Sompitra) — Laoka's standalone code
     reads `env.DB` and the adapter remaps it to `LAOKA_DB` explicitly.
+    Since the 2026-10-06 merge `DB` and `LAOKA_DB` are the SAME database, and
+    `HOME_DB`/`WAY_DB` are the other one, so a binding name no longer implies a
+    separate file. The names are still load-bearing: each module's code asks for
+    its own, and the tables that would have collided carry the module's prefix
+    (`way_users`, `laoka_users`, `laoka_sessions`).
 13. **`/settings` is the ONE settings surface** (`src/routes/settings.tsx`),
     organised by who a setting belongs to — You / the household / a module —
     not by which app it came from. Module-specific panels are being folded
@@ -395,21 +407,22 @@ applies it, and only when `devices` is missing.
       person including whoever recorded it. Nothing filters it.
     * `users.way_topic` — 📍 **tracking**: W.A.Y's chat/entry/exit/stationary/
       moving/approach, routed by the RECIPIENT's grid
-      (`way-db.notification_subs`), never to the person whose action it was,
+      (`notification_subs`), never to the person whose action it was,
       and subject to their quiet hours.
     Collapsing them back onto one topic breaks a rule either way: money must
     reach the person who recorded it, and a location event must not.
     **W.A.Y's DO does NOT go through `src/lib/notify.ts`** — it has its own
     ntfy publisher and resolves each recipient in `getNotifyConfig()`
     (FleetDO.ts), which reads `way_topic` from home-db, keyed for EVERY active
-    home user. `way-db users.ntfy_topic` is the pre-merge fallback and applies
+    home user. `way_users.ntfy_topic` is the pre-merge fallback and applies
     ONLY when home-db has never heard of that username — an explicit "channel
     off" (NULL) must stay off, never silently fall back to the stale topic.
     Because the DO caches this, every channel/server write calls
     `reloadWayNotifications(env)`; without it a rotation looks like it failed
     for W.A.Y events only.
     **A phone is given its topic by `/way/`'s Users & topics screen**, so that
-    screen answers from identity too (`/way/api/users` → `topicSource`), and
+    screen answers from identity too (`/way/api/users` → `topicSource`, which is
+    `identity` or `legacy` — a SOURCE, not a database name), and
     its generate button writes through `setWayTopic()` — which also MIRRORS the
     value into `way-db`, because that is W.A.Y's own fallback for a username
     `home-db` has never heard of (see the paragraph above). Never delete either
@@ -438,6 +451,12 @@ applies it, and only when `devices` is missing.
     lost; the old file is still on disk. Either re-apply `migrations-home/*`
     locally and `/bootstrap` again, or give the binding the old data (the run
     doc records the swap, including how to prove which file a binding owns).
+    **The same trap now applies to the guest bindings**: since the merge `WAY_DB`
+    carries `HOME_DB`'s id and `LAOKA_DB` carries `DB`'s. Editing either one
+    orphans that module's local fixtures in the old `.sqlite` file — the symptom
+    is a smoke run reporting the module healthy while its own data is missing
+    (an empty `weeks` table is what `a live Laoka week exists to hand over`
+    trips on). Still on disk; copy the rows back, do not re-bootstrap.
     For the cutover itself (existing deployments, real data, the phones), see
     **`CUTOVER.md`**.
 18. **The chat carries EVERY module's activity, so the chat's data path is a
@@ -480,7 +499,7 @@ applies it, and only when `devices` is missing.
     and lets unsynced rows pile up in the DO while the live chat keeps working,
     so nothing looks wrong in the UI. The `devices` table must also hold a row
     for every `device_id` used in auto events, and that id is the person's
-    `way-db.users.username` **verbatim, case included** (`deviceId =
+    `way_users.username` **verbatim, case included** (`deviceId =
     user.username` in `src/way/routes/ingest.ts`) — production's people are
     `MaxX` and `Niri`, and a device row spelled any other way satisfies one
     person's arrivals while failing the other's (that is exactly what the
@@ -1016,7 +1035,9 @@ applies it, and only when `devices` is missing.
     production. So the code can be live and correct while the table it writes does
     not exist — which is exactly how live shares became un-mintable in production
     on 2026-09-20. After adding a migration: apply it everywhere, then PROVE it
-    landed with `npm run audit:remote`, which compares all four remote databases
+    landed with `npm run audit:remote`, which compares every module's tables,
+    columns and indexes (two databases since the 2026-10-06 merge, one audit per
+    binding)
     against their `migrations-*` directories in one read-only pass and exits 1 on
     any gap —
     because the absence is otherwise invisible: no error, no log entry, no failed
@@ -1025,7 +1046,7 @@ applies it, and only when `devices` is missing.
     and `CUTOVER.md` §1b must stay the true list of what every environment has.
 
 33. **A person's name is a KEY, and there is exactly ONE spelling of it.** It is
-    `way-db.users.username` (which μlogger authenticates with), `gps_pings.device_id`
+    `way_users.username` (which μlogger authenticates with), `gps_pings.device_id`
     and `devices.device_id` (which every marker, trip and badge is drawn by),
     Sompitra's `users.id`, and the owner of an ntfy topic. So a lookup **folds
     case** everywhere — Home's login always did (`lower(username) = lower(?1)`),
@@ -1849,7 +1870,7 @@ deploy config any more — Home is the only deployable repo.
 | A ping with a silly accuracy (say 50 m) still moves the dashboard | the gate is the FIRST thing in `FleetDO.handleIngest` (rule 29) — check `accuracyIsAcceptable` is still called before the speed filters and still reads `PRE_FILTER_MAX_ACCURACY_M` from config. And note the other direction: a client that sends NO accuracy always passes by design (null is accepted), so first check whether the field was sent at all |
 | A track spikes out and back from a geofence while the phone is parked | two separate causes, and the rows tell them apart. **Same-second pair?** judged against `GLITCH_TIME_FLOOR_S`, never skipped (rule 27) — a pre-floor DO accepts it unseen. **First row of the pair exactly on the exit radius?** that is the guard's interpolated edge point, so read the ping that STARTS the exit: a far-out ping after a long silence passed every speed gate (0.5 km/h implied over hours) and the guard then confirmed on wall time. `pingsFlushed` counts only accepted pings, so it is the first honest number to read |
 | Sompitra notifications arrive but W.A.Y's don't (or to the wrong topic) | the FleetDO's `getNotifyConfig()` channel lookup + its cache: `GET /way/api/debug/notify` shows the exact topics and server it resolved |
-| A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (way-db `users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |
+| A phone gets nothing at night, but chat still arrives | **not a bug** — quiet hours (`way_users.quiet_start`/`quiet_end`, 22–06 by default) mute every tracking event except chat. The 📍 card in `/settings` states the window and whether it is on now |
 | Someone is ticked in W.A.Y's grid and still receives nothing | they have no **tracking** topic: the grid says yes, the events are addressed to a topic that does not exist, and nothing else complains. `/settings`' household card warns about exactly this, and `GET /way/api/debug/notify` reports `Niri has no topic` |
 | "Send a test" says sent but the phone stays quiet | it now reports ntfy's own answer: `ntfy refused it (401)` = the server wants a token (`wrangler secret put NTFY_TOKEN`), `could not reach …` = wrong URL/host, `no ntfy server is set` = neither the database value nor `NTFY_URL`. If it says **accepted** and still nothing arrives, the phone is subscribed to a different topic — compare the string on screen with the subscription |
 | Money notifications never arrive on a fresh deployment, tracking ones do | the halves resolve the server separately (`src/lib/notify.ts` vs the DO's `getNotifyConfig()`); both must end on the same value, and smoke cross-checks the one each side reports |

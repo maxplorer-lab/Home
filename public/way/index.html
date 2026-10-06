@@ -832,7 +832,7 @@ const CONFIG = {
 
 // Build marker shown in Settings -- bump it whenever you deploy, so you
 // can verify the browser tab is actually running the latest dashboard.
-const WAY_BUILD = '2026-10-05.1-config-signal';
+const WAY_BUILD = '2026-10-06.1-way-users';
 
 // ---- Africa/Nairobi (UTC+3, no DST) date helpers ----
 const TZ_OFFSET_MS = (CONFIG.TZ_OFFSET_HOURS || 3) * 60 * 60 * 1000;
@@ -3295,13 +3295,14 @@ function renderAdminUsers() {
     html += adminUsers.map(function(u) {
         const topic = u.ntfyTopic || '';
         const link = topic ? (serverRoot + '/' + topic) : '';
-        // Which database answered. The topic lives in the identity database
-        // (home-db users.way_topic); way-db's own column is only a fallback for
-        // a standalone deployment. Saying which one is in force is what stops
-        // this screen from again advertising a topic that receives nothing.
+        // Which SOURCE answered. The topic lives in the identity database
+        // (home-db users.way_topic); the module's own ntfy_topic column is only
+        // a fallback for an account Home has never heard of — a standalone
+        // deployment. Saying which one is in force is what stops this screen
+        // from again advertising a topic that receives nothing.
         const source = u.topicSource === 'identity'
             ? '<span style="font-size:9px;color:#4ade80;">identity channel</span>'
-            : '<span style="font-size:9px;color:#fbbf24;">way-db copy (no Home account?)</span>';
+            : '<span style="font-size:9px;color:#fbbf24;">module copy (no Home account?)</span>';
         return '<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;margin-top:6px;">' +
             '<div class="settings-row"><span style="flex:1;">' + (u.emoji || '📍') + ' ' + escapeHtml(u.username) + '</span>' +
                 '<button class="toggle-pill" onclick="regenTopic(' + u.id + ')">Generate</button></div>' +

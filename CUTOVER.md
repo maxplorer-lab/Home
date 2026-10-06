@@ -36,6 +36,15 @@ real ids.** `wrangler.jsonc` already carries them, so no module data moves:
 | `LAOKA_DB` | `laoka` (`24acf3ed-…`) | keep (or wipe) |
 | `HOME_DB` | `home-db` | created at cutover; `wrangler.jsonc` carries its real id |
 
+> **2026-10-06 — the four databases became two.** `home-db` now holds the central
+> identity AND W.A.Y (`way_users`, `gps_pings`, `messages`, …), and `sompitra-db`
+> holds Sompitra AND Laoka (`laoka_users`, `laoka_sessions`, weeks, plans, …). No
+> binding changed: two pairs simply point at ONE id each, and the three tables
+> that would have collided carry the owning module's prefix. `way-db`
+> (`e098df3d-…`) and `laoka` (`24acf3ed-…`) are kept as ROLLBACK copies until the
+> merged pair has proved itself in production. The merge is a one-off — see
+> `scripts/one-off/2026-10-06-merge-databases/00-README.md`.
+
 ---
 
 ## 0. What carries over by itself, and why
@@ -111,7 +120,7 @@ read-only, safe against production, exits 1 on a gap:
 ```bash
 npm run audit:remote      # every remote db vs its migrations-* directory
 ```
-It compares all four databases in one go and names what is missing
+It compares every module's tables in one go and names what is missing
 (`HOME_DB 9 tables on remote · 7 promised by migrations-home`), which is the
 answer you want BEFORE a release rather than after a household reports a broken
 button. It reads the migration files by replaying them in order — comments
@@ -317,7 +326,7 @@ curl -s -b /tmp/j -o /dev/null -w "%{http_code}\n" $B/admin        # 200, admin-
 
 # The DO is running the merged code, not a stale instance
 curl -s -b /tmp/j $B/way/api/debug/notify | grep -o '"build":"[^"]*"'
-#   expect build notify-v19-config-signal   (kept honest by `npm run smoke`,
+#   expect build notify-v20-way-users      (kept honest by `npm run smoke`,
 #   which reads THIS line and compares it with the DO's source AND with what
 #   the running DO reports — otherwise "the DO is stale" and "this doc is
 #   stale" look identical from the outside)
@@ -328,7 +337,9 @@ curl -s -b /tmp/j $B/admin/diagnostics.json | head -c 400
 #   "gates" list. An empty "gates" list means a fresh deployment (or that a build
 #   bump just cleared them) — send one upload to populate it; the counters are
 #   durable, not per-instance, and are cleared only when the DO's code changes.
-#   `indexWarning` naming gps_pings is real and expected today (DB-REDESIGN §1a).
+#   `indexWarning` is null once migrations-way/0008_way_indexes.sql has run; while
+#   it names gps_pings, the W.A.Y history indexes are absent (DB-REDESIGN §1a),
+#   and `npm run audit:remote` reports the same thing as MISSING INDEXES on WAY_DB.
 
 # The chat flush completes (this is the `devices` FK check, live)
 curl -s -b /tmp/j -X POST $B/way/api/flush
