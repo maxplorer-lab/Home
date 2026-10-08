@@ -72,6 +72,48 @@ Nothing in this directory deletes anything. To go back, remove the two added
 `LAOKA_DB` → `sompitra-db` lines) and redeploy: `way-db` and `laoka` still hold
 every row they held at the time of the merge, because the copy is a copy.
 
+## Proving the archive stands alone
+
+`out/` is gitignored and lives on one machine, so "the copy is a copy" is a
+claim about two live databases, never about the files. `verify-archive.mjs`
+checks the files, and it is what a decision to DELETE the rollback pair has to
+stand on:
+
+```bash
+node scripts/one-off/2026-10-06-merge-databases/verify-archive.mjs
+```
+
+It replays `out/*.sql` the way D1 runs a `--file` — statement by statement with
+foreign keys ON, so a child row ahead of its parent still fails — then compares
+every table **row for row** (a SHA-256 over every column of every row, not a
+row count) against both the merged database and the superseded original. The
+live side is read with one `wrangler d1 export` per database, cached in
+`scratch/exports/`; add `--fresh` to take a new snapshot. One call per database
+rather than one per table, because paging a remote table costs a whole wrangler
+start-up per page and `gps_pings` alone is 43 k rows.
+
+The two comparisons are held to different standards, deliberately. The merged
+database keeps taking writes (the 21:00 UTC cron flushes pings into it), so a
+table that has merely GROWN is reported as **drift** and not counted as a
+failure — and once it has grown it cannot be hashed against a snapshot of
+itself at all. The superseded pair is frozen, so it is compared strictly with no
+drift allowance: that half is the claim a delete rests on.
+
+Result on 2026-10-06: **core 8 tables and household 19 tables identical on both
+sides, and every table in `way-db` and `laoka` is covered by the archive** — so
+the pair holds nothing the files do not already hold. (`home-db` and
+`sompitra-db` each have tables this archive never had — Sompitra's money tables,
+Home's `people`/`ledger` — which are outside the merge and are listed, not
+compared.)
+
+Falsified before it was believed: `scratch/falsify.mjs` shows the replay refuses
+`messages` before `devices`, and that a single changed value or one deleted row
+moves the digest.
+
+That is the evidence the pair *can* be retired on. It is not the same as having
+retired it: `out/` is still local-only, so deleting is only as safe as this
+directory's backup.
+
 ## What the copy deliberately does NOT do
 
 It does not run `migrations-way/*` or `migrations-laoka/*` against the host. That

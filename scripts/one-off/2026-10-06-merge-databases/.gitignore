@@ -1,3 +1,7 @@
 # The exports the merge script writes before applying them. They are copies of
 # production rows — regenerated on every run, never committed.
 out/
+
+# Local D1 state and config for the archive-replay drill. Disposable: it is
+# rebuilt from out/ by the rehearsal command in 00-README.md.
+scratch/
