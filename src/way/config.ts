@@ -93,5 +93,16 @@ export const WAY_CONFIG = {
   // point before a travel leg is confirmed ended. Reuses WALKING_GUARD_SECONDS
   // in the original Python; kept as its own named value here so it can be
   // tuned independently if you ever want that.
-  STOP_CONFIRM_SECONDS: 30,
+  //
+  // Doubled 30 -> 60 on 2026-10-06. The silence rule (state-machine.ts) is what
+  // made stops fire at all, and the same rule then made them fire too early:
+  // at 30 s a leg ended at the first traffic pause or slow corner, because a
+  // parked phone and a phone waiting at a light are the same 30 s of silence.
+  // Two things worth knowing about the longer window, both deliberate. The
+  // stop is now STRICTER than the bare number suggests: 20 m across 60 s is
+  // 1.2 km/h, so inside ANCHOR_RADIUS_M the radius is the binding half of the
+  // silence test, where at 30 s it was the speed floor (20 m in 30 s is
+  // 2.4 km/h, which STATIONARY_SPEED_THRESHOLD rejects). And a walker still
+  // cannot trip it -- 4 km/h covers 67 m in 60 s.
+  STOP_CONFIRM_SECONDS: 60,
 } as const;

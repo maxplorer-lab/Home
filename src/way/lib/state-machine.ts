@@ -706,10 +706,13 @@ function processMotion(
   // test (> ANCHOR_RADIUS_M sustained for MOVEMENT_CONFIRM_SECONDS is a
   // departure, so <= ANCHOR_RADIUS_M across STOP_CONFIRM_SECONDS is a stop),
   // and the speed floor is what stops the rule cutting a WALK in half: 20 m
-  // in 30 s is 2.4 km/h, which the departure test accepts as movement, so a
-  // purely positional test would call every 30 s of a slow walk a stop. At
-  // today's constants the floor implies the radius (2 km/h for 30 s is 17 m),
-  // but the two stay separately tunable in config.ts.
+  // in 60 s is 1.2 km/h, which the departure test accepts as movement, so a
+  // purely positional test would call a minute of a slow walk a stop. At
+  // today's constants the RADIUS is the binding half -- 2 km/h across 60 s
+  // would be 33 m, so anything that stays inside the anchor has already
+  // passed the floor -- and that ordering flips back at a shorter window
+  // (20 m in 30 s is 2.4 km/h, which the floor rejects). Both halves stay
+  // separately tunable in config.ts.
   const sinceLastPingS =
     prevTs === null ? 0 : (new Date(dt).getTime() - new Date(prevTs).getTime()) / 1000;
   if (

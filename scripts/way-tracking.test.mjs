@@ -383,15 +383,16 @@ test('a leg opens at fence departure and survives a brief driving->walking dip',
 test('a confirmed stop closes the leg; the next movement opens a new one', () => {
   const { state, results } = run([
     ...TRAVEL_PREFIX,
-    ping(at(225), { ...north(670), vel: 0 }), // 30 s of silence in the same spot: stop
-    ping(at(255), { ...north(670), vel: 0 }), // still parked
-    ping(at(285), { ...north(670), vel: 0 }), // still parked, still leg 1
-    ping(at(315), { ...north(900), vel: 30 }), // moving again, not yet confirmed
-    ping(at(330), { ...north(1200), vel: 30 }), // 15 s sustained: leg 2
+    ping(at(255), { ...north(670), vel: 0 }), // 60 s of silence in the same spot: stop
+    ping(at(285), { ...north(670), vel: 0 }), // still parked
+    ping(at(315), { ...north(670), vel: 0 }), // still parked, still leg 1
+    ping(at(345), { ...north(900), vel: 30 }), // moving again, not yet confirmed
+    ping(at(360), { ...north(1200), vel: 30 }), // 15 s sustained: leg 2
   ])
-  // DIVERGED, two ways. The stop lands one ping earlier than in the W.A.Y
+  // DIVERGED, three ways. The stop lands one ping earlier than in the W.A.Y
   // copy, and the reason is now the silence rule rather than the average: the
-  // deployed engine confirms a stop on 30 s without a fix while still inside
+  // deployed engine confirms a stop on STOP_CONFIRM_SECONDS (60 s since
+  // 2026-10-06, 30 s in the W.A.Y copy) without a fix while still inside
   // ANCHOR_RADIUS_M of the last one, where W.A.Y waits for the rolling average
   // to fall under STATIONARY_SPEED_THRESHOLD -- which the deployed
   // reported-speed filter delays further, by disbelieving the walk's 3 km/h
@@ -413,7 +414,7 @@ test('a confirmed stop closes the leg; the next movement opens a new one', () =>
 
 // The parked-phone bug these two pin: the phone's uploader only sends a point
 // once the device has MOVED (µlogger's own minimum-distance setting), so a
-// phone that stops moving goes SILENT. The case above still passes at a 30 s
+// phone that stops moving goes SILENT. The case above still passes at a 60 s
 // cadence, but the moment the client's filter withholds those pings there is
 // nothing inside the candidate's 20 m bubble to accumulate a dwell span, and a
 // device that stopped looks like it never did -- the leg stays open through the
@@ -482,12 +483,12 @@ test('the silence rule fires at STOP_CONFIRM_SECONDS, not a second earlier', () 
     ping(at(45), { ...north(450), vel: 60 }),
     ping(at(60), { ...north(700), vel: 60 }),
   ]
-  const early = run([...driveOut, ping(at(89), { ...north(708), vel: 0 })])
-  const onTime = run([...driveOut, ping(at(90), { ...north(708), vel: 0 })])
-  assert.equal(early.results[4].isStationary, false, '29 s of silence is not yet a stop')
+  const early = run([...driveOut, ping(at(119), { ...north(708), vel: 0 })])
+  const onTime = run([...driveOut, ping(at(120), { ...north(708), vel: 0 })])
+  assert.equal(early.results[4].isStationary, false, '59 s of silence is not yet a stop')
   assert.equal(early.results[4].isDriving, true, 'and the 8 m of drift is still driven km')
   assert.ok(early.results[4].distance > 0)
-  assert.equal(onTime.results[4].isStationary, true, '30 s of silence is')
+  assert.equal(onTime.results[4].isStationary, true, '60 s of silence is')
   assert.equal(onTime.results[4].distance, 0, 'and the drift is not a track point')
 })
 
