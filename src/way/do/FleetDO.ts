@@ -1374,8 +1374,23 @@ export class FleetDO extends DurableObject<Env> {
     // leg break is carried onto it: it is one bit, the motion above was
     // derived from the pre-pause state, and it is the only record that the
     // log was broken between those two legs.
+    //
+    // ONLY an arm that landed during THIS handler. `stored` is the row the ping
+    // started from; re-asserting a cut it already carried turns the one-shot
+    // break into a LATCH. processPing spends the cut in memory (legId += 1,
+    // pendingLegCut = false) and the save has not happened yet, so this re-read
+    // still says true and copying it back re-arms the break it just spent. From
+    // the first pause onward every ping that measures movement then mints a new
+    // leg -- production, Niri, 2026-10-04: 2,370 one-point legs in 2,376 stored
+    // points. A one-point leg carries no distance, so the day's and the month's
+    // driven totals read 0.0 while the tracks still draw. The mid-handler race
+    // this line exists for is unaffected: an arm NEWER than the ping's own
+    // state is exactly what is carried. See
+    // scripts/one-off/2026-10-08-leg-per-point.
     const controls = this.loadDeviceState(ping.deviceId);
-    if (controls.motion.pendingLegCut) newMotion.pendingLegCut = true;
+    if (controls.motion.pendingLegCut && !stored.motion.pendingLegCut) {
+      newMotion.pendingLegCut = true;
+    }
     this.saveDeviceState(ping.deviceId, {
       motion: newMotion,
       forcedMode: controls.forcedMode,

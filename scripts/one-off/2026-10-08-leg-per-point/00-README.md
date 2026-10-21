@@ -128,8 +128,51 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/way-ts-ho
 `replay.mjs` additionally needs `out/slice.json`, which is a production dump and
 is gitignored — refetch it with the query in that file's header.
 
+## The fix (landed 2026-10-21)
+
+`src/way/do/FleetDO.ts` carries only an arm NEWER than the state the ping
+started from:
+
+```ts
+if (controls.motion.pendingLegCut && !stored.motion.pendingLegCut) {
+  newMotion.pendingLegCut = true;
+}
+```
+
+Smoke asks for exactly that: the carry must be guarded, and the blanket form
+must not come back (`the pending leg break is spent once, not latched`).
+
+What the reader saw while it was live: **Niri's October driven total froze at
+23.05 km** while every day's track still drew. Replayed against production's
+own October rows through the page's `HomeTripLegs` engine, the stored legs keep
+24 legs and 23.05 driven km (11,023 one-point legs dropped); with the repair's
+11,020 leg ids nulled the same rows read 192.66 km over 156 legs, and no day
+from 2026-10-05 is 0.0 any more.
+
+## Closing the latch on a live device
+
+The latch is durable state, so the deploy alone does not repair Niri: the state
+row keeps `pendingLegCut: true` until a ping saves it false, which the fix does
+on the next movement (a stationary ping leaves it armed for the departure).
+
+Two separate things are left, and only the first is unavoidable:
+
+1. **The state clears itself** — no manual step, nothing to reset in the DO.
+
+2. **The history does not** — the one-point legs already stored are what drop
+   the segments. `repair-leg-ids.mjs` prints the blast radius (read-only), then
+   with `--apply --yes` sets those legs' `leg_id` to NULL from 2026-10-04
+   onward — the state migration 0003 documents for pre-leg rows, so the
+   dashboard uses its 90 s gap split. Deploy the fix first, then apply.
+
+   ```
+   node scripts/one-off/2026-10-08-leg-per-point/repair-leg-ids.mjs
+   node scripts/one-off/2026-10-08-leg-per-point/repair-leg-ids.mjs --apply --yes
+   ```
+
 ## Still open
 
-The latch is durable state, so a deploy alone does not clear it for Niri: the
-state row keeps `pendingLegCut: true` until a ping saves it false, which the fix
-does on the next movement. Worth confirming against the next flush.
+Nothing about the latch. What this directory cannot tell you is why the pause
+switch was armed on 2026-10-04 — the engine only arms a cut over an OPEN leg
+(`applyRecordingPause`), so somebody pressed Pause mid-drive. That is a click,
+not a bug.

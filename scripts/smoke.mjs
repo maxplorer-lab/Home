@@ -3565,9 +3565,21 @@ log('\n19. Diagnostics: the silent gates and the silent notifications become rea
   // lost-update was live for `recordingPaused` and `forcedMode` themselves).
   check('a ping\u2019s save cannot silently undo a control toggle that landed mid-ping',
     /const controls = this\.loadDeviceState\(ping\.deviceId\)/.test(doLedgerSrc) &&
-      /if \(controls\.motion\.pendingLegCut\) newMotion\.pendingLegCut = true;/.test(doLedgerSrc) &&
+      /if \(controls\.motion\.pendingLegCut && !stored\.motion\.pendingLegCut\) \{/.test(doLedgerSrc) &&
       /recordingPaused: controls\.recordingPaused,/.test(doLedgerSrc),
     'the ingest save writes the control flags from the pre-await snapshot (or drops the pending leg break), so pausing during a ping is undone by that ping\u2019s own save')
+  // …and the carry must be ONE-SHOT. Re-asserting a cut the ping already
+  // started with re-arms what processPing just spent (the save has not happened
+  // yet), so every movement mints a leg; a one-point leg carries no distance,
+  // which zeroes the day's and the month's driven totals while the tracks still
+  // draw. This was live on Niri from 2026-10-04 (2,370 one-point legs in 2,376
+  // points) — the release is `scripts/one-off/2026-10-08-leg-per-point`.
+  check('the pending leg break is spent once, not latched',
+    (() => {
+      const carries = doLedgerSrc.match(/if \(controls\.motion\.pendingLegCut[^)]*\)/g) || []
+      return carries.length > 0 && carries.every((c) => c.includes('!stored.motion.pendingLegCut'))
+    })(),
+    'the save re-asserts a leg break this ping already spent, so every ping that measures movement opens a new leg and the day\u2019s driven distance reads 0.0')
   // The toggles live in the DO, not in the browser that set them. Broadcast
   // frames only reach whoever already had a socket, so a phone opened after
   // the PC paused the log learns the truth from the CONNECT SNAPSHOT or not
