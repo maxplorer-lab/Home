@@ -32,7 +32,9 @@
 //
 // Two rules that have caused silent outages before, do not undo them:
 //   1. /flush chunks at <= 100 statements (D1's batch() cap) and deletes a
-//      chunk only after D1 acknowledges it.
+//      chunk only after D1 acknowledges it. The copy carries each row's
+//      sync_id and inserts with OR IGNORE, so a retry after a death in that
+//      gap is a no-op rather than a duplicate (rule 48, src/way/do/flush.ts).
 //   2. Auto-generated chat rows carry sender = null, but D1's
 //      messages.sender is NOT NULL -- they must be mapped to "System".
 // See docs/OPERATIONS.md, "Known failure modes".
@@ -60,6 +62,7 @@ import {
 } from "../lib/state-machine";
 import { WAY_CONFIG } from "../config";
 import { isConfigTopic } from "../lib/config-topics";
+import { flushBuffers, PendingMessageRow, PendingTrackRow } from "./flush";
 
 /** Household ntfy server, in home-db (the unified settings own it). */
 const NTFY_SERVER_HOME_KEY = "ntfy_server";
@@ -80,7 +83,7 @@ function clipChatLine(text: string): string {
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v20-way-users";
+const DO_BUILD = "notify-v21-flush-sync-ids";
 
 /**
  * How many unread chat lines the `chat-latest` readout hands back.
@@ -291,7 +294,8 @@ export class FleetDO extends DurableObject<Env> {
         is_keep_alive INTEGER,
         battery REAL,
         accuracy REAL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        sync_id TEXT
       )
     `);
     this.sql.exec(`
@@ -313,6 +317,16 @@ export class FleetDO extends DurableObject<Env> {
     // table.
     try {
       this.sql.exec(`ALTER TABLE pending_sync ADD COLUMN leg_id INTEGER`);
+    } catch {
+      // column already present
+    }
+    // pending_sync.sync_id (2026-10-21): the row's identity in D1, so a retried
+    // chunk is ignored instead of inserted twice. Same ALTER dance, same reason
+    // -- an existing DO's table is not touched by CREATE TABLE IF NOT EXISTS.
+    // Rows buffered before this keep NULL, which is legal: their flush is simply
+    // not deduped, exactly as it was before.
+    try {
+      this.sql.exec(`ALTER TABLE pending_sync ADD COLUMN sync_id TEXT`);
     } catch {
       // column already present
     }
@@ -1404,12 +1418,15 @@ export class FleetDO extends DurableObject<Env> {
         `INSERT INTO pending_sync
           (device_id, timestamp, latitude, longitude, altitude, speed, speed_avg_30s,
            is_inside_geofence, geofence_name, is_driving, distance_km, is_stationary,
-           is_keep_alive, battery, accuracy, leg_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           is_keep_alive, battery, accuracy, leg_id, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ping.deviceId, ping.timestamp, ping.latitude, ping.longitude, altitude,
         ping.vel ?? null, result.speedAvg, result.isInside ? 1 : 0, result.geofenceName,
         result.isDriving ? 1 : 0, result.distance, result.isStationary ? 1 : 0,
-        0, null, accuracy, result.legId ?? null
+        0, null, accuracy, result.legId ?? null,
+        // The flush's idempotency key (src/way/do/flush.ts): the row's identity,
+        // minted here so it survives the copy into D1 being retried.
+        crypto.randomUUID()
       );
     }
 
@@ -1447,11 +1464,12 @@ export class FleetDO extends DurableObject<Env> {
         `INSERT INTO pending_sync
           (device_id, timestamp, latitude, longitude, altitude, speed, speed_avg_30s,
            is_inside_geofence, geofence_name, is_driving, distance_km, is_stationary,
-           is_keep_alive, battery, accuracy, leg_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           is_keep_alive, battery, accuracy, leg_id, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         deviceId, p.timestamp, p.latitude, p.longitude, p.altitude,
         p.speed, p.speedAvg, 0, null, p.isDriving ? 1 : 0,
-        p.distance, 0, 0, null, p.accuracy, p.legId
+        p.distance, 0, 0, null, p.accuracy, p.legId,
+        crypto.randomUUID()
       );
       this.broadcast({
         type: "track",
@@ -1493,11 +1511,12 @@ export class FleetDO extends DurableObject<Env> {
         `INSERT INTO pending_sync
           (device_id, timestamp, latitude, longitude, altitude, speed, speed_avg_30s,
            is_inside_geofence, geofence_name, is_driving, distance_km, is_stationary,
-           is_keep_alive, battery, accuracy, leg_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           is_keep_alive, battery, accuracy, leg_id, sync_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         deviceId, edge.timestamp, edge.latitude, edge.longitude, altitude,
         speed, result.speedAvg, 0, null, edge.isDriving ? 1 : 0,
-        0, 0, 0, null, accuracy, result.legId ?? null
+        0, 0, 0, null, accuracy, result.legId ?? null,
+        crypto.randomUUID()
       );
     }
     this.broadcast({
@@ -2131,83 +2150,67 @@ export class FleetDO extends DurableObject<Env> {
   //  local midnight (UTC+3 -- see wrangler.jsonc's cron trigger). Runs at low-
   //  traffic time, keeping the (already very small at this scale) risk
   //  of a new ping landing mid-flush negligible rather than needing
-  //  explicit locking.
+  //  explicit locking. The chunk loop itself is ./flush, which is where the
+  //  sync_id / OR IGNORE retry guarantee lives (and is tested against a real
+  //  database -- the two storages share no transaction, so ordering alone
+  //  cannot make this exactly-once).
   // ------------------------------------------------------------
-  private async flushToD1(): Promise<{ pingsFlushed: number; messagesFlushed: number }> {
-    const pendingPings = this.sql.exec(`SELECT * FROM pending_sync ORDER BY id`).toArray() as any[];
+  /** Whether D1 has migration 0009 (gps_pings.sync_id). Asked once per flush --
+   * at most a few a day -- rather than cached on the object, so a migration
+   * applied while this instance is alive takes effect on the next run instead of
+   * at the next restart, and so the answer is never instance state. */
+  private async flushIsIdempotent(): Promise<boolean> {
+    try {
+      await this.env.WAY_DB.prepare("SELECT sync_id FROM gps_pings LIMIT 1").first();
+      return true;
+    } catch (e) {
+      console.log(
+        "Daily flush: gps_pings has no sync_id (migration 0009 not applied) -- inserting " +
+        "without the idempotency key, so a crash between the batch and the DELETE can duplicate a chunk. " +
+        `(${e instanceof Error ? e.message : String(e)})`
+      );
+      return false;
+    }
+  }
+
+  private async flushToD1(): Promise<{ pingsFlushed: number; pingsSkipped: number; messagesFlushed: number }> {
+    const pendingPings = this.sql
+      .exec(`SELECT * FROM pending_sync ORDER BY id`)
+      .toArray() as unknown as PendingTrackRow[];
     const pendingMessages = this.sql
       .exec(`SELECT * FROM chat_messages WHERE synced = 0 ORDER BY created_at`)
-      .toArray() as any[];
+      .toArray() as unknown as PendingMessageRow[];
 
-    // Reaction state is snapshotted at flush time: the DO holds the live
-    // maps, D1's history row gets whatever the message had at midnight.
-    // Late toggles keep working in the DO (their broadcast keeps dashboards
-    // current) but history stops updating until the next flush -- accepted,
-    // the DO's own scrollback is what clients actually render.
+    // Reaction state is snapshotted at flush time: the DO holds the live maps,
+    // D1's history row gets whatever the message had at midnight. Late toggles
+    // keep working in the DO (their broadcast keeps dashboards current) but
+    // history stops updating until the next flush -- accepted, the DO's own
+    // scrollback is what clients actually render.
 
-    // D1 caps batch() at 100 statements per call. Flushing everything in
-    // ONE batch worked while a day produced <100 points, then silently
-    // started failing once a busy day exceeded that -- leaving pending_sync
-    // untouched (stale tracks on the map) and gps_pings unpopulated
-    // (0 km in history). Chunk at 100, and delete/mark each chunk as it
-    // lands so a mid-flush failure never duplicates already-flushed rows.
-    const CHUNK = 100;
-
-    for (let i = 0; i < pendingPings.length; i += CHUNK) {
-      const chunk = pendingPings.slice(i, i + CHUNK);
-      const statements = chunk.map((p) =>
-        this.env.WAY_DB.prepare(
-          `INSERT INTO gps_pings
-            (device_id, timestamp, latitude, longitude, altitude, speed, speed_avg_30s,
-             is_inside_geofence, geofence_name, is_driving, distance_km, is_stationary,
-             is_keep_alive, battery, accuracy, leg_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(
-          p.device_id, p.timestamp, p.latitude, p.longitude, p.altitude, p.speed,
-          p.speed_avg_30s, p.is_inside_geofence, p.geofence_name, p.is_driving,
-          p.distance_km, p.is_stationary, p.is_keep_alive, p.battery, p.accuracy,
-          p.leg_id ?? null
-        )
-      );
-      await this.env.WAY_DB.batch(statements);
-      // Delete only THIS chunk's rows (id <= chunkMaxId). A ping landing
-      // during the awaits above gets a higher AUTOINCREMENT id, so it is
-      // left for the next flush.
-      const chunkMaxId = chunk[chunk.length - 1].id as number;
-      this.sql.exec(`DELETE FROM pending_sync WHERE id <= ?`, chunkMaxId);
-    }
-
-    for (let i = 0; i < pendingMessages.length; i += CHUNK) {
-      const chunk = pendingMessages.slice(i, i + CHUNK);
-      const statements = chunk.map((m) =>
-        this.env.WAY_DB.prepare(
-          `INSERT INTO messages
-             (sender, message, gps_timestamp, is_auto, event_type, device_id, created_at,
-              reply_to_id, reply_to_sender, reply_to_snippet,
-              reactions, reaction_users, reaction_updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        // Auto geofence events have sender = null in the DO, but D1's
-        // messages.sender is NOT NULL. Map to "System" (the dashboard
-        // already renders a null sender as "System"). This NOT NULL
-        // violation is what made the whole flush fail before.
-        ).bind(
-          m.sender ?? "System", m.message, m.gps_timestamp, m.is_auto, m.event_type, m.device_id, m.created_at,
-          // Rows written before migration 0006 have no reply columns on the
-          // DO side either; `?? null` keeps them out of the NOT NULL path.
-          m.reply_to_id ?? null, m.reply_to_sender ?? null, m.reply_to_snippet ?? null,
-          // Chat reactions (migration 0007). Stored as the raw JSON strings
-          // the DO columns already hold -- null when the message has none.
-          m.reactions ?? null, m.reaction_users ?? null, m.reaction_updated_at ?? null
-        )
-      );
-      await this.env.WAY_DB.batch(statements);
-      // Mark synced rather than delete -- scrollback stays available to
-      // a freshly-connecting dashboard client even after the flush.
-      for (const m of chunk) {
-        this.sql.exec(`UPDATE chat_messages SET synced = 1 WHERE id = ?`, m.id);
-      }
-    }
-
-    return { pingsFlushed: pendingPings.length, messagesFlushed: pendingMessages.length };
+    // The loop itself lives in ./flush so a test can kill it between the batch
+    // and the DELETE: that gap is the one ordering cannot close, because the
+    // DO's storage and D1 share no transaction. Each insert carries the row's
+    // sync_id against the unique index from migration 0009, so the retry is a
+    // no-op instead of a duplicate.
+    return flushBuffers(
+      pendingPings,
+      pendingMessages,
+      {
+        prepare: (sql: string, ...params: unknown[]) =>
+          this.env.WAY_DB.prepare(sql).bind(...params) as unknown,
+        batch: async (statements: unknown[]) =>
+          this.env.WAY_DB.batch(statements as Parameters<Env["WAY_DB"]["batch"]>[0]),
+        // Only this chunk's rows. A ping landing during the awaits inside
+        // flushBuffers gets a higher AUTOINCREMENT id, so it waits for the
+        // next flush.
+        deletePendingThrough: (maxId: number) =>
+          this.sql.exec(`DELETE FROM pending_sync WHERE id <= ?`, maxId),
+        // Mark synced rather than delete -- scrollback stays available to a
+        // freshly-connecting dashboard client even after the flush.
+        markMessageSynced: (id: string) =>
+          this.sql.exec(`UPDATE chat_messages SET synced = 1 WHERE id = ?`, id),
+      },
+      { idempotent: await this.flushIsIdempotent() }
+    );
   }
 }

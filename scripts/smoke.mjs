@@ -1042,6 +1042,34 @@ log('\n12. Chat carries every module\'s activity (WAY departures AND Sompitra mo
   }
   check('the system-chat intake is not publicly reachable', reachable.length === 0, reachable.join(', '))
 
+  // The flush must be able to RETRY a chunk it already inserted. D1's batch()
+  // commits as a transaction; the DO's own DELETE is a second write in a
+  // DIFFERENT storage, so dying in between leaves the rows in both places and
+  // the retry copies them again -- production holds 253 pings and 37 chat lines
+  // that arrived twice that way. The fix is an identity on the row plus OR
+  // IGNORE; scripts/flush-idempotency.test.mjs kills the real loop in that gap,
+  // and this is the guard that the shipped SQL still says it.
+  let flushSrc = ''
+  try { flushSrc = readFileSync(new URL('../src/way/do/flush.ts', import.meta.url), 'utf8') } catch (e) {}
+  let pendingInserts = ''
+  try {
+    const src = readFileSync(new URL('../src/way/do/FleetDO.ts', import.meta.url), 'utf8')
+    pendingInserts = src.split('INSERT INTO pending_sync').slice(1).join('\n')
+  } catch (e) {}
+  check(
+    'the flush inserts idempotently, keyed by the row sync_id',
+    /const insert = idempotent \? 'INSERT OR IGNORE' : 'INSERT'/.test(flushSrc) &&
+      /INTO gps_pings/.test(flushSrc) &&
+      /INTO messages/.test(flushSrc) &&
+      (flushSrc.match(/sync_id/g) || []).length >= 2,
+    'a plain INSERT means a retried chunk lands twice'
+  )
+  check(
+    'every buffered ping carries a sync_id for the retry to skip',
+    /leg_id, sync_id\)/.test(pendingInserts) && /crypto\.randomUUID\(\)/.test(pendingInserts),
+    'a pending row without an identity cannot be deduped after a crash'
+  )
+
   // ---- The real round trip: a Sompitra action lands in the chat ----
   // An auto-repair is not enough here: the only proof that the wiring exists is
   // causing a genuine event and finding it in the chat afterwards.

@@ -1626,6 +1626,35 @@ applies it, and only when `devices` is missing.
     * Falsified by smoke §30's fixtures (a dropped call, a carried call, a silent
       catch) plus the fifteen cases in `scripts/function-consistency.test.mjs`.
 
+48. **The nightly flush can be RETRIED, so its inserts carry an identity.**
+    `flushToD1` copies a chunk into D1 and only then deletes it from the DO's
+    buffer. That order is the right one — deleting first would lose a chunk D1
+    refused — but D1's `batch()` is a transaction in D1 and the DELETE is a
+    separate write in the Durable Object's storage, with no shared transaction
+    between the two. A death in that gap (eviction, a storage error, the isolate
+    going away mid-await) leaves the rows in both places and the retry inserts
+    them again. Production had the evidence: 253 `gps_pings` pairs sharing a
+    second and 37 chat lines that arrived twice. So every insert is
+    `INSERT OR IGNORE` against `sync_id` — the UUID the DO stamped on the
+    buffered ping, or the id it already gave the chat row — and the unique index
+    on that column (`migrations-way/0009_flush_idempotency.sql`) turns the retry
+    into a no-op.
+    * **Not `(device_id, timestamp)`.** That looks like the natural key and is
+      not one: production holds 253 such pairs that are two different GPS fixes
+      (different altitude, accuracy and speed), so a unique index on the
+      timestamp would silently drop real samples.
+    * **The column is optional, the guarantee is not.** The DO probes for
+      `gps_pings.sync_id` once and falls back to the old plain INSERT when
+      migration 0009 has not been applied, so the code can ship before the
+      schema does — it logs that it is running unprotected rather than failing
+      the flush. Do not "clean up" that probe: deploying ahead of the migration
+      is a normal sequence here.
+    * The flush is safe to run at any time, from any number of paths (the cron,
+      the admin endpoint), because a second run over the same buffer inserts
+      nothing. `node scripts/flush-idempotency.test.mjs` builds the real schema
+      from `migrations-way/*.sql` and kills the loop between the batch and the
+      DELETE; it must stay green without the test being weakened.
+
 ## The rule → guard map
 
 A promise kept only in prose cannot go stale loudly: rename a smoke section,
@@ -1722,6 +1751,8 @@ is one of:
 | 46 | every-cached-fact-has-a-carrier | smoke §30 | — |
 | 47 | carried-async | audit:functions | — |
 | 47 | carried-async | smoke §30 | — |
+| 48 | flush-is-a-retry | smoke §12 — "the flush inserts idempotently" | — |
+| 48 | flush-is-a-retry | smoke §12 — "every buffered ping carries a sync_id" | — |
 
 ### Sections that guard no numbered rule
 
