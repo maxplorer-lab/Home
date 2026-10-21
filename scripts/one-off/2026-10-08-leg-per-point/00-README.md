@@ -177,6 +177,33 @@ Two separate things are left, and only the first is unavoidable:
    them, and that day would report only the part driven after the deploy. The
    script is idempotent: the second run reports nothing once they are cleaned.
 
+### The sweep that waits for the flush
+
+`sweep-after-flush.mjs` does that second run without a person at the desk: it
+polls D1 for the day's first rows, waits for the count to stop moving (a flush is
+a batch of inserts, not one), then hands over to `repair-leg-ids.mjs` — same
+script, same receipt. It stops before the UPDATE if the report finds nothing, and
+if the phone stored no pings at all it writes nothing and says so.
+
+```
+node scripts/one-off/2026-10-08-leg-per-point/sweep-after-flush.mjs --dry
+node scripts/one-off/2026-10-08-leg-per-point/sweep-after-flush.mjs
+```
+
+Its log is `sweep-after-flush.log` (gitignored) next to it; the 2026-10-21 run is
+`sweep-2026-10-21.log`. The deadline is 04:00 UTC the next day, so a phone that
+never moves costs ten reads an hour and no writes.
+
+**Which one-point legs are left alone.** A one-point leg is not by itself a
+symptom: MaxX has 19 of them across 12 days (2026-09-22 → 10-18), always one
+train 8 and 12 legs on a day of 300-400 rows — a stop under a minute, which
+contributes no distance by definition. So the script's "is the latch still live?"
+test is the newest day's SHAPE, not its newest row: as many legs as rows means
+the engine is minting one per ping, while Niri's repaired 2026-10-20 reads 10
+rows in 5 legs. The warning names both causes (not deployed / written before the
+fix), and the post-repair line prints `engine healthy: …` when the day's legs
+come from the engine.
+
 ## Still open
 
 Nothing about the latch. What this directory cannot tell you is why the pause

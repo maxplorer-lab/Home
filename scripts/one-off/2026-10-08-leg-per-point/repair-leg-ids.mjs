@@ -105,24 +105,39 @@ for (const r of rows) {
 }
 console.log(`\n  ${total} rows would go back to the 90 s gap rule (leg_id = NULL)\n`)
 
-// Is the latch still live? The newest stored point belonging to a one-point leg
-// means the engine is still minting one leg per ping, and a repair now would be
-// undone by the next flush.
-const newest = d1(
-  `SELECT timestamp, leg_id FROM gps_pings WHERE device_id = '${DEVICE}' AND leg_id IS NOT NULL ` +
-    `ORDER BY timestamp DESC LIMIT 1`
-)[0].results[0]
-if (newest) {
-  const newestOnePoint = d1(
-    `SELECT COUNT(*) AS n FROM gps_pings WHERE device_id = '${DEVICE}' AND leg_id = ${newest.leg_id}`
-  )[0].results[0].n === 1
-  if (newestOnePoint) {
-    console.log('  WARNING: the newest stored point still belongs to a one-point leg.')
-    console.log('  The FleetDO fix is not deployed (or has not seen a movement yet), so')
-    console.log('  more one-point legs will be written after this repair and the total will')
-    console.log('  freeze again. Deploy src/way/do/FleetDO.ts first.\n')
-  }
+// Is the latch still live? One point being its own leg is NORMAL -- MaxX has 19
+// such legs across 12 days, one among eight or twelve on an otherwise healthy
+// day (they are genuine stops under a minute). What the latch does is make EVERY
+// leg that way, so the test is the newest day's ratio, not a single row: if that
+// day holds as many legs as rows, the engine is still minting one leg per ping.
+//
+// This matters on the first run after a deploy: the pings the OLD code accepted
+// sit in the DO's buffer until the 21:00 UTC flush, so the newest day can be
+// entirely one-point legs that the fix will never touch. The warning names both
+// causes rather than guessing, and the post-repair line below settles it.
+function newestDayShape() {
+  const day = d1(
+    `SELECT MAX(substr(timestamp, 1, 10)) AS day FROM gps_pings ` +
+      `WHERE device_id = '${DEVICE}' AND leg_id IS NOT NULL`
+  )[0].results[0].day
+  if (!day) return null
+  const shape = d1(
+    `SELECT COUNT(*) AS rows, COUNT(DISTINCT leg_id) AS legs FROM gps_pings ` +
+      `WHERE device_id = '${DEVICE}' AND leg_id IS NOT NULL AND substr(timestamp, 1, 10) = '${day}'`
+  )[0].results[0]
+  return { day, ...shape, latched: shape.legs > 1 && shape.rows === shape.legs }
 }
+
+function warnIfLatched(shape, when) {
+  if (!shape || !shape.latched) return
+  console.log(`  WARNING (${when}): every leg on ${shape.day} holds one point -- ${shape.rows} rows, ${shape.legs} legs.`)
+  console.log('  Either the FleetDO fix is not deployed, or that whole day was written')
+  console.log('  before it. Deploy src/way/do/FleetDO.ts first, then repair; a live latch')
+  console.log('  writes more one-point legs after this repair and freezes the total again.\n')
+}
+
+const shapeBefore = newestDayShape()
+warnIfLatched(shapeBefore, 'before')
 
 if (!apply) {
   console.log('  dry run: nothing written. Add --apply --yes to repair.\n')
@@ -142,6 +157,18 @@ const left = d1(
   `SELECT COUNT(*) AS n FROM gps_pings WHERE ${inWindow} AND leg_id IN (${ONE_POINT_LEGS})`
 )[0].results[0].n
 console.log(`  one-point-leg rows left in the window: ${left}`)
+
+// Same question again, now that the stored one-point legs are gone: whatever the
+// newest day still holds came from the engine, not from the queue.
+const shapeAfter = newestDayShape()
+if (shapeAfter && shapeAfter.latched) {
+  warnIfLatched(shapeAfter, 'after')
+} else if (shapeAfter) {
+  console.log(
+    `  engine healthy: newest day with legs is ${shapeAfter.day}, ${shapeAfter.rows} rows in ${shapeAfter.legs} legs.`
+  )
+}
+
 console.log('\n  Reopen the Trips tab: the month and each day now measure the same rows')
 console.log('  by the gap rule. A one-point leg left here is a genuine short leg, and it')
 console.log('  contributes no distance by definition.\n')
