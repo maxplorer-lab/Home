@@ -170,6 +170,13 @@ Two separate things are left, and only the first is unavoidable:
    node scripts/one-off/2026-10-08-leg-per-point/repair-leg-ids.mjs --apply --yes
    ```
 
+   **Re-run it after the first nightly flush that follows the deploy.** The DO
+   holds the day's pings in `pending_sync` and writes them to D1 at 21:00 UTC,
+   so the pings it accepted BEFORE the deploy land afterwards still carrying
+   their one-point leg ids — a once-only repair run in the afternoon would miss
+   them, and that day would report only the part driven after the deploy. The
+   script is idempotent: the second run reports nothing once they are cleaned.
+
 ## Still open
 
 Nothing about the latch. What this directory cannot tell you is why the pause
