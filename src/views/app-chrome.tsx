@@ -772,6 +772,13 @@ export const CHROME_CSS = `
 //     underneath it are the SAME answer from the same poll, so they cannot
 //     disagree — and when the server bounded the list, the last row says how
 //     many it left out instead of the count and the lines quietly differing.
+//   * Each of those bounds is a ROW-READ bound as well as a payload one: this
+//     poll runs on every open page every 25 s, and the Durable Object's free
+//     tier bills rows read. A count past `countCapped` prints "100+" and the
+//     last row stops naming a number, because the server counted it through a
+//     LIMIT and never knew the total (2026-10-22: a full COUNT(*) here, three
+//     scans per poll from every open page, is what exhausted the allowance and
+//     took the whole WAY module down).
 //   * This is per DEVICE, not per person -- reading the room on a phone does
 //     not clear a desktop. That is the dot's behaviour inherited, not a new
 //     choice; making it per-account needs server-side read state, which is a
@@ -820,10 +827,14 @@ export const CHAT_UNREAD_SCRIPT = `
     var count = card.querySelector('[data-unread-count]');
     var lines = (data && data.messages) || [];
     var n = (data && data.count > 0) ? data.count : 0;
+    // The server bounds the COUNT as well as the lines (it counts through a
+    // LIMIT so the poll does not walk the whole room): countCapped means n is
+    // the ceiling, not the total, and the card must not print it as if it were.
+    var capped = !!(data && data.countCapped);
     // Nothing unread, or nothing the server was willing to name: the card goes
     // away rather than sitting empty under the month's figure.
     if (!n || !lines.length || !rows) { card.classList.remove('on'); return; }
-    if (count) count.textContent = n === 1 ? '1 new message' : n + ' new messages';
+    if (count) count.textContent = n === 1 ? '1 new message' : n + (capped ? '+ new messages' : ' new messages');
     var mine = (card.getAttribute('data-mine') || '').toLowerCase();
     // Repainted from scratch on every poll, so a message that arrives while the
     // page is open replaces the list rather than appending to it twice.
@@ -837,7 +848,10 @@ export const CHAT_UNREAD_SCRIPT = `
     if (rest > 0) {
       var more = document.createElement('span');
       more.className = 'unread-row unread-row-more';
-      more.textContent = '+' + rest + ' earlier in the room';
+      // 'rest' is only a number the server stands behind when the count was not
+      // capped; past the ceiling it says there are more rather than inventing
+      // how many.
+      more.textContent = capped ? 'and earlier in the room' : '+' + rest + ' earlier in the room';
       rows.appendChild(more);
     }
     card.classList.add('on');

@@ -90,8 +90,8 @@ const DO_BUILD = "notify-v21-flush-sync-ids";
  *
  * The Home card prints what arrived, so the readout carries the lines and not
  * only a count -- but every page of the app polls this endpoint every 25 s, so
- * the list is bounded rather than the room: the newest six, with `count` still
- * the true total so the card can say what it is not showing.
+ * the list is bounded rather than the room: the newest six, with `count` (up to
+ * CHAT_UNREAD_MAX, see below) saying what is not shown.
  */
 const CHAT_UNREAD_LINES = 6;
 
@@ -101,6 +101,26 @@ const CHAT_UNREAD_LINES = 6;
  * to one line anyway. This is what keeps the 25 s poll small on mobile data.
  */
 const CHAT_UNREAD_CHARS = 160;
+
+/**
+ * Ceiling on the unread COUNT, not on the lines.
+ *
+ * The count has to be read from the room, and the Durable Object keeps its
+ * scrollback forever (a flush marks rows synced, it does not delete them). A
+ * plain COUNT(*) therefore reads every message ever sent, on every poll, from
+ * every open page of the app -- and the free tier bills ROWS READ, account
+ * wide. On 2026-10-22 that arithmetic ran out: the DO answered every request
+ * with "Exceeded allowed rows read in Durable Objects free tier", which took
+ * ingest, the live map and the badge strip down together. This poll was the
+ * largest repeated read the object did (three full scans of the room every
+ * 25 s, per open page); the index in ensureSchema is the other half of the fix.
+ *
+ * So the count is bounded the same way the lines are: counting through a LIMIT
+ * stops at this many rows instead of walking the table. `countCapped` tells the
+ * card the real number is larger, so it prints "100+" rather than a total the
+ * server never claimed to know.
+ */
+const CHAT_UNREAD_MAX = 100;
 
 /** What the public live-share view is allowed to know about ONE device. Its
  *  narrowness is the feature: no chat, no other device, no totals. */
@@ -311,6 +331,13 @@ export class FleetDO extends DurableObject<Env> {
         synced INTEGER NOT NULL DEFAULT 0
       )
     `);
+    // The unread poll's index. Every open page asks /chat-latest every 25 s, so
+    // all three of its queries (newest, count, lines) filter or sort by
+    // created_at -- and without this every one of those questions was a full
+    // scan of a table that holds the room's whole scrollback. Same rule as the
+    // COUNT cap below: a query that runs on a 25 s timer must read in
+    // proportion to its answer, not to the table.
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_chat_created_at ON chat_messages(created_at)`);
     // pending_sync.leg_id was added later (legs are a backend-only concept).
     // ALTER throws if the column already exists, which is fine -- and it is
     // needed because CREATE TABLE IF NOT EXISTS won't touch an existing DO's
@@ -612,11 +639,20 @@ export class FleetDO extends DurableObject<Env> {
       // browser sends its watermark on every poll after its first visit, and a
       // first visit has nothing to compare against. The list is empty for the
       // same reason -- with no watermark there is nothing to call unread.
-      const unread = since
-        ? this.sql
-            .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM chat_messages WHERE created_at > ?`, since)
-            .toArray()[0]?.n ?? 0
-        : 0;
+      //
+      // Counted through a LIMIT (CHAT_UNREAD_MAX) rather than COUNT(*): the
+      // answer is a badge, and a badge does not need the four-thousandth unread
+      // line named. One extra row past the ceiling is how "more than that" is
+      // detected without asking the table again.
+      let unread = 0;
+      let capped = false;
+      if (since) {
+        const hits = this.sql
+          .exec(`SELECT 1 FROM chat_messages WHERE created_at > ? LIMIT ?`, since, CHAT_UNREAD_MAX + 1)
+          .toArray();
+        capped = hits.length > CHAT_UNREAD_MAX;
+        unread = Math.min(hits.length, CHAT_UNREAD_MAX);
+      }
       const lines = since
         ? this.sql
             .exec<{ id: string; created_at: string; sender: string | null; message: string; is_auto: number }>(
@@ -631,6 +667,9 @@ export class FleetDO extends DurableObject<Env> {
           id: newest?.id ?? null,
           at: newest?.created_at ?? null,
           count: unread,
+          // True when `count` is the ceiling rather than the total, so the card
+          // can say "100+" instead of printing a number that is not the answer.
+          countCapped: capped,
           // Newest first, the order the card prints and the order a phone shows
           // a notification stack in: the line under the count is the one that
           // just happened. (SELECT took them DESC already; nothing to reverse.)
