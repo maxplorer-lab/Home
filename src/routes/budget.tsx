@@ -149,6 +149,23 @@ budget.get('/', async (c) => {
      GROUP BY cg.id ORDER BY cg.sort_order`
   ).bind(start, end).all<{ id: string; name: string; spent: number; budget: number }>()
 
+  // Spending for the Budget Progress card: one row per CATEGORY that has a
+  // target set. The card used to list GROUPS and sum their categories' targets,
+  // which both repeated money already shown in "Expenses by Category" and gave
+  // every group a bar whether or not anyone had budgeted for it. A category
+  // with no target is not progress against anything, so it is left out here
+  // (the donut above still shows its spending).
+  const spendingByCategory = await c.env.DB.prepare(
+    `SELECT c.id, c.name, COALESCE(SUM(t.amount),0) AS spent,
+            c.target_budget AS budget
+     FROM categories c
+     JOIN category_groups cg ON c.group_id = cg.id
+     LEFT JOIN transactions t ON t.category_id = c.id AND t.type='expense' AND t.date BETWEEN ? AND ?
+     WHERE c.target_budget > 0
+     GROUP BY c.id
+     ORDER BY cg.sort_order, c.sort_order`
+  ).bind(start, end).all<{ id: string; name: string; spent: number; budget: number }>()
+
   // Income by source for chart
   const incomeBySource = await c.env.DB.prepare(
     `SELECT ia.name, COALESCE(SUM(t.amount),0) AS total
@@ -245,27 +262,29 @@ budget.get('/', async (c) => {
         }
       `}} />
 
-      {/* Category spending progress */}
+      {/* Category spending progress — budgeted categories only */}
       <Card title="Budget Progress" icon="target" className="mb-5">
-        <div class="space-y-3">
-          {spendingByGroup.results.map(g => {
-            const pct = g.budget > 0 ? Math.min(100, Math.round((g.spent / g.budget) * 100)) : 0
-            const barColor = pct >= 100 ? 'bg-red-500' : pct >= 80 ? 'bg-yellow-400' : 'bg-green-500'
-            return (
-              <div>
-                <div class="flex justify-between text-xs mb-1">
-                  <span class="font-medium text-gray-700 dark:text-gray-300">{g.name}</span>
-                  <span class="text-gray-500">{mga(g.spent)}{g.budget > 0 ? ` / ${mga(g.budget)}` : ''}</span>
-                </div>
-                {g.budget > 0 && (
+        {spendingByCategory.results.length === 0 ? (
+          <p class="text-xs text-gray-400">No category budgets set.</p>
+        ) : (
+          <div class="space-y-3">
+            {spendingByCategory.results.map(cat => {
+              const pct = Math.min(100, Math.round((cat.spent / cat.budget) * 100))
+              const barColor = pct >= 100 ? 'bg-red-500' : pct >= 80 ? 'bg-yellow-400' : 'bg-green-500'
+              return (
+                <div>
+                  <div class="flex justify-between text-xs mb-1">
+                    <span class="font-medium text-gray-700 dark:text-gray-300">{cat.name}</span>
+                    <span class="text-gray-500">{mga(cat.spent)} / {mga(cat.budget)}</span>
+                  </div>
                   <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                     <div class={`h-full rounded-full transition-all ${barColor}`} style={`width:${pct}%`} />
                   </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </Card>
 
       {/* Transaction list */}
