@@ -38,6 +38,8 @@ export interface Category {
   group_id: string
   name: string
   target_budget: number
+  /** 'YYYY-MM-DD' the category became an envelope; NULL = plain category. */
+  envelope_from: string | null
   sort_order: number
   created_at: string
   // joined
@@ -55,6 +57,8 @@ export interface Transaction {
   notes: string | null
   added_by_user_id: string
   is_recurring: number
+  /** 1 = money moved INTO an envelope; it is funding, not spending. */
+  is_envelope_transfer: number
   created_at: string
   // joined
   category_name?: string

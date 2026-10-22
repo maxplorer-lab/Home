@@ -232,18 +232,20 @@ for (const [p, whenMissing] of [
 // ─── 5. chrome consistency (the bug class this project keeps hitting) ──
 log('\n5. One chrome: real icons, no emoji, everywhere')
 // Every tab is served either by Layout (Sompitra) or ModuleShell. Both must
-// render the shared tab bar from src/views/app-chrome.tsx: the Home brand
-// mark (/icon-64.png), the Sompitra label, all six hrefs, and NO emoji icon.
-const TAB_HREFS = ['href="/"', 'href="/budget"', 'href="/chat"', 'href="/laoka/"', 'href="/way/"', 'href="/settings"']
+// render the shared tab bar from src/views/app-chrome.tsx: the real module
+// marks, the Sompitra label, all five menu hrefs, and NO emoji icon. Home is
+// not one of them — it is the fixed brand mark in the header on every page.
+const TAB_HREFS = ['href="/budget"', 'href="/chat"', 'href="/laoka/"', 'href="/way/"', 'href="/settings"']
 for (const p of ['/', '/chat', '/way/', '/laoka/']) {
   const html = await body(await req(p))
   const bar = tabBarHtml(html)
   if (!bar) { bad(`${p}: tab bar present`, 'no <nav id="home-tabbar">'); continue }
   const emojis = [...new Set(bar.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || [])]
   const missingHrefs = TAB_HREFS.filter((h) => !bar.includes(h))
-  check(`${p}: tab bar uses the real brand icons`, bar.includes('/icon-64.png') && emojis.length === 0,
-    emojis.length ? `emoji tab icon(s): ${emojis.join(' ')}` : 'no /icon-64.png')
-  check(`${p}: all six tabs linked`, missingHrefs.length === 0, `missing ${missingHrefs.join(' ')}`)
+  check(`${p}: tab bar uses the real brand icons`,
+    bar.includes('/way/icon-64.png') && bar.includes('/laoka/icon.svg') && emojis.length === 0,
+    emojis.length ? `emoji tab icon(s): ${emojis.join(' ')}` : 'the module marks are missing')
+  check(`${p}: all five menu tabs linked`, missingHrefs.length === 0, `missing ${missingHrefs.join(' ')}`)
   check(`${p}: Sompitra tab labelled correctly`, bar.includes('Sompitra'), 'label missing')
   // The Chat tab's unread cue: one hook in the tab bar (bottom, phone) and one
   // in the header nav (desktop), because the bar is hidden from md up and a dot
@@ -2824,15 +2826,15 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
 
     const navHrefs = [...html.matchAll(/<nav id="home-nav"[\s\S]*?<\/nav>/g)]
       .flatMap((m) => [...m[0].matchAll(/href="([^"]+)"/g)].map((h) => h[1]))
-    check(`${p}: both shapes carry the same six tabs`,
-      tabs.length === 6 && navHrefs.length === 6 && tabs.every((t, i) => t.href === navHrefs[i]),
+    check(`${p}: both shapes carry the same five tabs`,
+      tabs.length === 5 && navHrefs.length === 5 && tabs.every((t, i) => t.href === navHrefs[i]),
       `bar ${tabs.map((t) => t.href).join(',')} vs nav ${navHrefs.join(',')}`)
 
     // A tab keeps its OWN colour whether or not it is the one you are on — the
     // colours are how the modules stay recognisable at a glance.
     const colours = tabs.map((t) => t.color)
     check(`${p}: every tab carries its own colour (inactive ones included)`,
-      colours.every((c) => /^#[0-9a-f]{6}$/.test(c)) && new Set(colours).size === 6,
+      colours.every((c) => /^#[0-9a-f]{6}$/.test(c)) && new Set(colours).size === 5,
       `colours ${colours.join(' ')}`)
 
     // …and not only as a background: BOTH the icon's wrapper and the label
@@ -2846,26 +2848,34 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
       !/text-gray-[45]00/.test(bar) && !/color:#(6b7280|9ca3af)/.test(bar),
       'the tab bar still greys an inactive tab (text utility or literal grey)')
 
-    // The desktop nav is the same rule at md+: same six tabs, same six colours.
+    // The desktop nav is the same rule at md+: same five tabs, same five colours.
     const navBlock = (html.match(/<nav id="home-nav"[\s\S]*?<\/nav>/) || [''])[0]
     const navTints = navBlock.split('<a href=').slice(1)
       .map((a) => [...a.matchAll(/--tab:(#[0-9a-fA-F]{6})/g)].map((m) => m[1].toLowerCase()))
     check(`${p}: the desktop nav keeps the same colours as the bottom bar`,
-      navTints.length === 6 && navTints.every((cs, i) => cs.length >= 1 && cs.every((c) => c === tabs[i].color)),
+      navTints.length === 5 && navTints.every((cs, i) => cs.length >= 1 && cs.every((c) => c === tabs[i].color)),
       navTints.map((cs, i) => `${tabs[i]?.href}=>${cs.join('/') || '(none)'}`).join(' '))
 
     // …and being ON one is shown by shape and weight, not by being the only
     // coloured tab: one 26px bar, a bold label, and a theme colour to match.
     const active = tabs.filter((t) => t.active)
-    check(`${p}: exactly one tab is marked active, by a bar + a bold label`,
-      active.length === 1 && active[0].width === '26' && active[0].weight === 'semibold' &&
-      tabs.filter((t) => !t.active).every((t) => t.width === '0' && t.weight === 'medium'),
-      `active ${active.map((t) => t.href).join(',') || '(none)'} width=${active.map((t) => t.width).join(',')}`)
+    // Home has no tab any more: the fixed brand mark in the header is the
+    // marker there, so Home is the one page where no tab is active.
+    const homePage = p === '/'
+    const brandAtHome = /<a href="\/"[^>]*aria-current="page"/.test(html)
+    check(`${p}: exactly one thing is marked as where you are`,
+      homePage
+        ? active.length === 0 && brandAtHome
+        : active.length === 1 && active[0].width === '26' && active[0].weight === 'semibold' &&
+          tabs.filter((t) => !t.active).every((t) => t.width === '0' && t.weight === 'medium'),
+      homePage
+        ? `active tabs ${active.length}, brand aria-current=${brandAtHome}`
+        : `active ${active.map((t) => t.href).join(',') || '(none)'} width=${active.map((t) => t.width).join(',')}`)
 
     const theme = (html.match(/<meta name="theme-color" content="([^"]+)"/) || [])[1]
     check(`${p}: the browser/status bar matches the module you are in`,
-      !!theme && !!active[0] && theme.toLowerCase() === active[0].color,
-      `theme-color=${theme} vs active tab ${active[0]?.color}`)
+      !!theme && (homePage ? theme.toLowerCase() === '#16a34a' : !!active[0] && theme.toLowerCase() === active[0].color),
+      homePage ? `theme-color=${theme}, expected the Home brand green` : `theme-color=${theme} vs active tab ${active[0]?.color}`)
 
     check(`${p}: it declares the manifest, the touch icon and PWA viewport`,
       /<link rel="manifest" href="\/manifest\.webmanifest"/.test(html) &&
@@ -3037,9 +3047,12 @@ log('\n18. The brand system: one typeface, brand glyphs, one colour per screen')
     const accent = ((html.match(/--accent:\s*(#[0-9a-fA-F]{6})/) || [])[1] || '').toLowerCase()
     const ink = ((html.match(/--accent-ink:\s*(#[0-9a-fA-F]{6})/) || [])[1] || '').toLowerCase()
     const active = activeTabColour(html)
+    // Home has no tab; its screen colour is the brand green the fixed mark and
+    // the header hairline wear.
+    const homePage = p === '/'
     check(`${p}: the screen accent IS the active tab's colour`,
-      !!accent && !!active && accent === active,
-      `--accent=${accent || '(none)'} vs active tab ${active || '(none)'}`)
+      !!accent && (homePage ? accent === '#16a34a' : !!active && accent === active),
+      `--accent=${accent || '(none)'} vs ${homePage ? 'the Home brand green' : `active tab ${active || '(none)'}`}`)
     // …and the filled variant exists and is darker, because white text on the
     // tint is under 4.5:1 (white on #0d9488 measures 3.9:1).
     check(`${p}: a filled surface uses the darker ink variant`,

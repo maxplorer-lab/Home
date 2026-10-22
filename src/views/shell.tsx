@@ -15,7 +15,7 @@
 // it is the original realtime engine, not a re-implementation.
 //
 // The header and tab bar come from views/app-chrome.tsx — the SAME
-// components Sompitra's pages use, so all six tabs share one chrome
+// components Sompitra's pages use, so every tab shares one chrome
 // (and one set of real brand icons).
 import { CHROME_CSS, TAILWIND_CONFIG, CHAT_UNREAD_SCRIPT, HomeHeader, HomeTabBar, TabSvg, BrandFontLinks, tabColorFor, tabInkFor, type Badge } from './app-chrome'
 

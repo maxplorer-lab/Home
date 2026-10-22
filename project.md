@@ -51,13 +51,13 @@ body runs clockwise, each rule counter-clockwise, per the nonzero fill rule;
 reverse either and the lines silently drown in the fill.
 
 **Two shapes, one list, one colour rule.** Below 768px the navigation is the
-bottom bar; from 768px up the *same* six tabs are laid out horizontally in the
+bottom bar; from 768px up the *same* five tabs are laid out horizontally in the
 header (`HomeNav`) and the bar is hidden — a phone bar pinned to the bottom of
 a 1280px window is the biggest "this is a phone page" tell. Both shapes map
 over `HOME_TABS`, so a tab cannot exist in one and not the other (`npm run
-smoke` asserts both carry the same six). Each tab wears **its own colour
-whether or not it is active** — green Home, teal Sompitra, violet Chat, orange
-Laoka, sky WAY, slate You — because the six modules are meant to be readable
+smoke` asserts both carry the same five). Each tab wears **its own colour
+whether or not it is active** — teal Sompitra, violet Chat, orange
+Laoka, sky WAY, slate You — because the five modules are meant to be readable
 by colour alone; selection is carried by the 26px marker above the icon, a
 10%-tint pill and a bold label, i.e. shape and weight, never hue.
 

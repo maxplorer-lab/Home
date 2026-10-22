@@ -148,12 +148,12 @@ export const Icon: FC<{ name: string; className?: string }> = ({ name, className
   )
 }
 
-// ─── The six tabs ────────────────────────────────────────────────
+// ─── The five tabs ───────────────────────────────────────────────
 // One entry per tab, in bar order. `tab` is matched against the active
 // key; the four Sompitra sections all light up the single Sompitra tab.
 //
 // `color` is the tab's OWN colour, and it is worn even when the tab is
-// inactive: a person should be able to read the six modules by colour
+// inactive: a person should be able to read the five modules by colour
 // alone (green Home, teal money, violet chat, orange Laoka, sky map,
 // slate You) instead of every inactive tab collapsing to the same grey.
 // Where the module already owns a colour that colour is used verbatim
@@ -174,8 +174,11 @@ export const Icon: FC<{ name: string; className?: string }> = ({ name, className
 //           tint is too light for that (white on #0d9488 measures 3.9:1), so a
 //           filled control uses the same hue one step down (white on #0f766e is
 //           5.3:1). Using the tint as a button background is the trap here.
+// Home is deliberately NOT a tab. It is the fixed mark in the top-left of the
+// header (`HomeHeader`), which every page already carries, so a second link to
+// the same place in the menu only competed with it. The five entries below are
+// the places you cannot reach any other way.
 export const HOME_TABS = [
-  { href: '/',         img: '/icon-64.png',      label: 'Home',     tab: 'dashboard', color: '#16a34a', ink: '#166534' },
   { href: '/budget',   svg: 'money',             label: 'Sompitra', tab: 'money',     color: '#0d9488', ink: '#0f766e' },
   { href: '/chat',     svg: 'chat',              label: 'Chat',     tab: 'chat',      color: '#7c3aed', ink: '#6d28d9' },
   { href: '/laoka/',   img: '/laoka/icon.svg',   label: 'Laoka',    tab: 'laoka',     color: '#ea580c', ink: '#c2410c' },
@@ -202,7 +205,7 @@ export function tabInkFor(active?: string): string {
 /** The tab entry a module key belongs to (four Sompitra sections, one tab). */
 function tabFor(active?: string) {
   return HOME_TABS.find(t => t.tab === active)
-    ?? (SOMPITRA_SECTIONS.includes(active as string) ? HOME_TABS[1] : undefined)
+    ?? (SOMPITRA_SECTIONS.includes(active as string) ? HOME_TABS.find(t => t.tab === 'money') : undefined)
 }
 
 /** The one width the chrome and the content column share, so the header,
@@ -243,7 +246,7 @@ export const TabSvg: FC<{ name: string; className?: string }> = ({ name, classNa
     an inline SVG that inherits the tab's colour from its wrapper.
 
     Images are never greyed or faded any more. Grayscaling every inactive tab
-    is the thing that made five of the six modules look disabled, and even a
+    is the thing that made four of the five modules look disabled, and even a
     light fade lands on the brand mark. The pill, the bar and the bold label
     carry the selection; the icon just stays the module's icon. */
 export const TabIcon: FC<{
@@ -324,13 +327,16 @@ export const HomeHeader: FC<{
     style={{ backgroundColor: 'var(--sheet)', borderColor: 'var(--rule)' }}
   >
     <div class={`${SHELL_WIDTH} mx-auto w-full px-3 sm:px-4 flex items-center justify-between gap-3 h-12 sm:h-14`}>
-      <a href="/" class="flex items-center gap-2 shrink-0" aria-label="Home">
+      {/* The ONE Home link. With Home out of the menu, this mark is what says
+          "you are home" (aria-current) as well as "go home". */}
+      <a href="/" class="flex items-center gap-2 shrink-0"
+        aria-current={active === 'dashboard' ? 'page' : undefined} aria-label="Home">
         <img src="/icon-128.png" alt="" width={26} height={26}
           class="w-[26px] h-[26px] rounded-lg ring-1 ring-black/5 dark:ring-white/10" />
         <span class="text-[20px] font-extrabold tracking-[-0.035em] text-green-600 dark:text-green-400">Home</span>
       </a>
 
-      {/* Desktop nav (md+): the same six tabs as the bottom bar, which is
+      {/* Desktop nav (md+): the same five tabs as the bottom bar, which is
           hidden from md up — a phone bar pinned to the bottom of a 1280px
           window is the single biggest "this is a phone page" tell. */}
       <HomeNav active={active} />
@@ -394,7 +400,7 @@ export const HomeTabBar: FC<{ active?: string; className?: string }> = ({ active
       class={`md:hidden sticky bottom-0 z-50 border-t pb-safe flex-shrink-0 ${className}`}
       style={{ backgroundColor: 'var(--sheet)', borderColor: 'var(--rule)' }}
     >
-      <div class={`${SHELL_WIDTH} mx-auto grid grid-cols-6`}>
+      <div class={`${SHELL_WIDTH} mx-auto grid grid-cols-5`}>
         {HOME_TABS.map(item => {
           const isActive = active === item.tab || (item.tab === 'money' && activeSompitra)
           return (
@@ -652,7 +658,7 @@ export const CHROME_CSS = `
   .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
 
   /* ── The tab tint: every module wears its OWN colour on its tab, active
-     or not (the six modules are meant to be recognisable by colour alone).
+     or not (the five modules are meant to be recognisable by colour alone).
      Selection is carried by the top bar + the pill + bold weight — shape and
      weight, never "it is the only coloured one" — so an inactive tab is
      dimmed, never greyed.

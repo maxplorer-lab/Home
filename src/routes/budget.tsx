@@ -3,6 +3,9 @@ import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
 import { mga, formatDate, generateId, currentWeekBounds, currentMonthBounds, localDate, addDays, userAccentColor } from '../lib/utils'
+// Envelope accounting lives in one place: funding is a move, spending is a
+// purchase, and no row may be counted as both.
+import { REAL_SPEND_SQL, envelopeBalances } from '../lib/envelope'
 // The brand glyph set (see app-chrome.tsx) — money screens use the money icons.
 import { Icon } from '../views/app-chrome'
 import { notifyTransaction } from '../lib/notify'
@@ -82,22 +85,44 @@ function monthRange(ym: string): { start: string; end: string; label: string } {
 }
 
 async function getTrend(db: D1Database, start: string, end: string, periodKey: string) {
-  const monthly = periodKey === 'this_year' || periodKey === 'all'
-  const bucket = monthly ? 'substr(t.date, 1, 7)' : 't.date'
+  // Granularity follows the SPAN, not the period's name. A week is read day by
+  // day; a month is read in SAT–FRI weeks, because thirty daily bars in one
+  // card answer nothing at a glance — and the same rule covers a custom range
+  // of a few weeks. A year (or longer) is read by month at the other end.
+  const spanDays = Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000) + 1
+  const granularity: 'day' | 'week' | 'month' =
+    periodKey === 'this_year' || periodKey === 'all' || spanDays > 120 ? 'month'
+      : spanDays > 14 ? 'week' : 'day'
+  // The Saturday that OPENS the SAT–FRI week: step back six days, then forward
+  // to the next Saturday (which stays put when the date already is one).
+  const bucket = granularity === 'month' ? 'substr(t.date, 1, 7)'
+    : granularity === 'week' ? "date(t.date, '-6 days', 'weekday 6')"
+      : 't.date'
   const rows = await db.prepare(
     `SELECT ${bucket} AS bucket,
        COALESCE(SUM(CASE WHEN t.type='income' THEN t.amount ELSE 0 END),0) AS income,
-       COALESCE(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END),0) AS expense
+       COALESCE(SUM(CASE WHEN t.type='expense' AND t.is_envelope_transfer=0 THEN t.amount ELSE 0 END),0) AS expense
      FROM transactions t
      WHERE t.date BETWEEN ? AND ?
      GROUP BY ${bucket}
      ORDER BY bucket`
   ).bind(start, end).all<{ bucket: string; income: number; expense: number }>()
-  return rows.results.map(r => ({
-    bucket: monthly ? `${r.bucket.slice(5)}/${r.bucket.slice(0, 4)}` : `${r.bucket.slice(5)}/${r.bucket.slice(2, 4)}`,
-    income: r.income,
-    expense: r.expense,
-  }))
+  return {
+    granularity,
+    rows: rows.results.map(r => {
+      // A month's first and last weeks are partial: they begin before the
+      // period, so the label is the period's own start rather than a date the
+      // report does not cover.
+      const labelDate = granularity !== 'month' && r.bucket < start ? start : r.bucket
+      return {
+        bucket: granularity === 'month'
+          ? `${labelDate.slice(5)}/${labelDate.slice(0, 4)}`
+          : `${labelDate.slice(5)}/${labelDate.slice(2, 4)}`,
+        income: r.income,
+        expense: r.expense,
+      }
+    }),
+  }
 }
 
 // Delete a debt/credit and every transaction linked to it (initial + installments).
@@ -121,6 +146,10 @@ budget.get('/', async (c) => {
   const weekOffset = parseInt(c.req.query('w') || '0') || 0
   const { start, end } = currentWeekBounds(weekOffset)
   const weekLabel = `${formatDate(start)} – ${formatDate(end)}`
+  // Budget Progress is a MONTHLY card: `target_budget` has always meant "per
+  // month" (0001), and comparing it with one week's spending made every bar
+  // read ~25% at mid-month no matter how the month was going.
+  const month = currentMonthBounds(0)
 
   const [txns, groups, categories] = await Promise.all([
     c.env.DB.prepare(
@@ -145,7 +174,7 @@ budget.get('/', async (c) => {
             COALESCE(SUM(c.target_budget),0) AS budget
      FROM category_groups cg
      LEFT JOIN categories c ON c.group_id = cg.id
-     LEFT JOIN transactions t ON t.category_id = c.id AND t.type='expense' AND t.date BETWEEN ? AND ?
+     LEFT JOIN transactions t ON t.category_id = c.id AND ${REAL_SPEND_SQL} AND t.date BETWEEN ? AND ?
      GROUP BY cg.id ORDER BY cg.sort_order`
   ).bind(start, end).all<{ id: string; name: string; spent: number; budget: number }>()
 
@@ -155,16 +184,21 @@ budget.get('/', async (c) => {
   // every group a bar whether or not anyone had budgeted for it. A category
   // with no target is not progress against anything, so it is left out here
   // (the donut above still shows its spending).
-  const spendingByCategory = await c.env.DB.prepare(
-    `SELECT c.id, c.name, COALESCE(SUM(t.amount),0) AS spent,
-            c.target_budget AS budget
-     FROM categories c
-     JOIN category_groups cg ON c.group_id = cg.id
-     LEFT JOIN transactions t ON t.category_id = c.id AND t.type='expense' AND t.date BETWEEN ? AND ?
-     WHERE c.target_budget > 0
-     GROUP BY c.id
-     ORDER BY cg.sort_order, c.sort_order`
-  ).bind(start, end).all<{ id: string; name: string; spent: number; budget: number }>()
+  const [spendingByCategory, envelopeByCategory] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT c.id, c.name, COALESCE(SUM(t.amount),0) AS spent,
+              c.target_budget AS budget, c.envelope_from
+       FROM categories c
+       JOIN category_groups cg ON c.group_id = cg.id
+       LEFT JOIN transactions t ON t.category_id = c.id AND ${REAL_SPEND_SQL} AND t.date BETWEEN ? AND ?
+       WHERE c.target_budget > 0
+       GROUP BY c.id
+       ORDER BY cg.sort_order, c.sort_order`
+    ).bind(month.start, month.end).all<{ id: string; name: string; spent: number; budget: number; envelope_from: string | null }>(),
+    // Month-scoped: the card is read against one month's budget, so "funded"
+    // means funded THIS month, with last month's leftover shown as carried in.
+    envelopeBalances(c.env.DB, month),
+  ])
 
   // Income by source for chart
   const incomeBySource = await c.env.DB.prepare(
@@ -176,7 +210,10 @@ budget.get('/', async (c) => {
   ).bind(start, end).all<{ name: string; total: number }>()
 
   const totalIncome   = txns.results.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
-  const totalExpenses = txns.results.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+  // Funding an envelope is not spending — it is the same money moved into
+  // another pot, so it is reported on its own line instead of inflating Out.
+  const totalExpenses = txns.results.filter(t => t.type === 'expense' && !t.is_envelope_transfer).reduce((s, t) => s + t.amount, 0)
+  const totalSetAside = txns.results.filter(t => t.is_envelope_transfer === 1).reduce((s, t) => s + t.amount, 0)
   const net           = totalIncome - totalExpenses
 
   return c.html(
@@ -223,6 +260,59 @@ budget.get('/', async (c) => {
         </div>
       </div>
 
+      {totalSetAside > 0 && (
+        <p class="text-[11px] text-gray-400 -mt-2 mb-4 text-center">
+          {mga(totalSetAside)} moved into envelopes this week — a move, not spending
+        </p>
+      )}
+
+      {/* Category spending progress — budgeted categories only, THIS MONTH.
+          The bar used to plot one WEEK's spending against a MONTHLY target, so
+          it sat around a quarter full all month long. Overspend is no longer
+          clipped to 100% either: a full red bar with the real figure beside it
+          is the one thing this card exists to say. */}
+      <Card title={`Budget Progress — ${month.label}`} icon="target" className="mb-5">
+        {spendingByCategory.results.length === 0 ? (
+          <p class="text-xs text-gray-400">No category budgets set.</p>
+        ) : (
+          <div class="space-y-3">
+            {spendingByCategory.results.map(cat => {
+              const raw = cat.budget > 0 ? Math.round((cat.spent / cat.budget) * 100) : 0
+              const pct = Math.min(100, raw)
+              const barColor = raw >= 100 ? 'bg-red-500' : raw >= 80 ? 'bg-yellow-400' : 'bg-green-500'
+              // Only a category that has been funded has an envelope balance;
+              // a target on its own is a plan, not money set aside.
+              const env = cat.envelope_from ? envelopeByCategory.get(cat.id) : undefined
+              return (
+                <div>
+                  <div class="flex justify-between text-xs mb-1 gap-2">
+                    <span class="font-medium text-gray-700 dark:text-gray-300">{cat.name}</span>
+                    <span class="text-gray-500 whitespace-nowrap">{mga(cat.spent)} / {mga(cat.budget)}</span>
+                  </div>
+                  <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div class={`h-full rounded-full transition-all ${barColor}`} style={`width:${pct}%`} />
+                  </div>
+                  <div class="flex justify-between gap-2 mt-1 text-[10px]">
+                    <span class="text-gray-400">
+                      {env
+                        ? (env.carriedIn !== 0
+                            ? `Carried ${mga(env.carriedIn)} · Funded ${mga(env.funded)}`
+                            : `Funded ${mga(env.funded)}`)
+                        : (raw > 100 ? `${raw}% of target` : 'Target only')}
+                    </span>
+                    {env && (
+                      <span class={`font-semibold ${env.left < 0 ? 'text-red-500' : 'text-green-600 dark:text-green-400'}`}>
+                        {env.left < 0 ? `${mga(-env.left)} over` : `${mga(env.left)} left`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
       {/* Charts */}
       <div class="grid md:grid-cols-2 gap-4 mb-5">
         <Card title="Expenses by Category" icon="donut">
@@ -262,31 +352,6 @@ budget.get('/', async (c) => {
         }
       `}} />
 
-      {/* Category spending progress — budgeted categories only */}
-      <Card title="Budget Progress" icon="target" className="mb-5">
-        {spendingByCategory.results.length === 0 ? (
-          <p class="text-xs text-gray-400">No category budgets set.</p>
-        ) : (
-          <div class="space-y-3">
-            {spendingByCategory.results.map(cat => {
-              const pct = Math.min(100, Math.round((cat.spent / cat.budget) * 100))
-              const barColor = pct >= 100 ? 'bg-red-500' : pct >= 80 ? 'bg-yellow-400' : 'bg-green-500'
-              return (
-                <div>
-                  <div class="flex justify-between text-xs mb-1">
-                    <span class="font-medium text-gray-700 dark:text-gray-300">{cat.name}</span>
-                    <span class="text-gray-500">{mga(cat.spent)} / {mga(cat.budget)}</span>
-                  </div>
-                  <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                    <div class={`h-full rounded-full transition-all ${barColor}`} style={`width:${pct}%`} />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </Card>
-
       {/* Transaction list */}
       <Card title="Transactions" icon="list">
         {/* Who the dots belong to, taken from the rows on screen rather than
@@ -321,6 +386,7 @@ budget.get('/', async (c) => {
                         {t.description || t.category_name || t.income_account_name || '—'}
                       </p>
                       {t.is_recurring ? <span class="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded">🔄 Recurring</span> : null}
+                      {t.is_envelope_transfer ? <span class="text-xs px-1.5 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-400 rounded">→ Envelope</span> : null}
                     </div>
                     <p class="text-xs text-gray-400 mt-0.5">
                       {t.group_name ? `${t.group_name} › ${t.category_name}` : (t.income_account_name || '')}
@@ -389,6 +455,12 @@ budget.get('/add-expense', async (c) => {
       <div class="max-w-lg mx-auto">
         <h2 class="text-xl font-bold mb-5">💳 Add Expense</h2>
 
+        {c.req.query('err') === 'envelope_needs_budget' && (
+          <div class="mb-5 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-400">
+            An envelope needs a category with a monthly target. Pick a budgeted category, or set a target first in Manage Categories.
+          </div>
+        )}
+
         {handoff && (
           <div class="mb-5 rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-3 text-sm">
             <p class="font-semibold text-green-800 dark:text-green-300">
@@ -402,7 +474,7 @@ budget.get('/add-expense', async (c) => {
         )}
 
         {/* Mode toggle */}
-        <div class="flex gap-2 mb-5 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
+        <div id="mode-toggle" class="flex gap-2 mb-5 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
           <button onclick="showMode('quick')" id="btn-quick"
             class="flex-1 py-2 rounded-lg text-sm font-semibold bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white">
             ⚡ Quick Entry
@@ -433,12 +505,29 @@ budget.get('/add-expense', async (c) => {
                 {groups.results.map(g => (
                   <optgroup label={g.name}>
                     {cats.results.filter(c => c.group_id === g.id).map(cat => (
-                      <option value={cat.id}>{cat.name}</option>
+                      // data-budget lets the Envelope transfer tick hide the
+                      // categories that have no monthly target to fund.
+                      <option value={cat.id} data-budget={cat.target_budget > 0 ? '1' : '0'}>{cat.name}</option>
                     ))}
                   </optgroup>
                 ))}
               </select>
             </div>
+
+            {/* Envelope funding. Deliberately OFF by default: a normal expense
+                is the common case, and this box changes the meaning of the
+                row (a move, not a purchase). When it is ticked the form drops
+                to Quick mode — funding is one amount, not a receipt. */}
+            <label class="flex items-start gap-2.5 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-3 cursor-pointer">
+              <input type="checkbox" name="is_envelope_transfer" id="envelope-transfer" value="1"
+                onchange="envelopeToggle()" class="mt-0.5 accent-violet-600" />
+              <span class="min-w-0">
+                <span class="block text-sm font-semibold text-violet-800 dark:text-violet-300">Envelope transfer</span>
+                <span class="block text-[11px] text-violet-700/80 dark:text-violet-400/80 mt-0.5">
+                  Moves this amount out of the main balance into a budgeted category. The purchases you then make from it are counted in that category only — never twice.
+                </span>
+              </span>
+            </label>
 
             {/* Description */}
             <div>
@@ -526,6 +615,32 @@ budget.get('/add-expense', async (c) => {
           document.getElementById('btn-itemized').classList.toggle('dark:bg-gray-700', m === 'itemized');
           document.getElementById('btn-itemized').classList.toggle('shadow', m === 'itemized');
           document.getElementById('btn-itemized').classList.toggle('text-gray-500', m !== 'itemized');
+        }
+        // Filling an envelope is a MOVE, not a purchase: it has one amount and
+        // only a budgeted category can receive it. Ticking the box therefore
+        // drops to Quick mode and hides the categories with no target, rather
+        // than letting a row be saved that cannot mean what the box says.
+        function envelopeToggle() {
+          const on = document.getElementById('envelope-transfer').checked;
+          const toggle = document.getElementById('mode-toggle');
+          const sel = document.querySelector('select[name="category_id"]');
+          if (on) {
+            showMode('quick');
+            toggle.classList.add('hidden');
+            document.getElementById('btn-itemized').classList.add('hidden');
+            if (sel) {
+              Array.from(sel.options).forEach(function (o) {
+                if (!o.value) return;
+                o.hidden = o.dataset.budget !== '1';
+              });
+              const chosen = sel.selectedOptions[0];
+              if (!chosen || chosen.dataset.budget !== '1') sel.value = '';
+            }
+          } else {
+            toggle.classList.remove('hidden');
+            document.getElementById('btn-itemized').classList.remove('hidden');
+            if (sel) Array.from(sel.options).forEach(function (o) { o.hidden = false; });
+          }
         }
         function addLine(name, price) {
           const li = document.getElementById('line-items');
@@ -748,6 +863,8 @@ budget.post('/add-expense', async (c) => {
   // insert as a category id, and answers 500 (FOREIGN KEY) instead of saving the
   // expense. A missing field is no category.
   const categoryId = String(body.category_id || '')
+  // Off unless ticked: an ordinary purchase stays an ordinary purchase.
+  const isEnvelopeTransfer = String(body.is_envelope_transfer || '') === '1'
   const description = String(body.description || '').trim() || null
   // A form the BROWSER submits has every newline normalised to CRLF by the
   // urlencoded serializer, so the same list typed by hand would be stored with
@@ -770,6 +887,23 @@ budget.post('/add-expense', async (c) => {
   }
 
   if (!amount || amount <= 0) return c.redirect('/budget?err=invalid_amount')
+
+  // An envelope is a budget that now holds money, so funding one is only
+  // meaningful for a category with a monthly target. The first transfer is
+  // also the moment the envelope OPENS: stamping `envelope_from` with this
+  // row's date is what keeps every earlier purchase in the category counted
+  // as ordinary spending (and the past cash balance unchanged).
+  if (isEnvelopeTransfer) {
+    const cat = categoryId
+      ? await c.env.DB.prepare('SELECT target_budget, envelope_from FROM categories WHERE id = ?')
+          .bind(categoryId)
+          .first<{ target_budget: number; envelope_from: string | null }>()
+      : null
+    if (!cat || cat.target_budget <= 0) return c.redirect('/budget/add-expense?err=envelope_needs_budget')
+    if (!cat.envelope_from) {
+      await c.env.DB.prepare('UPDATE categories SET envelope_from = ? WHERE id = ?').bind(date, categoryId).run()
+    }
+  }
 
   // A save that carries a Laoka week (or a pantry trip) is THAT shopping's
   // expense, not a new one. If it already has one (sent from the module, or saved
@@ -828,9 +962,9 @@ budget.post('/add-expense', async (c) => {
   }
 
   await c.env.DB.prepare(
-    `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id)
-     VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)`
-  ).bind(id, date, amount, categoryId || null, description, notes, user.id).run()
+    `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id, is_envelope_transfer)
+     VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, ?)`
+  ).bind(id, date, amount, categoryId || null, description, notes, user.id, isEnvelopeTransfer ? 1 : 0).run()
 
   if (laokaWeek) {
     await recordLaokaImport(c.env, laokaWeek, id, amount, itemCount, categoryId || null)
@@ -839,7 +973,10 @@ budget.post('/add-expense', async (c) => {
     await markPantryTripPushed(c.env, pantryTrip, id, amount, itemCount)
   }
 
-  await notifyTransaction(c.env, id)
+  // Funding is a move inside the household's own money, not an event worth
+  // pushing to a phone: "Expense — Groceries, Ar 200 000" would read as a
+  // shopping trip that never happened.
+  if (!isEnvelopeTransfer) await notifyTransaction(c.env, id)
   return c.redirect('/budget')
 })
 
@@ -1319,6 +1456,11 @@ budget.get('/edit/:id', async (c) => {
   return c.html(
     <Layout title="Edit Transaction" user={user} activeTab="budget">
       <Card title="Edit Transaction">
+        {c.req.query('err') === 'envelope_needs_budget' && (
+          <div class="mb-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-400">
+            An envelope needs a category with a monthly target.
+          </div>
+        )}
         <form method="post" action={`/budget/edit/${id}`} class="space-y-4">
           <div>
             <label class="block text-sm font-medium mb-1">Date</label>
@@ -1344,6 +1486,13 @@ budget.get('/edit/:id', async (c) => {
                   </optgroup>
                 ))}
               </select>
+              <label class="flex items-start gap-2 mt-3 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-3 cursor-pointer">
+                <input type="checkbox" name="is_envelope_transfer" value="1" checked={t.is_envelope_transfer === 1} class="mt-0.5 accent-violet-600" />
+                <span class="min-w-0">
+                  <span class="block text-sm font-semibold text-violet-800 dark:text-violet-300">Envelope transfer</span>
+                  <span class="block text-[11px] text-violet-700/80 dark:text-violet-400/80 mt-0.5">Money moved into the envelope, not a purchase.</span>
+                </span>
+              </label>
             </div>
           ) : (
             <div>
@@ -1377,7 +1526,20 @@ budget.post('/edit/:id', async (c) => {
 
   if (t.type === 'expense') {
     const catId = String(body.category_id)
-    await c.env.DB.prepare('UPDATE transactions SET date=?, amount=?, description=?, category_id=? WHERE id=?').bind(date, amount, desc, catId, id).run()
+    const isTransfer = String(body.is_envelope_transfer || '') === '1'
+    // Same rule as the add form: funding only a budgeted category, and funding
+    // it for the first time opens the envelope at this row's date.
+    if (isTransfer) {
+      const cat = await c.env.DB.prepare('SELECT target_budget, envelope_from FROM categories WHERE id = ?')
+        .bind(catId)
+        .first<{ target_budget: number; envelope_from: string | null }>()
+      if (!cat || cat.target_budget <= 0) return c.redirect(`/budget/edit/${id}?err=envelope_needs_budget`)
+      if (!cat.envelope_from) {
+        await c.env.DB.prepare('UPDATE categories SET envelope_from = ? WHERE id = ?').bind(date, catId).run()
+      }
+    }
+    await c.env.DB.prepare('UPDATE transactions SET date=?, amount=?, description=?, category_id=?, is_envelope_transfer=? WHERE id=?')
+      .bind(date, amount, desc, catId, isTransfer ? 1 : 0, id).run()
   } else {
     const incId = String(body.income_account_id)
     await c.env.DB.prepare('UPDATE transactions SET date=?, amount=?, description=?, income_account_id=? WHERE id=?').bind(date, amount, desc, incId, id).run()
@@ -1681,6 +1843,10 @@ budget.get('/reports', async (c) => {
   const periodKey = c.req.query('p') || 'this_week'
   const fromParam = c.req.query('from') || ''
   const toParam = c.req.query('to') || ''
+  // Which series the trend chart plots. Three views over the SAME buckets, so
+  // switching never changes the shape of the axis — only which bars are drawn.
+  const chartView = c.req.query('cv') === 'income' ? 'income'
+    : c.req.query('cv') === 'expense' ? 'expense' : 'both'
   let start: string, end: string, label: string
   if (periodKey === 'custom') {
     start = fromParam
@@ -1690,17 +1856,17 @@ budget.get('/reports', async (c) => {
     ({ start, end, label } = reportPeriod(periodKey))
   }
 
-  const [summary, expensesByGroup, incomeBySource, perUser, trend] = await Promise.all([
+  const [summary, expensesByGroup, incomeBySource, perUser, trendData] = await Promise.all([
     c.env.DB.prepare(
       `SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount END),0) AS income,
-              COALESCE(SUM(CASE WHEN type='expense' THEN amount END),0) AS expense,
+              COALESCE(SUM(CASE WHEN type='expense' AND is_envelope_transfer=0 THEN amount END),0) AS expense,
               COUNT(*) AS cnt
        FROM transactions WHERE date BETWEEN ? AND ?`
     ).bind(start, end).first<{ income: number; expense: number; cnt: number }>(),
     c.env.DB.prepare(
       `SELECT cg.name, COALESCE(SUM(t.amount),0) AS total
        FROM transactions t JOIN categories c ON t.category_id = c.id JOIN category_groups cg ON c.group_id = cg.id
-       WHERE t.type='expense' AND t.date BETWEEN ? AND ? GROUP BY cg.id ORDER BY total DESC`
+       WHERE t.type='expense' AND t.is_envelope_transfer=0 AND t.date BETWEEN ? AND ? GROUP BY cg.id ORDER BY total DESC`
     ).bind(start, end).all<{ name: string; total: number }>(),
     c.env.DB.prepare(
       `SELECT ia.name, COALESCE(SUM(t.amount),0) AS total
@@ -1710,13 +1876,14 @@ budget.get('/reports', async (c) => {
     c.env.DB.prepare(
       `SELECT u.display_name,
               COALESCE(SUM(CASE WHEN t.type='income' THEN t.amount ELSE 0 END),0) AS income,
-              COALESCE(SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END),0) AS expense
+              COALESCE(SUM(CASE WHEN t.type='expense' AND t.is_envelope_transfer=0 THEN t.amount ELSE 0 END),0) AS expense
        FROM transactions t JOIN users u ON t.added_by_user_id = u.id
        WHERE t.date BETWEEN ? AND ? GROUP BY u.id ORDER BY u.username`
     ).bind(start, end).all<{ display_name: string; income: number; expense: number }>(),
     getTrend(c.env.DB, start, end, periodKey),
   ])
 
+  const trend = trendData.rows
   const income   = summary?.income ?? 0
   const expense  = summary?.expense ?? 0
   const net      = income - expense
@@ -1744,8 +1911,8 @@ budget.get('/reports', async (c) => {
 
   const cmpRaw = await c.env.DB.prepare(
     `SELECT cg.id, cg.name,
-       COALESCE(SUM(CASE WHEN t.type='expense' AND t.date BETWEEN ? AND ? THEN t.amount ELSE 0 END),0) AS a_total,
-       COALESCE(SUM(CASE WHEN t.type='expense' AND t.date BETWEEN ? AND ? THEN t.amount ELSE 0 END),0) AS b_total
+       COALESCE(SUM(CASE WHEN t.type='expense' AND t.is_envelope_transfer=0 AND t.date BETWEEN ? AND ? THEN t.amount ELSE 0 END),0) AS a_total,
+       COALESCE(SUM(CASE WHEN t.type='expense' AND t.is_envelope_transfer=0 AND t.date BETWEEN ? AND ? THEN t.amount ELSE 0 END),0) AS b_total
      FROM category_groups cg
      LEFT JOIN categories c ON c.group_id = cg.id
      LEFT JOIN transactions t ON t.category_id = c.id
@@ -1843,11 +2010,49 @@ budget.get('/reports', async (c) => {
         </div>
       </div>
 
-      {/* Trend chart */}
-      <Card title="Income vs Expenses" icon="trend" className="mb-4">
+      {/* Trend chart: one set of buckets, three views over it. "Both" keeps
+          the comparison; the other two isolate one side and keep the same
+          weekly/monthly bins, so a month of expenses and a month of income
+          can each be read on their own without a second x-axis. */}
+      <Card title={chartView === 'expense' ? 'Expenses' : chartView === 'income' ? 'Income' : 'Income vs Expenses'} icon="trend" className="mb-4">
+        <div class="flex gap-1 mb-3 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
+          <a href={`/budget/reports?${reportBase}&cv=both`}
+            class={`flex-1 text-center py-1.5 rounded-lg text-xs font-semibold ${chartView === 'both' ? 'bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>Both</a>
+          <a href={`/budget/reports?${reportBase}&cv=expense`}
+            class={`flex-1 text-center py-1.5 rounded-lg text-xs font-semibold ${chartView === 'expense' ? 'bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>Expenses</a>
+          <a href={`/budget/reports?${reportBase}&cv=income`}
+            class={`flex-1 text-center py-1.5 rounded-lg text-xs font-semibold ${chartView === 'income' ? 'bg-white dark:bg-gray-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>Income</a>
+        </div>
         <div class="w-full">
           <canvas id="trendChart"></canvas>
         </div>
+        {/* The view's own totals, under the bars they describe: switching to
+            Expenses or Income no longer means scrolling back up to the summary
+            tiles to find out what the series adds up to. Net only belongs to
+            the comparison view — a single series has nothing to net against. */}
+        <div class="flex flex-wrap items-baseline justify-center gap-x-4 gap-y-1 mt-2 pt-2 hairline">
+          {chartView !== 'expense' && (
+            <p class="t-micro flex items-baseline gap-1.5 whitespace-nowrap">
+              <span class="font-semibold">Income</span>
+              <span class="num text-[13px] font-bold text-green-600 dark:text-green-400">{mga(income)}</span>
+            </p>
+          )}
+          {chartView !== 'income' && (
+            <p class="t-micro flex items-baseline gap-1.5 whitespace-nowrap">
+              <span class="font-semibold">Expenses</span>
+              <span class="num text-[13px] font-bold text-red-500">{mga(expense)}</span>
+            </p>
+          )}
+          {chartView === 'both' && (
+            <p class="t-micro flex items-baseline gap-1.5 whitespace-nowrap">
+              <span class="font-semibold">Net</span>
+              <span class={`num text-[13px] font-bold ${net >= 0 ? 'text-teal-600 dark:text-teal-400' : 'text-orange-600 dark:text-orange-400'}`}>{mga(net)}</span>
+            </p>
+          )}
+        </div>
+        {trendData.granularity === 'week' && trend.length > 0 && (
+          <p class="text-[10px] text-gray-400 text-center mt-1">Each bar is a SAT–FRI week; the first and last may be partial</p>
+        )}
         {trend.length === 0 && <p class="text-sm text-gray-400 text-center py-4">No data for this period</p>}
       </Card>
 
@@ -1960,21 +2165,69 @@ budget.get('/reports', async (c) => {
         function rColor() { return document.documentElement.classList.contains('dark') ? '#d1d5db' : '#374151'; }
         const palette = ['#ef4444','#f97316','#f59e0b','#84cc16','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#d946ef','#f43f5e'];
         const trend = ${JSON.stringify(trend)};
+        const chartView = ${JSON.stringify(chartView)};
+        const weekly = ${JSON.stringify(trendData.granularity === 'week')};
         const expData = ${JSON.stringify(expensesByGroup.results)};
         const incData = ${JSON.stringify(incomeBySource.results)};
         const common = { responsive: true, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { color: rColor(), boxWidth: 12, padding: 8 } } } };
 
+        // A WEEKLY bar carries its own amount above it: five bars in a card are
+        // wide enough to read a figure, and that figure is the first thing asked
+        // of a bar. Daily bars do NOT — a week's or a month's worth of them
+        // turns the plot into a picket fence, so the totals row under the chart
+        // remains the only place to read a day.
+        if (weekly) {
+          const compact = function (v) {
+            if (v >= 1000000) return (Math.round(v / 10000) / 100) + 'M';
+            if (v >= 1000) return Math.round(v / 1000) + 'k';
+            return String(v);
+          };
+          Chart.register({
+            id: 'barValues',
+            afterDatasetsDraw: function (chart) {
+              if (chart.config.type !== 'bar') return;
+              const ctx = chart.ctx;
+              const size = chart.width < 420 ? 8 : 9;
+              chart.data.datasets.forEach(function (ds, di) {
+                const meta = chart.getDatasetMeta(di);
+                if (meta.hidden) return;
+                meta.data.forEach(function (bar, i) {
+                  const v = ds.data[i];
+                  if (!v) return;
+                  ctx.save();
+                  ctx.font = '700 ' + size + 'px "Plus Jakarta Sans", system-ui, sans-serif';
+                  ctx.fillStyle = rColor();
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'bottom';
+                  ctx.fillText(compact(v), bar.x, bar.y - 3);
+                  ctx.restore();
+                });
+              });
+            }
+          });
+        }
+
         if (trend.length) {
+          const datasets = [];
+          if (chartView !== 'expense') datasets.push({ label: 'Income', data: trend.map(t => t.income), backgroundColor: '#22c55e', borderRadius: 4 });
+          if (chartView !== 'income') datasets.push({ label: 'Expense', data: trend.map(t => t.expense), backgroundColor: '#ef4444', borderRadius: 4 });
           new Chart(document.getElementById('trendChart'), {
             type: 'bar',
-            data: {
-              labels: trend.map(t => t.bucket),
-              datasets: [
-                { label: 'Income', data: trend.map(t => t.income), backgroundColor: '#22c55e', borderRadius: 4 },
-                { label: 'Expense', data: trend.map(t => t.expense), backgroundColor: '#ef4444', borderRadius: 4 }
-              ]
-            },
-            options: { responsive: true, scales: { x: { ticks: { color: rColor() }, grid: { display: false } }, y: { ticks: { color: rColor() } } }, plugins: { legend: { labels: { color: rColor() } } } }
+            data: { labels: trend.map(t => t.bucket), datasets },
+            options: {
+              responsive: true,
+              // Weekly bars each state their own amount, so a tick ladder 0→600k
+              // beside them only repeats the labels and steals width. Daily and
+              // monthly bars have no per-bar amount, so the axis stays.
+              // grace leaves room above the tallest bar for its amount.
+              scales: {
+                x: { ticks: { color: rColor() }, grid: { display: false } },
+                y: { display: !weekly, grace: weekly ? '12%' : undefined, ticks: { color: rColor() } }
+              },
+              // A single series names its own colour on the card title, so the
+              // legend would only repeat it.
+              plugins: { legend: { display: datasets.length > 1, labels: { color: rColor() } } }
+            }
           });
         }
         if (expData.length) {

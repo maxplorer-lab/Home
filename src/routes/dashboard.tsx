@@ -6,6 +6,10 @@ import { Layout, Card, KineClientStats, TintStat } from '../views/layout'
 import { HOME_TABS, Icon, ChatIconWithDot } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
 import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor, currentGradedColor, localDate, TZ_SQL_MODIFIER } from '../lib/utils'
+// Cash on hand is the MAIN POT only. Money moved into an envelope has left it,
+// and the purchases inside are paid from the envelope — so the two sums are
+// different slices of the ledger, defined once in src/lib/envelope.ts.
+import { MAIN_OUT_SQL, REAL_SPEND_SQL, envelopeBalances, envelopeTotal } from '../lib/envelope'
 import { classifyTransaction } from '../lib/notify'
 // The pantry's OWN queries. Home shows a summary of the shelves, and it has to
 // be the same arithmetic the Pantry screen draws from -- see `pantrySummary`.
@@ -28,11 +32,11 @@ dashboard.get('/', async (c) => {
   const week = currentWeekBounds(0)
 
   // ── Aggregate queries ──────────────────────────────────────
-  const [incomeRow, expenseRow, allIncomeRow, allExpenseRow, debtRow, creditRow, recentTxns, debts, kineClients, kineWeek, todayTxns] = await Promise.all([
+  const [incomeRow, expenseRow, allIncomeRow, allMainOutRow, debtRow, creditRow, recentTxns, debts, kineClients, kineWeek, todayTxns] = await Promise.all([
     c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='income' AND date BETWEEN ? AND ?`).bind(month.start, month.end).first<{ total: number }>(),
-    c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='expense' AND date BETWEEN ? AND ?`).bind(month.start, month.end).first<{ total: number }>(),
+    c.env.DB.prepare(`SELECT COALESCE(SUM(t.amount),0) AS total FROM transactions t WHERE ${REAL_SPEND_SQL} AND t.date BETWEEN ? AND ?`).bind(month.start, month.end).first<{ total: number }>(),
     c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='income'`).first<{ total: number }>(),
-    c.env.DB.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE type='expense'`).first<{ total: number }>(),
+    c.env.DB.prepare(`SELECT COALESCE(SUM(t.amount),0) AS total FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE ${MAIN_OUT_SQL}`).first<{ total: number }>(),
     c.env.DB.prepare(`SELECT COALESCE(SUM(current_balance),0) AS total FROM debt_credit_accounts WHERE type='debt' AND current_balance > 0`).first<{ total: number }>(),
     c.env.DB.prepare(`SELECT COALESCE(SUM(current_balance),0) AS total FROM debt_credit_accounts WHERE type='credit' AND current_balance > 0`).first<{ total: number }>(),
     c.env.DB.prepare(
@@ -69,10 +73,15 @@ dashboard.get('/', async (c) => {
   ])
 
   const totalIncome   = incomeRow?.total  ?? 0     // this month
-  const totalExpenses = expenseRow?.total ?? 0     // this month
+  const totalExpenses = expenseRow?.total ?? 0     // this month, real spending
   const allIncome     = allIncomeRow?.total  ?? 0
-  const allExpense    = allExpenseRow?.total ?? 0
-  const currentCash   = allIncome - allExpense     // Current = cash in hand (all-time)
+  const allMainOut    = allMainOutRow?.total ?? 0
+  // The main pot: funding has left it, envelope purchases never touch it again.
+  const currentCash   = allIncome - allMainOut
+  // Month-scoped, like the Budget card: `left` is the envelope's whole balance
+  // either way, but the month is what makes the three parts add up on screen.
+  const envelopes     = await envelopeBalances(c.env.DB, month)
+  const setAside      = envelopeTotal(envelopes)
   const totalDebt     = debtRow?.total    ?? 0
   const totalCredit   = creditRow?.total  ?? 0
 
@@ -83,7 +92,9 @@ dashboard.get('/', async (c) => {
   // COALESCE dropped contracts with no session_rate out of net worth entirely.
   const kineDues = kineClients.results.reduce((sum, row) => sum + clientLedger(row).balance, 0)
   const uncollectedDues = kineDues + totalCredit
-  const netWorth = currentCash + uncollectedDues - totalDebt
+  // Envelope money is still the household's, so it comes back here — moving it
+  // into an envelope must not make the family poorer on this tile.
+  const netWorth = currentCash + setAside + uncollectedDues - totalDebt
 
   const sankeyIncomes = await c.env.DB.prepare(
     `SELECT ia.name, u.display_name, COALESCE(SUM(t.amount),0) AS total
@@ -94,7 +105,7 @@ dashboard.get('/', async (c) => {
   const sankeyExpenses = await c.env.DB.prepare(
     `SELECT cg.name AS group_name, COALESCE(SUM(t.amount),0) AS total
      FROM transactions t JOIN categories c ON t.category_id = c.id JOIN category_groups cg ON c.group_id = cg.id
-     WHERE t.type='expense' AND t.date BETWEEN ? AND ? GROUP BY cg.id`
+     WHERE ${REAL_SPEND_SQL} AND t.date BETWEEN ? AND ? GROUP BY cg.id`
   ).bind(month.start, month.end).all<{ group_name: string; total: number }>()
 
   const weekLabel = `${formatDate(week.start)} – ${formatDate(week.end)}`
@@ -117,6 +128,7 @@ dashboard.get('/', async (c) => {
     blue:   { border: 'border-blue-500',   text: 'text-blue-500' },
     red:    { border: 'border-red-500',    text: 'text-red-500' },
     green:  { border: 'border-green-500',  text: 'text-green-600 dark:text-green-400' },
+    violet: { border: 'border-violet-500', text: 'text-violet-600 dark:text-violet-400' },
   }
 
   // The three modules that are not a money section, each wearing its own tab
@@ -188,6 +200,9 @@ dashboard.get('/', async (c) => {
             </p>
           </div>
           <p class={`t-anchor mt-1.5 ${currentGradedColor(currentCash)}`}>{mga(currentCash)}</p>
+          {setAside !== 0 && (
+            <p class="text-[11px] text-gray-400 mt-1">{mga(setAside)} set aside in envelopes</p>
+          )}
 
           {/* Money in against money out, as one bar. The colours are the money
               vocabulary itself, so it needs no legend. */}

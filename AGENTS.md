@@ -265,10 +265,12 @@ applies it, and only when `devices` is missing.
     toggle and no `.pb-safe`. Tab-bar icons are the real assets plus inline
     SVG (`TabSvg`); no emoji in the bar (content emoji is fine).
     The nav is **two shapes from one list**: the bottom bar below `md`, the
-    same six tabs horizontally in the header from `md` up (`HomeNav`). Add a
-    tab to `HOME_TABS` and both shapes get it — never write a tab into one
-    shape only. And **every tab keeps its own colour when inactive** (the six
-    modules are meant to be read by colour); selection is the marker bar +
+    same five tabs horizontally in the header from `md` up (`HomeNav`). Home is
+    deliberately NOT a tab: the fixed brand mark at the top-left of every page
+    is the only Home link (and carries `aria-current` there). Add a tab to
+    `HOME_TABS` and both shapes get it — never write a tab into one shape only.
+    And **every tab keeps its own colour when inactive** (the five modules are
+    meant to be read by colour); selection is the marker bar +
     tinted pill + bold label, never "the others go grey". The tint is the
     `--tab` custom property, not a literal `color:` — `html.dark .tab-tint`
     lifts it toward white because the raw tints are 1.9–2.6:1 on the dark bar

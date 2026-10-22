@@ -78,6 +78,19 @@ export function classifyTransaction(t: Transaction): NotifLine {
   }
 
   if (t.type === 'expense') {
+    // Money moved into an envelope is not a purchase. It is still written as a
+    // fact (and in the same shape), but never under the word "Expense": the
+    // household's own feed would otherwise report a shopping trip that never
+    // happened every time they filled an envelope.
+    if (t.is_envelope_transfer === 1) {
+      return {
+        href: '/budget',
+        accent: 'violet',
+        kind: 'expense',
+        line1: `${who} - Envelope - ${t.category_name || t.group_name || '—'}`,
+        line2: desc ? `${amount} - ${desc}` : amount,
+      }
+    }
     return {
       href: '/budget',
       accent: 'red',

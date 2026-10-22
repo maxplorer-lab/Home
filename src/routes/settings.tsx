@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 // The brand glyph set and the module colour table — the settings sections wear
 // the same colour and mark as the tab they belong to.
-import { HOME_TABS, Icon } from '../views/app-chrome'
+import { tabColorFor, Icon } from '../views/app-chrome'
 import { requireAuth } from '../lib/middleware'
 import { ntfyServer, pushNtfyTo } from '../lib/notify'
 import { reloadWayNotifications } from '../way/worker'
@@ -482,7 +482,7 @@ settings.get('/', async (c) => {
 
         {/* ── SOMPITRA ──────────────────────────────────────── */}
         <Section title="Sompitra" subtitle="Budget, Kiné, debts, credits and stock."
-          icon="receipt" accent={HOME_TABS[1].color}>
+          icon="receipt" accent={tabColorFor('money')}>
           <Card title="Categories, accounts & access" icon="folder" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Add, rename or remove budget categories and their groups, and manage income sources.
@@ -517,7 +517,7 @@ settings.get('/', async (c) => {
 
         {/* ── W.A.Y ─────────────────────────────────────────── */}
         <Section title="W.A.Y" subtitle="Tracking, geofences, devices and the household chat."
-          icon="pin" accent={HOME_TABS[4].color}>
+          icon="pin" accent={tabColorFor('way')}>
           <Card title="Tracking settings" icon="pin" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Profile, map defaults, device controls, geofences, users &amp; topics, invite codes and history live
@@ -531,7 +531,7 @@ settings.get('/', async (c) => {
 
         {/* ── LAOKA ─────────────────────────────────────────── */}
         <Section title="Laoka" subtitle="The weekly dinner planner and shopping list."
-          icon="bowl" accent={HOME_TABS[3].color}>
+          icon="bowl" accent={tabColorFor('laoka')}>
           <Card title="Meal plan settings" icon="bowl" className="mb-4">
             <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
               Group icons, weeks and the shopping list are managed inside Laoka itself.
