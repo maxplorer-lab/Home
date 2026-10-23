@@ -82,6 +82,19 @@ dashboard.get('/', async (c) => {
   // either way, but the month is what makes the three parts add up on screen.
   const envelopes     = await envelopeBalances(c.env.DB, month)
   const setAside      = envelopeTotal(envelopes)
+  // The preview under the anchor: one line per open envelope, in category
+  // order. `funded` is this month's funding and `left` is what the envelope
+  // still holds (the same `left` the line above sums); the figure at the right
+  // edge is the category's expected budget (`target_budget`).
+  const envelopeRows = await c.env.DB.prepare(
+    `SELECT c.id, c.name, c.target_budget FROM categories c JOIN category_groups cg ON cg.id = c.group_id
+      WHERE c.envelope_from IS NOT NULL ORDER BY cg.sort_order, c.sort_order`
+  ).all<{ id: string; name: string; target_budget: number }>()
+  const envelopePreview = envelopeRows.results.map(cat => {
+    const bal = envelopes.get(cat.id)
+    return { id: cat.id, name: cat.name, funded: bal?.funded ?? 0, left: bal?.left ?? 0, budget: cat.target_budget }
+  }).filter(e => e.funded !== 0 || e.left !== 0)
+  const bareAmount = (n: number) => mga(n).slice(3)
   const totalDebt     = debtRow?.total    ?? 0
   const totalCredit   = creditRow?.total  ?? 0
 
@@ -202,6 +215,38 @@ dashboard.get('/', async (c) => {
           <p class={`t-anchor mt-1.5 ${currentGradedColor(currentCash)}`}>{mga(currentCash)}</p>
           {setAside !== 0 && (
             <p class="text-[11px] text-gray-400 mt-1">{mga(setAside)} set aside in envelopes</p>
+          )}
+          {envelopePreview.length > 0 && (
+            <div class="mt-1.5 text-[10px] leading-relaxed space-y-1.5">
+              {envelopePreview.map(e => {
+                // Funded against the month's expected budget, in the same
+                // traffic light Budget uses: red once it is exceeded, yellow
+                // from 80%, violet (the envelope colour) below that. The width
+                // is capped so an overfunded envelope still reads as full.
+                const pct = e.budget > 0 ? Math.max(0, Math.min(100, Math.round((e.funded / e.budget) * 100))) : 0
+                const barColor = e.budget > 0 && e.funded > e.budget
+                  ? 'bg-red-500'
+                  : e.budget > 0 && e.funded >= e.budget * 0.8
+                    ? 'bg-yellow-400'
+                    : 'bg-violet-500 dark:bg-violet-400'
+                return (
+                  <div key={e.id}>
+                    <div class="flex items-baseline justify-between gap-3">
+                      <span class="truncate text-gray-400 dark:text-gray-500">
+                        <span class="font-semibold text-gray-600 dark:text-gray-300">{e.name}</span>{' '}
+                        <span class="text-gray-500 dark:text-gray-400 tabular-nums">
+                          Ar {bareAmount(e.funded)} / {bareAmount(e.left)}
+                        </span>
+                      </span>
+                      <span class="text-gray-400 dark:text-gray-500 tabular-nums whitespace-nowrap">{e.budget > 0 ? mga(e.budget) : '—'}</span>
+                    </div>
+                    <div class="mt-0.5 h-[3px] rounded-full overflow-hidden bg-gray-200 dark:bg-gray-700" aria-hidden="true">
+                      {pct > 0 && <div class={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
 
           {/* Money in against money out, as one bar. The colours are the money
