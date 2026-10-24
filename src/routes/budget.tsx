@@ -315,7 +315,7 @@ budget.get('/', async (c) => {
 
       {/* Charts */}
       <div class="grid md:grid-cols-2 gap-4 mb-5">
-        <Card title="Expenses by Category" icon="donut">
+        <Card title="Expenses by Group" icon="donut">
           <div class="w-full max-w-[240px] mx-auto">
             <canvas id="expenseChart"></canvas>
           </div>
@@ -1843,6 +1843,11 @@ budget.get('/reports', async (c) => {
   const periodKey = c.req.query('p') || 'this_week'
   const fromParam = c.req.query('from') || ''
   const toParam = c.req.query('to') || ''
+  // Which report is on screen. A query parameter, not a setting: every visit
+  // (and every link that does not carry it) starts from the full view, so a
+  // one-off look at groups can never leave the page stuck in group mode.
+  const reportView = c.req.query('v') === 'group' ? 'group'
+    : c.req.query('v') === 'category' ? 'category' : 'overall'
   // Which series the trend chart plots. Three views over the SAME buckets, so
   // switching never changes the shape of the axis — only which bars are drawn.
   const chartView = c.req.query('cv') === 'income' ? 'income'
@@ -1856,7 +1861,7 @@ budget.get('/reports', async (c) => {
     ({ start, end, label } = reportPeriod(periodKey))
   }
 
-  const [summary, expensesByGroup, incomeBySource, perUser, trendData] = await Promise.all([
+  const [summary, expensesByGroup, expensesByCategory, incomeBySource, perUser, trendData] = await Promise.all([
     c.env.DB.prepare(
       `SELECT COALESCE(SUM(CASE WHEN type='income' THEN amount END),0) AS income,
               COALESCE(SUM(CASE WHEN type='expense' AND is_envelope_transfer=0 THEN amount END),0) AS expense,
@@ -1868,6 +1873,12 @@ budget.get('/reports', async (c) => {
        FROM transactions t JOIN categories c ON t.category_id = c.id JOIN category_groups cg ON c.group_id = cg.id
        WHERE t.type='expense' AND t.is_envelope_transfer=0 AND t.date BETWEEN ? AND ? GROUP BY cg.id ORDER BY total DESC`
     ).bind(start, end).all<{ name: string; total: number }>(),
+    c.env.DB.prepare(
+      `SELECT c.name, cg.name AS group_name, COALESCE(SUM(t.amount),0) AS total
+       FROM transactions t JOIN categories c ON t.category_id = c.id JOIN category_groups cg ON c.group_id = cg.id
+       WHERE t.type='expense' AND t.is_envelope_transfer=0 AND t.date BETWEEN ? AND ?
+       GROUP BY c.id ORDER BY total DESC`
+    ).bind(start, end).all<{ name: string; group_name: string; total: number }>(),
     c.env.DB.prepare(
       `SELECT ia.name, COALESCE(SUM(t.amount),0) AS total
        FROM transactions t JOIN income_accounts ia ON t.income_account_id = ia.id
@@ -1888,6 +1899,26 @@ budget.get('/reports', async (c) => {
   const expense  = summary?.expense ?? 0
   const net      = income - expense
   const totalExp = expensesByGroup.results.reduce((s, g) => s + g.total, 0)
+
+  // Per-category detail for the report. The doughnut answers "which pot";
+  // this answers "which line inside it", so the rows keep their group as a
+  // heading — a category name like Sakafo repeats across groups and would be
+  // ambiguous on its own. Groups are ranked by spend, categories inside them
+  // too. Every bar is drawn against the period's total expenses, so its
+  // length and the percentage beside it say the same thing: a row holding a
+  // tenth of the spend covers a tenth of the track. Each row keeps a 1%
+  // sliver so a near-zero category is still a visible mark rather than a gap.
+  const categoryGroups: { name: string; total: number; rows: { name: string; total: number }[] }[] = []
+  for (const row of expensesByCategory.results) {
+    let group = categoryGroups.find(g => g.name === row.group_name)
+    if (!group) {
+      group = { name: row.group_name, total: 0, rows: [] }
+      categoryGroups.push(group)
+    }
+    group.total += row.total
+    group.rows.push({ name: row.name, total: row.total })
+  }
+  categoryGroups.sort((a, b) => b.total - a.total)
 
   // ── Comparison (current vs previous period, per category group) ──
   const cmpMode = c.req.query('cm') === 'month' ? 'month' : 'week'
@@ -1947,7 +1978,7 @@ budget.get('/reports', async (c) => {
     return { id: r.id, name: r.name, a, b, icon, text, cls }
   })
 
-  const reportBase = 'p=' + periodKey + (periodKey === 'custom' ? '&from=' + fromParam + '&to=' + toParam : '')
+  const reportBase = 'p=' + periodKey + (periodKey === 'custom' ? '&from=' + fromParam + '&to=' + toParam : '') + '&v=' + reportView
 
   return c.html(
     <Layout title="Reports" user={user} activeTab="budget">
@@ -1959,20 +1990,38 @@ budget.get('/reports', async (c) => {
         <a href="/budget/transactions" class="flex-1 text-center py-2 rounded-lg text-sm font-medium text-gray-500 dark:text-gray-400">📄 History</a>
       </div>
 
-      {/* Period selector */}
+      {/* Period + report view. One form, so changing either keeps the other.
+          The view is a URL parameter only — nothing is stored, and the next
+          visit starts from Overall. */}
       <form method="get" action="/budget/reports" class="mb-2">
-        <select name="p" onchange="this.form.submit()"
-          class="w-full rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 px-3 py-2.5 text-sm focus:outline-none focus:border-green-500">
-          <option value="this_week" selected={periodKey === 'this_week'}>This Week (SAT–FRI)</option>
-          <option value="last_week" selected={periodKey === 'last_week'}>Last Week (SAT–FRI)</option>
-          <option value="last_7_days" selected={periodKey === 'last_7_days'}>Last 7 Days</option>
-          <option value="this_month" selected={periodKey === 'this_month'}>This Month</option>
-          <option value="last_month" selected={periodKey === 'last_month'}>Last Month</option>
-          <option value="last_30_days" selected={periodKey === 'last_30_days'}>Last 30 Days</option>
-          <option value="this_year" selected={periodKey === 'this_year'}>This Year</option>
-          <option value="all" selected={periodKey === 'all'}>All Time</option>
-          <option value="custom" selected={periodKey === 'custom'}>Custom Range…</option>
-        </select>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label class="block">
+            <span class="t-micro">Period</span>
+            <select name="p" onchange="this.form.submit()"
+              class="w-full rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 px-3 py-2.5 text-sm focus:outline-none focus:border-green-500">
+              <option value="this_week" selected={periodKey === 'this_week'}>This Week (SAT–FRI)</option>
+              <option value="last_week" selected={periodKey === 'last_week'}>Last Week (SAT–FRI)</option>
+              <option value="last_7_days" selected={periodKey === 'last_7_days'}>Last 7 Days</option>
+              <option value="this_month" selected={periodKey === 'this_month'}>This Month</option>
+              <option value="last_month" selected={periodKey === 'last_month'}>Last Month</option>
+              <option value="last_30_days" selected={periodKey === 'last_30_days'}>Last 30 Days</option>
+              <option value="this_year" selected={periodKey === 'this_year'}>This Year</option>
+              <option value="all" selected={periodKey === 'all'}>All Time</option>
+              <option value="custom" selected={periodKey === 'custom'}>Custom Range…</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="t-micro">Report</span>
+            <select name="v" onchange="this.form.submit()"
+              class="w-full rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 px-3 py-2.5 text-sm focus:outline-none focus:border-green-500">
+              <option value="overall" selected={reportView === 'overall'}>Overall</option>
+              <option value="group" selected={reportView === 'group'}>By group</option>
+              <option value="category" selected={reportView === 'category'}>By category</option>
+            </select>
+          </label>
+        </div>
+        {periodKey === 'custom' && <input type="hidden" name="from" value={fromParam} />}
+        {periodKey === 'custom' && <input type="hidden" name="to" value={toParam} />}
         <p class="text-xs text-gray-400 mt-1">📅 {label}</p>
       </form>
 
@@ -1980,6 +2029,7 @@ budget.get('/reports', async (c) => {
       <div class="flex gap-2 mb-4 items-center">
         <form method="get" action="/budget/reports" class="flex gap-2 flex-1 min-w-0">
           <input type="hidden" name="p" value="custom" />
+          <input type="hidden" name="v" value={reportView} />
           <input type="date" name="from" value={fromParam}
             class="flex-1 min-w-0 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 px-2 py-2 text-xs sm:text-sm" />
           <input type="date" name="to" value={toParam}
@@ -2014,6 +2064,7 @@ budget.get('/reports', async (c) => {
           the comparison; the other two isolate one side and keep the same
           weekly/monthly bins, so a month of expenses and a month of income
           can each be read on their own without a second x-axis. */}
+      {reportView === 'overall' && (
       <Card title={chartView === 'expense' ? 'Expenses' : chartView === 'income' ? 'Income' : 'Income vs Expenses'} icon="trend" className="mb-4">
         <div class="flex gap-1 mb-3 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
           <a href={`/budget/reports?${reportBase}&cv=both`}
@@ -2055,10 +2106,12 @@ budget.get('/reports', async (c) => {
         )}
         {trend.length === 0 && <p class="text-sm text-gray-400 text-center py-4">No data for this period</p>}
       </Card>
+      )}
 
       {/* Category / source doughnuts */}
+      {reportView === 'overall' && (
       <div class="grid md:grid-cols-2 gap-4 mb-4">
-        <Card title="Expenses by Category" icon="donut">
+        <Card title="Expenses by Group" icon="donut">
           <div class="w-full max-w-[240px] mx-auto">
             <canvas id="expenseChart"></canvas>
           </div>
@@ -2071,8 +2124,10 @@ budget.get('/reports', async (c) => {
           {incomeBySource.results.length === 0 && <p class="text-sm text-gray-400 text-center py-4">No income</p>}
         </Card>
       </div>
+      )}
 
       {/* Per user */}
+      {reportView === 'overall' && (
       <Card title="By User" icon="people" className="mb-4">
         <div class="grid grid-cols-2 gap-2">
           {perUser.results.map(u => (
@@ -2091,28 +2146,83 @@ budget.get('/reports', async (c) => {
           {perUser.results.length === 0 && <p class="text-sm text-gray-400 text-center py-4 col-span-2">No data</p>}
         </div>
       </Card>
+      )}
 
-      {/* Expenses table */}
-      {expensesByGroup.results.length > 0 && (
-        <Card title="Expense Breakdown" icon="receipt">
+      {/* Group breakdown — the whole of the group report, the first half of the
+          full one. */}
+      {reportView !== 'category' && expensesByGroup.results.length > 0 && (
+        <Card title={reportView === 'group' ? 'By Group' : 'Expense Breakdown'} icon="receipt">
           <div class="divide-y divide-gray-100 dark:divide-gray-700">
             {expensesByGroup.results.map(g => {
               const pct = totalExp > 0 ? Math.round((g.total / totalExp) * 100) : 0
+              const width = totalExp > 0 ? Math.max(1, (g.total / totalExp) * 100) : 0
               return (
-                <div class="flex items-center justify-between py-2">
-                  <span class="text-sm text-gray-700 dark:text-gray-300">{g.name}</span>
-                  <div class="flex items-center gap-3">
-                    <span class="text-xs text-gray-400">{pct}%</span>
-                    <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{mga(g.total)}</span>
+                <div class="py-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-sm text-gray-700 dark:text-gray-300 truncate">{g.name}</span>
+                    <div class="flex items-center gap-3 shrink-0">
+                      <span class="text-xs text-gray-400">{pct}%</span>
+                      <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{mga(g.total)}</span>
+                    </div>
+                  </div>
+                  <div class="mt-1 h-[3px] rounded-full overflow-hidden" style={{ backgroundColor: 'var(--rule)' }}>
+                    <span class="block h-full rounded-full bg-red-400" style={{ width: `${width}%` }} />
                   </div>
                 </div>
               )
             })}
           </div>
+          <p class="text-[10px] text-gray-400 mt-3 leading-relaxed">Bars show each group's share of the period's expenses.</p>
         </Card>
       )}
 
-      {/* Comparison */}
+      {/* The category report, grouped and ranked. Deliberately NOT part of the
+          overall view: the dropdown is what makes it a report you ask for,
+          not an extra that always lengthens the page. */}
+      {reportView === 'category' && categoryGroups.length > 0 && (
+        <Card title="By Category" icon="bars" className="mt-4">
+          <div class="space-y-3.5">
+            {categoryGroups.map(g => (
+              <div>
+                <div class="flex items-baseline justify-between gap-2 pb-1 hairline">
+                  <span class="t-label truncate">{g.name}</span>
+                  <span class="t-micro tabular-nums whitespace-nowrap">{mga(g.total)}</span>
+                </div>
+                <div class="space-y-1.5 pt-1.5">
+                  {g.rows.map(r => {
+                    const share = totalExp > 0 ? (r.total / totalExp) * 100 : 0
+                    const width = totalExp > 0 ? Math.max(1, (r.total / totalExp) * 100) : 0
+                    return (
+                      <div>
+                        <div class="flex items-baseline justify-between gap-3 text-xs">
+                          <span class="truncate text-gray-700 dark:text-gray-300">{r.name}</span>
+                          <span class="shrink-0 tabular-nums text-gray-500 dark:text-gray-400">
+                            {mga(r.total)}
+                            <span class="inline-block w-7 ml-1.5 text-right text-gray-400 dark:text-gray-500">{share < 1 ? '<1' : Math.round(share)}%</span>
+                          </span>
+                        </div>
+                        <div class="mt-1 h-[3px] rounded-full overflow-hidden" style={{ backgroundColor: 'var(--rule)' }}>
+                          <span class="block h-full rounded-full bg-red-400" style={{ width: `${width}%` }} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p class="text-[10px] text-gray-400 mt-3 leading-relaxed">Bars show each category's share of the period's expenses.</p>
+        </Card>
+      )}
+      {reportView === 'category' && categoryGroups.length === 0 && (
+        <Card title="By Category" icon="bars" className="mt-4">
+          <p class="text-sm text-gray-400 text-center py-4">No expenses in this period</p>
+        </Card>
+      )}
+
+      {/* Comparison — groups against groups, so it belongs to the full and
+          group reports, not the category one. */}
+      {reportView !== 'category' && (
       <Card title="Comparison" icon="swap" className="mt-4">
         {/* Mode toggle */}
         <div class="flex gap-1 mb-3 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
@@ -2125,6 +2235,7 @@ budget.get('/reports', async (c) => {
         {cmpMode === 'month' && (
           <form method="get" action="/budget/reports" class="flex gap-2 mb-3">
             <input type="hidden" name="p" value={periodKey} />
+            <input type="hidden" name="v" value={reportView} />
             {periodKey === 'custom' && <input type="hidden" name="from" value={fromParam} />}
             {periodKey === 'custom' && <input type="hidden" name="to" value={toParam} />}
             <input type="hidden" name="cm" value="month" />
@@ -2159,6 +2270,7 @@ budget.get('/reports', async (c) => {
           Amounts in MGA. ⬆️ increase — <span class="text-blue-500">blue ≤10%</span> · <span class="text-orange-500">orange 10–30%</span> · <span class="text-yellow-500">yellow 30–50%</span> · <span class="text-red-500">red &gt;50%</span>. ⬇️ decrease in <span class="text-green-600 dark:text-green-400">green</span>. 🔄️ unchanged.
         </p>
       </Card>
+      )}
 
       <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
       <script dangerouslySetInnerHTML={{ __html: `
@@ -2207,11 +2319,12 @@ budget.get('/reports', async (c) => {
           });
         }
 
-        if (trend.length) {
+        const trendEl = document.getElementById('trendChart');
+        if (trend.length && trendEl) {
           const datasets = [];
           if (chartView !== 'expense') datasets.push({ label: 'Income', data: trend.map(t => t.income), backgroundColor: '#22c55e', borderRadius: 4 });
           if (chartView !== 'income') datasets.push({ label: 'Expense', data: trend.map(t => t.expense), backgroundColor: '#ef4444', borderRadius: 4 });
-          new Chart(document.getElementById('trendChart'), {
+          new Chart(trendEl, {
             type: 'bar',
             data: { labels: trend.map(t => t.bucket), datasets },
             options: {
@@ -2230,15 +2343,17 @@ budget.get('/reports', async (c) => {
             }
           });
         }
-        if (expData.length) {
-          new Chart(document.getElementById('expenseChart'), {
+        const expEl = document.getElementById('expenseChart');
+        if (expData.length && expEl) {
+          new Chart(expEl, {
             type: 'doughnut',
             data: { labels: expData.map(g => g.name), datasets: [{ data: expData.map(g => g.total), backgroundColor: palette, borderWidth: 0 }] },
             options: common
           });
         }
-        if (incData.length) {
-          new Chart(document.getElementById('incomeChart'), {
+        const incEl = document.getElementById('incomeChart');
+        if (incData.length && incEl) {
+          new Chart(incEl, {
             type: 'doughnut',
             data: { labels: incData.map(i => i.name), datasets: [{ data: incData.map(i => i.total), backgroundColor: ['#22c55e','#06b6d4','#3b82f6','#8b5cf6','#f59e0b','#f43f5e'], borderWidth: 0 }] },
             options: common
