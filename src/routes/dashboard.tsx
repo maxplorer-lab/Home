@@ -27,7 +27,8 @@ dashboard.use('*', requireAuth)
 
 dashboard.get('/', async (c) => {
   const user = c.get('user')
-  // Home is STATIC: current calendar month for money flow, current SAT–FRI week for Kiné.
+  // Home is STATIC: the current household month (24th → 23rd, named for its end
+  // month) for money flow, current SAT–FRI week for Kiné.
   const month = currentMonthBounds()
   const week = currentWeekBounds(0)
 

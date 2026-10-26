@@ -24,6 +24,9 @@ import {
   addDays,
   currentWeekBounds,
   currentMonthBounds,
+  monthKeyOf,
+  monthBounds,
+  shiftMonthKey,
 } from '../src/lib/utils.ts'
 
 const TZS = ['UTC', 'Africa/Nairobi', 'America/New_York']
@@ -194,37 +197,65 @@ test('currentWeekBounds() offsets move whole weeks', () => {
   })
 })
 
-// ─── currentMonthBounds ──────────────────────────────────────
+// ─── Household month: 24th → 23rd, named for its END month ───
+// The boundary is the thing to pin: the 23rd is still the old cycle, and the
+// 24th opens the next one, which then takes the name of the month it ends in.
 const MONTH_CASES = [
-  { label: 'Sep 30 23:59 local', instant: '2026-09-30T20:59:59Z', start: '2026-09-01', end: '2026-09-30', label_text: 'September 2026' },
-  { label: 'Oct 1 00:00 local', instant: '2026-09-30T21:00:00Z', start: '2026-10-01', end: '2026-10-31', label_text: 'October 2026' },
-  { label: 'Dec 10 local', instant: '2026-12-10T09:00:00Z', start: '2026-12-01', end: '2026-12-31', label_text: 'December 2026' },
-  { label: 'Feb 2028 (leap)', instant: '2028-02-10T09:00:00Z', start: '2028-02-01', end: '2028-02-29', label_text: 'February 2028' },
+  { label: 'Sep 23 23:59 local (last minute of September)', instant: '2026-09-23T20:59:59Z', key: '2026-09', start: '2026-08-24', end: '2026-09-23', label_text: 'September 2026' },
+  { label: 'Sep 24 00:00 local (October opens)', instant: '2026-09-23T21:00:00Z', key: '2026-10', start: '2026-09-24', end: '2026-10-23', label_text: 'October 2026' },
+  { label: 'Oct 23 23:59 local (October closes)', instant: '2026-10-23T20:59:59Z', key: '2026-10', start: '2026-09-24', end: '2026-10-23', label_text: 'October 2026' },
+  { label: 'Oct 24 00:00 local (November opens)', instant: '2026-10-23T21:00:00Z', key: '2026-11', start: '2026-10-24', end: '2026-11-23', label_text: 'November 2026' },
+  { label: 'Dec 10 local', instant: '2026-12-10T09:00:00Z', key: '2026-12', start: '2026-11-24', end: '2026-12-23', label_text: 'December 2026' },
+  { label: 'Dec 24 local (January opens)', instant: '2026-12-24T09:00:00Z', key: '2027-01', start: '2026-12-24', end: '2027-01-23', label_text: 'January 2027' },
+  { label: 'Feb 10 2028 (leap year)', instant: '2028-02-10T09:00:00Z', key: '2028-02', start: '2028-01-24', end: '2028-02-23', label_text: 'February 2028' },
+  { label: 'Feb 24 2028 (leap year)', instant: '2028-02-24T09:00:00Z', key: '2028-03', start: '2028-02-24', end: '2028-03-23', label_text: 'March 2028' },
 ]
 
 for (const tz of TZS) {
-  test(`currentMonthBounds() calendar month (TZ=${tz})`, () => {
+  test(`currentMonthBounds() 24th → 23rd cycle (TZ=${tz})`, () => {
     for (const c of MONTH_CASES) {
       at(c.instant, tz, () => {
         const bounds = currentMonthBounds()
         assert.equal(bounds.start, c.start, `${c.label}: start`)
         assert.equal(bounds.end, c.end, `${c.label}: end`)
         assert.equal(bounds.label, c.label_text, `${c.label}: label`)
+        assert.equal(monthKeyOf(localDate()), c.key, `${c.label}: key`)
       })
     }
   })
 }
 
+test('monthKeyOf() puts the 24th in the next cycle and keeps the 23rd', () => {
+  assert.equal(monthKeyOf('2026-10-23'), '2026-10')
+  assert.equal(monthKeyOf('2026-10-24'), '2026-11')
+  assert.equal(monthKeyOf('2026-12-23'), '2026-12')
+  assert.equal(monthKeyOf('2026-12-24'), '2027-01')
+  assert.equal(monthKeyOf('2028-02-24'), '2028-03')
+})
+
+test('monthBounds() names the cycle by its end month, across a year boundary', () => {
+  assert.deepEqual(monthBounds('2026-01'), { start: '2025-12-24', end: '2026-01-23', label: 'January 2026' })
+  assert.deepEqual(monthBounds('2026-10'), { start: '2026-09-24', end: '2026-10-23', label: 'October 2026' })
+  assert.deepEqual(monthBounds('2026-12'), { start: '2026-11-24', end: '2026-12-23', label: 'December 2026' })
+})
+
+test('shiftMonthKey() walks cycles and rolls the year', () => {
+  assert.equal(shiftMonthKey('2026-01', -1), '2025-12')
+  assert.equal(shiftMonthKey('2026-12', 1), '2027-01')
+  assert.equal(shiftMonthKey('2026-10', 3), '2027-01')
+  assert.equal(shiftMonthKey('2026-10', 0), '2026-10')
+})
+
 test('currentMonthBounds() offsets and year rollover', () => {
-  at('2026-10-01T00:00:00Z', 'UTC', () => {
-    assert.deepEqual(currentMonthBounds(-1), { start: '2026-09-01', end: '2026-09-30', label: 'September 2026' })
-    assert.deepEqual(currentMonthBounds(1), { start: '2026-11-01', end: '2026-11-30', label: 'November 2026' })
-    assert.deepEqual(currentMonthBounds(3), { start: '2027-01-01', end: '2027-01-31', label: 'January 2027' })
-    assert.deepEqual(currentMonthBounds(4), { start: '2027-02-01', end: '2027-02-28', label: 'February 2027' })
+  at('2026-10-26T09:00:00Z', 'UTC', () => {
+    assert.deepEqual(currentMonthBounds(), { start: '2026-10-24', end: '2026-11-23', label: 'November 2026' })
+    assert.deepEqual(currentMonthBounds(-1), { start: '2026-09-24', end: '2026-10-23', label: 'October 2026' })
+    assert.deepEqual(currentMonthBounds(1), { start: '2026-11-24', end: '2026-12-23', label: 'December 2026' })
+    assert.deepEqual(currentMonthBounds(3), { start: '2027-01-24', end: '2027-02-23', label: 'February 2027' })
   })
   at('2027-12-20T09:00:00Z', 'UTC', () => {
-    assert.deepEqual(currentMonthBounds(), { start: '2027-12-01', end: '2027-12-31', label: 'December 2027' })
-    assert.deepEqual(currentMonthBounds(1), { start: '2028-01-01', end: '2028-01-31', label: 'January 2028' })
-    assert.deepEqual(currentMonthBounds(2), { start: '2028-02-01', end: '2028-02-29', label: 'February 2028' })
+    assert.deepEqual(currentMonthBounds(), { start: '2027-11-24', end: '2027-12-23', label: 'December 2027' })
+    assert.deepEqual(currentMonthBounds(1), { start: '2027-12-24', end: '2028-01-23', label: 'January 2028' })
+    assert.deepEqual(currentMonthBounds(2), { start: '2028-01-24', end: '2028-02-23', label: 'February 2028' })
   })
 })

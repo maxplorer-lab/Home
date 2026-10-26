@@ -65,16 +65,46 @@ export function formatDate(d: string): string {
   })
 }
 
-// ─── Month helpers (calendar month, local) ───────────────────
-export function currentMonthBounds(offsetMonths = 0): { start: string; end: string; label: string } {
-  const [y, m] = localDate().split('-').map(Number)
-  const first = new Date(Date.UTC(y, m - 1 + offsetMonths, 1))
-  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0))
+// ─── Month helpers (the 24th → 23rd household month) ─────────
+// The household's money arrives on the 24th, so its month opens there and
+// closes on the 23rd of the month after — the same non-calendar thinking as
+// the SAT–FRI week above. A cycle is NAMED for the month it ENDS in: the one
+// running 24 Sep → 23 Oct is "October", because that is the month the money
+// was for. So a date on or after the 24th already belongs to the NEXT cycle.
+export const MONTH_START_DAY = 24
+
+/** The cycle key ('YYYY-MM') a date belongs to, named by its end month. */
+export function monthKeyOf(date: string): string {
+  const [y, m, d] = date.split('-').map(Number)
+  if (!y || !m || !d) return date.slice(0, 7)
+  if (d < MONTH_START_DAY) return `${y}-${String(m).padStart(2, '0')}`
+  const next = new Date(Date.UTC(y, m, 1))
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+/** Move a 'YYYY-MM' cycle key by whole cycles. */
+export function shiftMonthKey(key: string, offsetMonths: number): string {
+  const [y, m] = key.split('-').map(Number)
+  const d = new Date(Date.UTC(y, m - 1 + offsetMonths, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+/** Bounds of the cycle NAMED by a 'YYYY-MM' key: the 24th of the month before
+ *  it through the 23rd of the month itself. */
+export function monthBounds(key: string): { start: string; end: string; label: string } {
+  const [y, m] = key.split('-').map(Number)
+  const start = new Date(Date.UTC(y, m - 2, MONTH_START_DAY))
+  const end = new Date(Date.UTC(y, m - 1, MONTH_START_DAY - 1))
   return {
-    start: first.toISOString().slice(0, 10),
-    end: last.toISOString().slice(0, 10),
-    label: first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+    label: new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
   }
+}
+
+/** The cycle on screen, `offsetMonths` away from the current one. */
+export function currentMonthBounds(offsetMonths = 0): { start: string; end: string; label: string } {
+  return monthBounds(shiftMonthKey(monthKeyOf(localDate()), offsetMonths))
 }
 
 // ─── Currency formatter ───────────────────────────────────────

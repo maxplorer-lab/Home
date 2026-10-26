@@ -27,9 +27,11 @@
 //   left        carriedIn + funded − spent
 //
 // `left` is also the envelope's whole balance: the three figures are just the
-// same money split at the month boundary, so nothing has to be rewritten on
-// the 1st. The counterpart sums are still lifetime sums behind the scenes;
-// only what the screens PRINT is month-scoped.
+// same money split at the month boundary, so nothing has to be rewritten when
+// a new month opens. That boundary is the household's, not the calendar's —
+// it falls on the 24th (see MONTH_START_DAY in utils.ts). The counterpart sums
+// are still lifetime sums behind the scenes; only what the screens PRINT is
+// month-scoped.
 //
 // Both SQL constants expect the aliases `t` (transactions) and, for
 // MAIN_OUT_SQL, `c` (categories) to be in scope.

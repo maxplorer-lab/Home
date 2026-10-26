@@ -2,7 +2,7 @@
 import { Hono } from 'hono'
 import { Layout, Card } from '../views/layout'
 import { requireAuth } from '../lib/middleware'
-import { mga, formatDate, generateId, currentWeekBounds, currentMonthBounds, localDate, addDays, userAccentColor } from '../lib/utils'
+import { mga, formatDate, generateId, currentWeekBounds, currentMonthBounds, monthKeyOf, monthBounds, shiftMonthKey, localDate, addDays, userAccentColor } from '../lib/utils'
 // Envelope accounting lives in one place: funding is a move, spending is a
 // purchase, and no row may be counted as both.
 import { REAL_SPEND_SQL, envelopeBalances } from '../lib/envelope'
@@ -55,35 +55,6 @@ function reportPeriod(key: string): { start: string; end: string; label: string 
   }
 }
 
-// ── Comparison helpers (month keys are 'YYYY-MM') ──────────
-function currentMonthKey(): string {
-  return localDate().slice(0, 7)
-}
-
-function prevMonthKey(ym: string): string {
-  const parts = ym.split('-')
-  const today = localDate()
-  const y = parseInt(parts[0]) || parseInt(today.slice(0, 4))
-  const m = parseInt(parts[1]) || parseInt(today.slice(5, 7))
-  const prevY = m === 1 ? y - 1 : y
-  const prevM = m === 1 ? 12 : m - 1
-  return `${prevY}-${String(prevM).padStart(2, '0')}`
-}
-
-function monthRange(ym: string): { start: string; end: string; label: string } {
-  const today = localDate()
-  const parts = ym.split('-')
-  const y = parseInt(parts[0]) || parseInt(today.slice(0, 4))
-  const m = parseInt(parts[1]) || parseInt(today.slice(5, 7))
-  const start = `${y}-${String(m).padStart(2, '0')}-01`
-  const end = addDays(new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10), -1)
-  return {
-    start,
-    end,
-    label: new Date(start + 'T00:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' }),
-  }
-}
-
 async function getTrend(db: D1Database, start: string, end: string, periodKey: string) {
   // Granularity follows the SPAN, not the period's name. A week is read day by
   // day; a month is read in SAT–FRI weeks, because thirty daily bars in one
@@ -95,7 +66,10 @@ async function getTrend(db: D1Database, start: string, end: string, periodKey: s
       : spanDays > 14 ? 'week' : 'day'
   // The Saturday that OPENS the SAT–FRI week: step back six days, then forward
   // to the next Saturday (which stays put when the date already is one).
-  const bucket = granularity === 'month' ? 'substr(t.date, 1, 7)'
+  // A monthly bar is a HOUSEHOLD month too: 24th → 23rd, keyed by the month it
+  // ends in, so the chart and the figure above it count the same days.
+  const bucket = granularity === 'month'
+    ? "CASE WHEN CAST(strftime('%d', t.date) AS INTEGER) >= 24 THEN substr(date(t.date, 'start of month', '+1 month'), 1, 7) ELSE substr(t.date, 1, 7) END"
     : granularity === 'week' ? "date(t.date, '-6 days', 'weekday 6')"
       : 't.date'
   const rows = await db.prepare(
@@ -1929,10 +1903,15 @@ budget.get('/reports', async (c) => {
   let cmpA: { start: string; end: string; label: string }
   let cmpB: { start: string; end: string; label: string }
   if (cmpMode === 'month') {
-    caKey = /^\d{4}-\d{2}$/.test(caParam) ? caParam : currentMonthKey()
-    cbKey = /^\d{4}-\d{2}$/.test(cbParam) ? cbParam : prevMonthKey(caKey)
-    cmpA = monthRange(caKey)
-    cmpB = monthRange(cbKey)
+    // Month keys are the household cycle's END month, so the picker's
+    // "October" is 24 Sep → 23 Oct, the month that money was for. The header
+    // keeps the short form: two month columns share 9.5rem of a phone screen.
+    const shortMonth = (key: string) => new Date(key + '-01T00:00:00Z')
+      .toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+    caKey = /^\d{4}-\d{2}$/.test(caParam) ? caParam : monthKeyOf(localDate())
+    cbKey = /^\d{4}-\d{2}$/.test(cbParam) ? cbParam : shiftMonthKey(caKey, -1)
+    cmpA = { ...monthBounds(caKey), label: shortMonth(caKey) }
+    cmpB = { ...monthBounds(cbKey), label: shortMonth(cbKey) }
   } else {
     const wa = currentWeekBounds(0)
     const wb = currentWeekBounds(-1)
