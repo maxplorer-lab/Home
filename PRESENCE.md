@@ -131,14 +131,16 @@ Thresholds (`PRESENCE_ONLINE_WINDOW_MIN`, and the wording) belong in
 ## 4. Watch this before touching any threshold
 
 With `minDistance = 0`, a parked phone becomes a stream of jitter fixes. The
-backend is already built for it: inside a fence nothing is drawn at all, and away
-from a fence a departure needs `ANCHOR_RADIUS_M` (20 m) sustained for
-`MOVEMENT_CONFIRM_SECONDS` (15 s). But two fixes each rated ≤10 m can legitimately
-sit ~20 m apart while the phone is on a table — exactly at that anchor radius — so
-**parked outside a fence is the one place a micro-leg could appear.** Watch for it
-in the ledger and in a reviewed day; if it shows up, the knob is
-`ANCHOR_RADIUS_M`, and it should be raised on evidence from real pings rather than
-guessed at today.
+backend is built for it: inside a fence nothing is drawn at all, and away from a
+fence a departure needs `ANCHOR_RADIUS_M` (20 m) sustained for
+`MOVEMENT_CONFIRM_SECONDS` (15 s) **and** the same window to have TRAVELLED that
+20 m at `STATIONARY_SPEED_THRESHOLD` or better (2026-10-26). Two fixes each rated
+≤10 m can legitimately sit ~20 m apart while the phone is on a table, which is why
+time-and-radius alone was not enough: a window that covers no ground is read as
+drift and re-anchors at the newest fix. Watch the ledger anyway — a window whose
+fixes land on either side of the radius can still look like a short leg — and if
+micro-legs appear, the knob is `ANCHOR_RADIUS_M` (or the accuracy gate), raised on
+evidence from real pings rather than guessed at today.
 
 The same applies to the accuracy gate: `minDistance = 0` will produce many
 over-limit fixes indoors, which the intake drops **silently, as designed**. That

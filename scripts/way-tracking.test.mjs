@@ -262,8 +262,11 @@ test('the exit fires only after EXIT_GUARD_SECONDS, and carries the fence-edge p
   const { state, results } = run([
     ping(at(0)), // confirmed inside, at the centre
     ping(at(30), { ...north(200) }), // first ping past the exit radius: EXITING
-    ping(at(45), { ...north(220) }), // still inside the guard
-    ping(at(60), { ...north(240) }), // guard elapsed: OUTSIDE
+    // 40 m in 15 s: a departure the motion engine can corroborate, so the
+    // movement below is live through the guard (a 20.00 m step sits on the
+    // travel threshold and is no longer a robust "moving" fixture).
+    ping(at(45), { ...north(240) }), // still inside the guard
+    ping(at(60), { ...north(280) }), // guard elapsed: OUTSIDE
   ])
   assert.equal(results[0].isInside, true)
   assert.equal(results[1].isInside, true, 'the guard holds the exit')
@@ -490,6 +493,88 @@ test('the silence rule fires at STOP_CONFIRM_SECONDS, not a second earlier', () 
   assert.ok(early.results[4].distance > 0)
   assert.equal(onTime.results[4].isStationary, true, '60 s of silence is')
   assert.equal(onTime.results[4].distance, 0, 'and the drift is not a track point')
+})
+
+// ─── State machine: drift is not a departure ─────────────────
+
+// The parked-phone "moving again" bug. A phone sitting outside its fence was
+// reporting departures without going anywhere: the anchor is one fix, and
+// this receiver is rated at 10 m, so an unlucky anchor leaves perfectly
+// ordinary fixes >20 m out with the phone on a table. The old departure test
+// only asked "outside the radius, and still outside 15 s later" -- two drift
+// fixes 40 cm apart satisfied it, opened a leg and fired the push. Production
+// since 19 October: 41 of 53 legs under 100 m with four points or fewer, ten
+// of them one point and 0 km.
+
+/** Outside the fence and parked: the exit is confirmed, then 60 s of silence
+ *  inside the radius confirms the stop, so the motion anchor is a real fix. */
+function parkedOutside() {
+  const park = run([
+    ping(at(0)),
+    ping(at(30), { ...north(200), vel: 40 }), // EXITING
+    ping(at(60), { ...north(400), vel: 40 }), // OUTSIDE, leg 1 opens
+    ping(at(120), { ...north(400), vel: 0 }), // 60 s of silence: the stop
+  ])
+  assert.equal(park.state.geoState, 'OUTSIDE')
+  assert.equal(park.state.motionMode, 'STAYING')
+  assert.equal(park.state.legOpen, false)
+  return park
+}
+
+test('drift outside the radius does not restart a parked device', () => {
+  const parked = parkedOutside()
+  const drift = run([
+    ping(at(135), { ...north(422), vel: 0 }),   // 22 m out: candidate
+    ping(at(150), { ...north(422.4), vel: 0 }), // 15 s later, 40 cm further
+  ], { state: parked.state })
+
+  for (const r of drift.results) {
+    assert.equal(r.isStationary, true, 'a phone on a table stays parked')
+  }
+  assert.equal(drift.state.motionMode, 'STAYING')
+  assert.equal(drift.state.legOpen, false, 'no leg opens from drift')
+  assert.equal(drift.state.legId, parked.state.legId)
+  assert.equal(drift.state.pendingDeparture.length, 0, 'the failed window is dropped')
+  // The anchor follows the window it just disproved: a stale one is what let
+  // every later drift fix start a fresh candidate in the first place.
+  assert.equal(drift.state.anchor[0], north(422.4).latitude)
+  assert.equal(drift.state.anchor[1], north(422.4).longitude)
+})
+
+test('drift that wanders for a minute is still not a trip', () => {
+  // The production shape of a parked phone: every fix outside the radius, a
+  // few metres from the one before, for as long as the phone sits there (one
+  // stored leg on 20 Oct: 76 points over 12 min covering 37 m). No pair of
+  // them has travelled 20 m, and the window re-anchors instead of confirming.
+  const parked = parkedOutside()
+  const drift = run([
+    ping(at(140), { ...north(424), vel: 0 }),
+    ping(at(155), { ...north(419), vel: 0 }), // 5 m back: no travel
+    ping(at(170), { ...north(427), vel: 0 }),
+    ping(at(185), { ...north(421), vel: 0 }),
+  ], { state: parked.state })
+
+  for (const r of drift.results) assert.equal(r.isStationary, true)
+  assert.equal(drift.state.motionMode, 'STAYING')
+  assert.equal(drift.state.legOpen, false)
+  assert.equal(drift.state.legId, parked.state.legId)
+})
+
+test('a real walk still departs -- one fix later, because the window is travelled', () => {
+  const parked = parkedOutside()
+  const walk = run([
+    ping(at(135), { ...north(417), vel: 4 }), // 17 m out: still inside the radius
+    ping(at(150), { ...north(433), vel: 4 }), // 33 m: the window opens here
+    ping(at(165), { ...north(450), vel: 4 }), // 17 m of travel: outside, but not yet a departure
+    ping(at(180), { ...north(467), vel: 4 }), // 34 m of travel: departure
+  ], { state: parked.state })
+
+  assert.equal(walk.results[2].isStationary, true, 'moving, but not yet far enough to confirm')
+  assert.equal(walk.results[3].isStationary, false, 'the walk is a departure')
+  assert.equal(walk.results[3].legId, 2, 'and opens leg 2')
+  assert.ok(walk.results[3].distance > 0, 'the walk between the buffered points is counted')
+  assert.equal(walk.state.motionMode, 'TRAVELING')
+  assert.equal(walk.state.legOpen, true)
 })
 
 test('forcedMode overrides only the driving/walking call', () => {

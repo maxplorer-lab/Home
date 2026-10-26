@@ -87,7 +87,11 @@ export const WAY_CONFIG = {
   // is even considered (absorbs GPS bounce while parked/stationary).
   ANCHOR_RADIUS_M: 20.0,
   // Seconds a candidate departure must be sustained before it's confirmed
-  // as real movement (vs. a brief wander back to the same spot).
+  // as real movement (vs. a brief wander back to the same spot). Time alone
+  // is not enough: the same window must also show the device travelled
+  // ANCHOR_RADIUS_M and averaged at least STATIONARY_SPEED_THRESHOLD, because
+  // a parked phone outside its fence can sit >20 m from a bad anchor without
+  // moving at all (see the STAYING branch in lib/state-machine.ts).
   MOVEMENT_CONFIRM_SECONDS: 15,
   // Seconds a device must stay within ANCHOR_RADIUS_M of a candidate stop
   // point before a travel leg is confirmed ended. Reuses WALKING_GUARD_SECONDS

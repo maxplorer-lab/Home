@@ -654,13 +654,48 @@ function processMotion(
       return { state: s, result: stayResult(avgSpeed) };
     }
 
-    // Outside the stay radius -- candidate departure. Don't commit until
-    // sustained for MOVEMENT_CONFIRM_SECONDS.
+    // Outside the stay radius -- candidate departure. Two things must hold
+    // over the SAME window before this becomes movement: the device must stay
+    // outside for MOVEMENT_CONFIRM_SECONDS, and the window must show it
+    // actually TRAVELLED. The second half is not a refinement of the first.
+    // A parked phone's fixes scatter around its true position, so once the
+    // anchor is one of the bad ones (this receiver is rated at 10 m) every
+    // later fix sits outside the radius with the phone not moving at all: two
+    // drift fixes 40 cm apart, 21 m out, 15 s apart, used to confirm a
+    // departure, and a departure that immediately re-stops is the parked-phone
+    // "stop every 10 m" the field reported. Production since 19 October: 41 of
+    // 53 legs under 100 m with four points or fewer, ten of them a single
+    // point and 0 km.
     s.pendingDeparture.push([dt, lat, lon]);
-    const span =
-      (new Date(dt).getTime() - new Date(s.pendingDeparture[0][0]).getTime()) / 1000;
+    const first = s.pendingDeparture[0];
+    const span = (new Date(dt).getTime() - new Date(first[0]).getTime()) / 1000;
 
     if (span < MOVEMENT_CONFIRM_SECONDS) {
+      return { state: s, result: stayResult(avgSpeed) };
+    }
+
+    // Judged on the fixes' own coordinates, like the silence rule below: a
+    // device-reported speed is exactly what a parked phone inflates.
+    const windowSpeed = speedFromPositions(first[1], first[2], first[0], lat, lon, dt);
+
+    if (windowSpeed < STATIONARY_SPEED_THRESHOLD) {
+      // Nothing moved across the window -- drift around a stale anchor, not a
+      // departure. Re-anchor HERE: the window just established that this fix
+      // is where the device is, so the anchor should follow it. Keeping the
+      // old one would let every later fix start a fresh window and one lucky
+      // pair of outliers eventually confirm a leg nobody drove.
+      resetMotionAnchor(s, lat, lon, dt);
+      return { state: s, result: stayResult(avgSpeed) };
+    }
+
+    if (distanceM(first[1], first[2], lat, lon) < ANCHOR_RADIUS_M) {
+      // Moving, but not yet far enough to call it a departure: the window has
+      // to cover ANCHOR_RADIUS_M once more, the app's existing unit of "that
+      // was real movement" (and the distance the old anchor was already
+      // cleared by, so a departure becomes ~40 m of travel). Kept, not
+      // re-anchored, so the window keeps growing -- the speed floor above
+      // bounds that at ANCHOR_RADIUS_M / STATIONARY_SPEED_THRESHOLD ~= 36 s,
+      // which is one or two more fixes for a walker.
       return { state: s, result: stayResult(avgSpeed) };
     }
 
