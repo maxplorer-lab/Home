@@ -83,7 +83,7 @@ function clipChatLine(text: string): string {
  * ingest gate counters still describe THIS code (see the build-scoped reset
  * there). One constant, because those two jobs must never disagree.
  */
-const DO_BUILD = "notify-v21-flush-sync-ids";
+const DO_BUILD = "notify-v22-travel-departure";
 
 /**
  * How many unread chat lines the `chat-latest` readout hands back.
@@ -862,6 +862,15 @@ export class FleetDO extends DurableObject<Env> {
             //       owns the bare name). Every statement here that read `users`
             //       reads `way_users`; a v19 instance would fail to load the
             //       notify cache at all, which is why the marker moves.
+            // v21 = the nightly flush is idempotent: buffered pings/messages
+            //       carry a `sync_id` and migration 0009's unique indexes make
+            //       a re-flushed chunk a no-op (flush.ts probes for the column).
+            // v22 = a departure needs TRAVEL as well as time: the STAYING
+            //       window must cover ANCHOR_RADIUS_M while averaging at least
+            //       STATIONARY_SPEED_THRESHOLD, and a window that moved less
+            //       re-anchors. A parked phone outside a fence is no longer
+            //       re-started by drift, so a v21 instance still reports the
+            //       phantom "Moving again" legs this fix removes.
             build: DO_BUILD,
             // The event types this DO will accept from sibling modules, straight
             // from the allowlist. Reported here so a test (or a human) can ask
