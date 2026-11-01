@@ -117,22 +117,26 @@ const PRESS_JS = `
     // ── Dismiss guard ────────────────────────────────────────────
     // Any element carrying data-dismiss throws away the form it sits in, so it
     // must warn when that would lose typing. Initial values are snapshotted here,
-    // before any user input. Hidden fields are ignored: they are derived (the
-    // itemised total/notes) or switches like the quick/itemised mode, and neither
-    // is "unsaved work" on its own.
+    // before any user input. Hidden fields are ignored: they are derived values
+    // or switches like the quick/itemised mode, and neither is "unsaved work" on
+    // its own.
     var snapshot = [];
+    function snapshotOne(el) {
+      if (!el || !el.tagName) return;
+      var tag = el.tagName.toLowerCase();
+      if (tag !== 'input' && tag !== 'select' && tag !== 'textarea') return;
+      var type = (el.type || '').toLowerCase();
+      if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'file' || type === 'reset') return;
+      for (var i = 0; i < snapshot.length; i++) if (snapshot[i].el === el) return;
+      snapshot.push({
+        el: el,
+        value: el.value,
+        checked: el.checked,
+      });
+    }
     function snapshotFields() {
       var fields = document.querySelectorAll('input, select, textarea');
-      for (var i = 0; i < fields.length; i++) {
-        var el = fields[i];
-        var type = (el.type || '').toLowerCase();
-        if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'file' || type === 'reset') continue;
-        snapshot.push({
-          el: el,
-          value: el.value,
-          checked: el.checked,
-        });
-      }
+      for (var i = 0; i < fields.length; i++) snapshotOne(fields[i]);
     }
     function findForm(el) {
       var node = el;
@@ -153,6 +157,24 @@ const PRESS_JS = `
       return false;
     }
     snapshotFields();
+    // Fields can be added after load — an itemized entry's second batch, a new
+    // line — and typing in one of those must still make the form dirty. Snapshot
+    // each control as it appears (at its initial value), or the guard would
+    // silently ignore the last thing somebody typed.
+    if (typeof MutationObserver === 'function') {
+      new MutationObserver(function (records) {
+        for (var r = 0; r < records.length; r++) {
+          var added = records[r].addedNodes;
+          for (var i = 0; i < added.length; i++) {
+            var node = added[i];
+            if (!node || node.nodeType !== 1) continue;
+            snapshotOne(node);
+            var inner = node.querySelectorAll ? node.querySelectorAll('input, select, textarea') : [];
+            for (var j = 0; j < inner.length; j++) snapshotOne(inner[j]);
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    }
 
     // Links: same-origin navigations in this tab only.
     document.addEventListener('click', function (ev) {

@@ -9,6 +9,10 @@ import { REAL_SPEND_SQL, envelopeBalances } from '../lib/envelope'
 // The brand glyph set (see app-chrome.tsx) — money screens use the money icons.
 import { Icon } from '../views/app-chrome'
 import { notifyTransaction } from '../lib/notify'
+// A batch is a category, a name and a list of priced lines; saving writes one
+// transaction per batch. The reader is a plain module so its tests exercise the
+// same copy this route runs.
+import { legacyItemizedBatch, readExpenseBatches, type ExpenseBatch } from '../lib/expense-batches'
 import type { Env, User, Transaction, CategoryGroup, Category, IncomeAccount } from '../db/schema'
 
 const budget = new Hono<{ Bindings: Env; Variables: { user: User } }>()
@@ -470,10 +474,11 @@ budget.get('/add-expense', async (c) => {
                 class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
             </div>
 
-            {/* Subcategory */}
-            <div>
+            {/* Subcategory. Hidden on the itemized pane, which carries a
+                category per batch instead; `required` moves with the pane. */}
+            <div id="field-category">
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Category</label>
-              <select name="category_id" required
+              <select name="category_id" id="category-select" required
                 class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500">
                 <option value="">Select subcategory…</option>
                 {groups.results.map(g => (
@@ -492,7 +497,7 @@ budget.get('/add-expense', async (c) => {
                 is the common case, and this box changes the meaning of the
                 row (a move, not a purchase). When it is ticked the form drops
                 to Quick mode — funding is one amount, not a receipt. */}
-            <label class="flex items-start gap-2.5 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-3 cursor-pointer">
+            <label id="field-envelope" class="flex items-start gap-2.5 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-3 cursor-pointer">
               <input type="checkbox" name="is_envelope_transfer" id="envelope-transfer" value="1"
                 onchange="envelopeToggle()" class="mt-0.5 accent-violet-600" />
               <span class="min-w-0">
@@ -503,8 +508,8 @@ budget.get('/add-expense', async (c) => {
               </span>
             </label>
 
-            {/* Description */}
-            <div>
+            {/* Description. The itemized pane names each batch instead. */}
+            <div id="field-description">
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name / Description *</label>
               <input type="text" name="description" id="expense-description" required placeholder="e.g. Snack, Groceries…"
                 value={handoff ? handoff.description : ''}
@@ -518,33 +523,66 @@ budget.get('/add-expense', async (c) => {
                 class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500" />
             </div>
 
-            {/* ── ITEMIZED MODE: line items table ── */}
+            {/* ── ITEMIZED MODE: one batch per category ── */}
+            {/* A batch is a category, a name and a list of priced lines; its
+                subtotal is the sum of those lines, and SAVING writes one
+                transaction per batch. Entering the groceries, then the
+                motorcycle parts, then the activities is three batches and
+                three rows in the ledger — one form, three categories. */}
             <div id="mode-itemized" class="hidden">
-              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Line Items</label>
-              <div id="line-items" class="space-y-2 mb-3">
-                {initialLines.map((line) => (
-                  <div class="flex gap-2 line-item">
-                    <input type="text" value={line.name} placeholder="Item name" class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-name" />
-                    <input type="number" value={line.price} placeholder="Price" min="0" step="1" class="w-28 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-price" oninput="recalcTotal()" />
-                    <button type="button" onclick="this.closest('.line-item').remove();recalcTotal()" class="text-red-400 hover:text-red-600 px-2">✕</button>
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Batches</label>
+              <div id="batches" class="space-y-3">
+                <div class="batch rounded-2xl border border-gray-200 dark:border-gray-600 p-3" data-batch="0">
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 batch-label">Batch 1</span>
+                    {/* Hidden while this is the only batch; every form needs
+                        at least one. */}
+                    <button type="button" class="batch-remove hidden text-xs text-red-400 hover:text-red-600">✕ Remove</button>
                   </div>
-                ))}
+                  {/* The first batch's lines keep id="line-items", which is
+                      what the smoke suite slices the hand-off pre-fill from. */}
+                  <select class="batch-cat w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm mb-2 focus:outline-none focus:border-green-500" name="b0_category_id">
+                    <option value="">Select subcategory…</option>
+                    {groups.results.map(g => (
+                      <optgroup label={g.name}>
+                        {cats.results.filter(c => c.group_id === g.id).map(cat => (
+                          <option value={cat.id}>{cat.name}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <input type="text" name="b0_description" value={handoff ? handoff.description : ''}
+                    placeholder="Name / Description — e.g. Groceries"
+                    class="batch-desc w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500" />
+                  <div id="line-items" class="batch-lines space-y-2 mt-2">
+                    {initialLines.map((line) => (
+                      <div class="flex gap-2 line-item">
+                        <input type="text" name="b0_name" value={line.name} placeholder="Item name" class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-name" />
+                        <input type="number" name="b0_price" value={line.price} placeholder="Price" min="0" step="1" class="w-28 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-price" />
+                        <button type="button" class="line-remove text-red-400 hover:text-red-600 px-2">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div class="flex items-center gap-4 mt-2">
+                    <button type="button" class="batch-add-line text-sm text-green-600 dark:text-green-400 hover:underline">+ Add line</button>
+                    {/* Imports a Laoka two-column CSV (Item,Price) into THIS
+                        batch. Parsed entirely in the browser — the file is
+                        never uploaded and never stored. */}
+                    <button type="button" class="batch-csv text-sm text-gray-500 dark:text-gray-400 hover:underline">⬆ Import CSV</button>
+                  </div>
+                  <div class="flex items-center justify-between bg-gray-50 dark:bg-gray-700 rounded-xl px-3 py-2 mt-2">
+                    <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">Subtotal</span>
+                    <span class="batch-total text-sm font-bold text-red-600">Ar 0</span>
+                  </div>
+                </div>
               </div>
-              <div class="flex items-center gap-4 mb-3">
-                <button type="button" onclick="addLine()"
-                  class="text-sm text-green-600 dark:text-green-400 hover:underline">+ Add line</button>
-                {/* Imports a Laoka two-column CSV (Item,Price). Parsed entirely in
-                    the browser — the file is never uploaded and never stored. */}
-                <button type="button" id="csv-btn"
-                  class="text-sm text-gray-500 dark:text-gray-400 hover:underline">⬆ Import CSV</button>
-              </div>
-              <p id="csv-status" class="hidden text-[11px] mb-2"></p>
-              <div class="flex items-center justify-between bg-gray-50 dark:bg-gray-700 rounded-xl px-4 py-3">
+              <p id="csv-status" class="hidden text-[11px] mt-2"></p>
+              <button type="button" id="add-batch"
+                class="w-full mt-3 py-2 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-500 dark:text-gray-400 hover:border-green-500 hover:text-green-600 transition-colors">+ Add batch</button>
+              <div class="flex items-center justify-between bg-gray-100 dark:bg-gray-700 rounded-xl px-4 py-3 mt-3">
                 <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">Total</span>
                 <span id="itemized-total-display" class="text-lg font-bold text-red-600">Ar 0</span>
               </div>
-              <input type="hidden" name="itemized_total" id="itemized-total-input" value="0" />
-              <input type="hidden" name="itemized_notes" id="itemized-notes-input" value="" />
             </div>
 
             {/* Which week (or trip) these numbers came from, so saving can adopt
@@ -552,8 +590,10 @@ budget.get('/add-expense', async (c) => {
             {laoka && <input type="hidden" name="laoka_week" value={String(laoka.weekId)} />}
             {pantry && <input type="hidden" name="pantry_trip" value={String(pantry.tripId)} />}
 
-            {/* Notes */}
-            <div>
+            {/* Notes. Itemized notes are the batch's own lines, so the free-text
+                field would be discarded; it is hidden there rather than
+                pretending to apply. */}
+            <div id="field-notes">
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Notes (optional)</label>
               <textarea name="notes" rows={2} placeholder="Extra details…"
                 class="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-green-500 resize-none" />
@@ -578,17 +618,40 @@ budget.get('/add-expense', async (c) => {
 
       <script dangerouslySetInnerHTML={{ __html: `
         function showMode(m) {
+          const itemized = m === 'itemized';
           document.getElementById('mode-input').value = m;
-          document.getElementById('mode-quick').classList.toggle('hidden', m !== 'quick');
-          document.getElementById('mode-itemized').classList.toggle('hidden', m !== 'itemized');
-          document.getElementById('btn-quick').classList.toggle('bg-white', m === 'quick');
-          document.getElementById('btn-quick').classList.toggle('dark:bg-gray-700', m === 'quick');
-          document.getElementById('btn-quick').classList.toggle('shadow', m === 'quick');
-          document.getElementById('btn-quick').classList.toggle('text-gray-500', m !== 'quick');
-          document.getElementById('btn-itemized').classList.toggle('bg-white', m === 'itemized');
-          document.getElementById('btn-itemized').classList.toggle('dark:bg-gray-700', m === 'itemized');
-          document.getElementById('btn-itemized').classList.toggle('shadow', m === 'itemized');
-          document.getElementById('btn-itemized').classList.toggle('text-gray-500', m !== 'itemized');
+          document.getElementById('mode-quick').classList.toggle('hidden', itemized);
+          document.getElementById('mode-itemized').classList.toggle('hidden', !itemized);
+          document.getElementById('btn-quick').classList.toggle('bg-white', !itemized);
+          document.getElementById('btn-quick').classList.toggle('dark:bg-gray-700', !itemized);
+          document.getElementById('btn-quick').classList.toggle('shadow', !itemized);
+          document.getElementById('btn-quick').classList.toggle('text-gray-500', itemized);
+          document.getElementById('btn-itemized').classList.toggle('bg-white', itemized);
+          document.getElementById('btn-itemized').classList.toggle('dark:bg-gray-700', itemized);
+          document.getElementById('btn-itemized').classList.toggle('shadow', itemized);
+          document.getElementById('btn-itemized').classList.toggle('text-gray-500', !itemized);
+          // The itemized pane carries a category and a name PER BATCH, so the
+          // shared pair (and the free-text notes) would be a second, conflicting
+          // answer. Hide them there, and let "required" follow the pane: a
+          // required control inside a hidden box blocks the OTHER pane's submit,
+          // because the browser cannot focus it to report the error.
+          ['field-category', 'field-description', 'field-notes', 'field-envelope'].forEach(function (id) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('hidden', itemized);
+          });
+          const cat = document.getElementById('category-select');
+          const desc = document.getElementById('expense-description');
+          if (cat) cat.required = !itemized;
+          if (desc) desc.required = !itemized;
+          const batchFields = document.querySelectorAll('.batch-cat, .batch-desc');
+          for (let i = 0; i < batchFields.length; i++) batchFields[i].required = itemized;
+          // Envelope funding is a MOVE — one amount, no lines — so it has no
+          // meaning in a receipt. Untick it on the way into the pane, so a
+          // hidden box can never post a funding transfer with the batches.
+          if (itemized) {
+            const env = document.getElementById('envelope-transfer');
+            if (env) env.checked = false;
+          }
         }
         // Filling an envelope is a MOVE, not a purchase: it has one amount and
         // only a budgeted category can receive it. Ticking the box therefore
@@ -616,29 +679,100 @@ budget.get('/add-expense', async (c) => {
             if (sel) Array.from(sel.options).forEach(function (o) { o.hidden = false; });
           }
         }
-        function addLine(name, price) {
-          const li = document.getElementById('line-items');
+        // ── Batches ───────────────────────────────────────────────
+        // A batch is a category, a name and a list of lines. The page only DRAWs
+        // the subtotals; the amounts and the itemized notes are derived once, on
+        // the server, from the same fields (src/lib/expense-batches.ts), so
+        // what a subtotal says and what the budget stores cannot disagree.
+        // The argument is the .batch CARD, not its lines box: the index in its
+        // data-batch is what makes the repeated names belong to this batch
+        // (b0_name, b1_name, …), which is how the server pairs a line's name
+        // with its price.
+        function addLineTo(batch, name, price) {
+          const index = batch.getAttribute('data-batch') || '0';
           const div = document.createElement('div');
           div.className = 'flex gap-2 line-item';
-          div.innerHTML = \`<input type="text" placeholder="Item name" class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-name" />
-            <input type="number" placeholder="Price" min="0" step="1" class="w-28 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-price" oninput="recalcTotal()" />
-            <button type="button" onclick="this.closest('.line-item').remove();recalcTotal()" class="text-red-400 hover:text-red-600 px-2">✕</button>\`;
+          div.innerHTML = '<input type="text" name="b' + index + '_name" placeholder="Item name" class="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-name" />' +
+            '<input type="number" name="b' + index + '_price" placeholder="Price" min="0" step="1" class="w-28 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500 item-price" />' +
+            '<button type="button" class="line-remove text-red-400 hover:text-red-600 px-2">✕</button>';
           // Optional values, used by the CSV import. Both must be set before the
           // row is appended so nothing renders mid-edit.
           if (name !== undefined && name !== null) div.querySelector('.item-name').value = name;
           if (price !== undefined && price !== null) div.querySelector('.item-price').value = price;
-          li.appendChild(div);
+          batch.querySelector('.batch-lines').appendChild(div);
           return div;
         }
-        function recalcTotal() {
-          const prices = Array.from(document.querySelectorAll('.item-price')).map(i => parseFloat(i.value)||0);
-          const total = prices.reduce((s,v)=>s+v,0);
-          document.getElementById('itemized-total-display').textContent = 'Ar ' + total.toLocaleString();
-          document.getElementById('itemized-total-input').value = total;
-          // build notes string
-          const names  = Array.from(document.querySelectorAll('.item-name')).map(i => i.value.trim());
-          const notes  = names.map((n,i) => n ? n + ': Ar ' + (prices[i]||0).toLocaleString() : null).filter(Boolean).join('\\n');
-          document.getElementById('itemized-notes-input').value = notes;
+        function firstBatch() {
+          return document.querySelector('#batches .batch');
+        }
+        function allBatches() {
+          return document.querySelectorAll('#batches .batch');
+        }
+        function relabelBatches() {
+          const all = allBatches();
+          for (let i = 0; i < all.length; i++) {
+            const label = all[i].querySelector('.batch-label');
+            if (label) label.textContent = 'Batch ' + (i + 1);
+            const rm = all[i].querySelector('.batch-remove');
+            // A form always keeps at least one batch; remove is for the extras.
+            if (rm) rm.classList.toggle('hidden', all.length < 2);
+          }
+        }
+        function recalcBatches() {
+          let total = 0;
+          const all = allBatches();
+          for (let i = 0; i < all.length; i++) {
+            const prices = all[i].querySelectorAll('.item-price');
+            let sub = 0;
+            for (let j = 0; j < prices.length; j++) sub += Math.round(parseFloat(prices[j].value) || 0);
+            const out = all[i].querySelector('.batch-total');
+            if (out) out.textContent = 'Ar ' + sub.toLocaleString();
+            total += sub;
+          }
+          const grand = document.getElementById('itemized-total-display');
+          if (grand) grand.textContent = 'Ar ' + total.toLocaleString();
+        }
+        // The server renders batch 0; every batch this view adds gets the NEXT
+        // index. Field names never need renumbering when one is removed, and the
+        // route reads whatever indexes it is given.
+        let batchSeq = 1;
+        function addBatch() {
+          const wrap = document.createElement('div');
+          wrap.className = 'batch rounded-2xl border border-gray-200 dark:border-gray-600 p-3';
+          wrap.setAttribute('data-batch', String(batchSeq));
+          wrap.innerHTML =
+            '<div class="flex items-center justify-between mb-2">' +
+              '<span class="text-xs font-semibold text-gray-500 dark:text-gray-400 batch-label">Batch</span>' +
+              '<button type="button" class="batch-remove text-xs text-red-400 hover:text-red-600">✕ Remove</button>' +
+            '</div>' +
+            '<select class="batch-cat w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm mb-2 focus:outline-none focus:border-green-500" name="b' + batchSeq + '_category_id">' +
+              categoryOptions() +
+            '</select>' +
+            '<input type="text" class="batch-desc w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-500" name="b' + batchSeq + '_description" placeholder="Name / Description — e.g. Motorcycle parts" />' +
+            '<div class="batch-lines space-y-2 mt-2"></div>' +
+            '<div class="flex items-center gap-4 mt-2">' +
+              '<button type="button" class="batch-add-line text-sm text-green-600 dark:text-green-400 hover:underline">+ Add line</button>' +
+              '<button type="button" class="batch-csv text-sm text-gray-500 dark:text-gray-400 hover:underline">⬆ Import CSV</button>' +
+            '</div>' +
+            '<div class="flex items-center justify-between bg-gray-50 dark:bg-gray-700 rounded-xl px-3 py-2 mt-2">' +
+              '<span class="text-xs font-semibold text-gray-700 dark:text-gray-300">Subtotal</span>' +
+              '<span class="batch-total text-sm font-bold text-red-600">Ar 0</span>' +
+            '</div>';
+          batchSeq += 1;
+          addLineTo(wrap);
+          document.getElementById('batches').appendChild(wrap);
+          relabelBatches();
+          // Carry the pane's "required" flags onto the new controls, or a blank
+          // new batch would skip the browser's own required-field check.
+          showMode(document.getElementById('mode-input').value);
+          recalcBatches();
+          return wrap;
+        }
+        function categoryOptions() {
+          const sel = document.getElementById('category-select');
+          // A new batch borrows the SAME option list the server rendered for the
+          // first one, so adding a batch never needs a second round trip.
+          return sel ? sel.innerHTML : '<option value="">Select subcategory…</option>';
         }
 
         // ── Import CSV (Laoka hand-off) ──────────────────────────
@@ -739,32 +873,34 @@ budget.get('/add-expense', async (c) => {
           const el = document.getElementById('csv-status');
           if (!el) return;
           el.textContent = message;
-          el.className = 'text-[11px] mb-2 ' + (isError ? 'text-red-500' : 'text-gray-400 dark:text-gray-500');
+          el.className = 'text-[11px] mt-2 ' + (isError ? 'text-red-500' : 'text-gray-400 dark:text-gray-500');
         }
-        // Replaces every current line item. Returns false when the user cancels.
+        // Replaces the lines of ONE batch (the one whose ⬆ Import CSV was
+        // clicked). Returns false when the user cancels.
+        let csvTarget = null;
         function applyImportedRows(rows, title) {
-          const box = document.getElementById('line-items');
+          const batch = csvTarget || firstBatch();
+          if (!batch) return false;
+          const box = batch.querySelector('.batch-lines');
           const existing = Array.from(box.querySelectorAll('.line-item'));
           const names = Array.from(box.querySelectorAll('.item-name'));
           const prices = Array.from(box.querySelectorAll('.item-price'));
           const typed = names.some(function (n) { return n.value.trim() !== ''; }) ||
                         prices.some(function (p) { return p.value !== ''; });
-          if (typed && !confirm('Replace the ' + existing.length + ' line item(s) already entered?')) {
+          if (typed && !confirm('Replace the ' + existing.length + ' line item(s) in this batch?')) {
             return false;
           }
           existing.forEach(function (row) { row.remove(); });
-          rows.forEach(function (r) { addLine(r.name, r.price); });
-          if (!box.querySelector('.line-item')) addLine();
+          rows.forEach(function (r) { addLineTo(batch, r.name, r.price); });
+          if (!box.querySelector('.line-item')) addLineTo(batch);
           // The filename is the title; never overwrite a typed description.
-          const desc = document.getElementById('expense-description');
+          const desc = batch.querySelector('.batch-desc');
           if (desc && title && !desc.value.trim()) desc.value = title;
-          recalcTotal();
+          recalcBatches();
           return true;
         }
-        const csvBtn = document.getElementById('csv-btn');
         const csvFile = document.getElementById('csv-file');
-        if (csvBtn && csvFile) {
-          csvBtn.addEventListener('click', function () { csvFile.click(); });
+        if (csvFile) {
           csvFile.addEventListener('change', function () {
             const file = csvFile.files && csvFile.files[0];
             if (!file) return;
@@ -804,17 +940,59 @@ budget.get('/add-expense', async (c) => {
           });
         }
 
-        document.getElementById('expense-form').addEventListener('submit', function() {
-          if (document.getElementById('mode-input').value === 'itemized') {
-            recalcTotal();
-          }
+        // ── Batch wiring ──────────────────────────────────────────
+        // Delegated, because batches and their lines are added after load.
+        const batchesBox = document.getElementById('batches');
+        if (batchesBox) {
+          batchesBox.addEventListener('click', function (ev) {
+            const t = ev.target;
+            if (!t || !t.closest) return;
+            const addLineBtn = t.closest('.batch-add-line');
+            if (addLineBtn) {
+              addLineTo(addLineBtn.closest('.batch'));
+              return;
+            }
+            const removeLine = t.closest('.line-remove');
+            if (removeLine) {
+              removeLine.closest('.line-item').remove();
+              recalcBatches();
+              return;
+            }
+            const removeBatch = t.closest('.batch-remove');
+            if (removeBatch) {
+              removeBatch.closest('.batch').remove();
+              // Never leave the form with no batch at all: an empty submit reads
+              // as a broken entry, and there would be nothing to type into.
+              if (!batchesBox.querySelector('.batch')) addBatch();
+              relabelBatches();
+              recalcBatches();
+              return;
+            }
+            const csvBtn = t.closest('.batch-csv');
+            if (csvBtn && csvFile) {
+              csvTarget = csvBtn.closest('.batch');
+              csvFile.click();
+            }
+          });
+          // Only a price changes a subtotal.
+          batchesBox.addEventListener('input', function (ev) {
+            const t = ev.target;
+            if (t && t.classList && t.classList.contains('item-price')) recalcBatches();
+          });
+        }
+        const addBatchBtn = document.getElementById('add-batch');
+        if (addBatchBtn) addBatchBtn.addEventListener('click', function () {
+          const batch = addBatch();
+          const desc = batch.querySelector('.batch-desc');
+          if (desc) desc.focus();
         });
 
-        // A Laoka hand-off opens on the mode its lines belong to, with the total
-        // and the notes already built by the same function that builds them when
-        // a person types a price — one code path, so what is shown and what is
-        // saved cannot disagree.
-        if (${handoff ? 'true' : 'false'}) { showMode('itemized'); recalcTotal(); }
+        relabelBatches();
+        recalcBatches();
+        // A Laoka hand-off opens on the mode its lines belong to. Its first batch
+        // is the prefilled receipt; the category stays the household's choice,
+        // and nothing is written until Save.
+        if (${handoff ? 'true' : 'false'}) { showMode('itemized'); recalcBatches(); }
       `}} />
     </Layout>
   )
@@ -828,45 +1006,73 @@ const itemizedCount = (text: string | null) => (text || '').split('\n').filter(B
 
 budget.post('/add-expense', async (c) => {
   const user = c.get('user')
-  const body = await c.req.parseBody()
+  // `all: true` keeps a repeated field (a batch's lines) as an ARRAY; a name
+  // posted once still arrives as a string, so every other field reads as before.
+  const body = await c.req.parseBody({ all: true })
+  const field = (key: string) => {
+    const value = body[key]
+    return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
+  }
 
-  const mode = String(body.mode || 'quick')
-  const date = String(body.date)
+  const mode = field('mode') || 'quick'
+  const date = field('date')
   // The field is OPTIONAL: a hand-off form can be saved without a category, and
   // `String(undefined)` is the string "undefined" -- which is truthy, reaches the
   // insert as a category id, and answers 500 (FOREIGN KEY) instead of saving the
   // expense. A missing field is no category.
-  const categoryId = String(body.category_id || '')
-  // Off unless ticked: an ordinary purchase stays an ordinary purchase.
-  const isEnvelopeTransfer = String(body.is_envelope_transfer || '') === '1'
-  const description = String(body.description || '').trim() || null
+  const categoryId = field('category_id')
+  // Envelope funding is a MOVE, not a purchase: one amount, no receipt lines.
+  // The itemized pane is nothing BUT receipt lines, one transaction per batch,
+  // so the box is hidden there and this refuses it even if a stale or hand-made
+  // post sends it -- a row can never be both a purchase and a move.
+  const isEnvelopeTransfer = mode !== 'itemized' && field('is_envelope_transfer') === '1'
+  const description = field('description').trim() || null
   // A form the BROWSER submits has every newline normalised to CRLF by the
   // urlencoded serializer, so the same list typed by hand would be stored with
   // different bytes than the same list sent by Laoka or the pantry. One shape,
   // whichever door it came through: parseItemLines tolerates a stray CR, but the
   // ledger's item_count and the details panel should not have to.
   const lf = (v: unknown) => String(v || '').replace(/\r\n?/g, '\n')
-  const quickNotes = lf(body.notes).trim() || null
+  const quickNotes = lf(field('notes')).trim() || null
 
-  let amount: number
-  let notes: string | null
-
+  // One batch is one transaction. Quick mode is ONE unnamed batch: the typed
+  // number and the shared description.
+  let batches: ExpenseBatch[]
   if (mode === 'itemized') {
-    amount = parseFloat(String(body.itemized_total || '0'))
-    const itemizedNotes = lf(body.itemized_notes).trim()
-    notes = itemizedNotes || quickNotes
+    batches = readExpenseBatches(body)
+    if (!batches.length) {
+      // A tab opened before the batch deploy posts the old single list; a stale
+      // form must still save rather than lose the receipt it is holding.
+      const legacy = legacyItemizedBatch(body, categoryId || null, description)
+      if (legacy) batches = [legacy]
+    }
   } else {
-    amount = parseFloat(String(body.amount || '0'))
-    notes = quickNotes
+    const amount = parseFloat(field('amount') || '0')
+    if (!amount || amount <= 0) return c.redirect('/budget?err=invalid_amount')
+    batches = [{ categoryId: categoryId || null, description, lines: [], amount, notes: quickNotes }]
   }
 
-  if (!amount || amount <= 0) return c.redirect('/budget?err=invalid_amount')
+  const laokaWeek = Number(field('laoka_week') || 0)
+  const pantryTrip = Number(field('pantry_trip') || 0)
+  // A Laoka week (or a pantry trip) is ONE expense, and it is the FIRST batch:
+  // the hand-off pre-fills that batch with the shopping's lines. Extra batches
+  // are fine -- they are separate purchases -- but the shopping itself cannot
+  // be empty, or the save would correct the wrong row and spend its identity.
+  if ((laokaWeek || pantryTrip) && (!batches[0] || batches[0].amount <= 0)) {
+    return c.redirect('/budget?err=invalid_amount')
+  }
+
+  // An untouched batch is not an error: "+ Add batch" leaves one empty card
+  // behind whenever somebody changes their mind. It just has no money to save.
+  batches = batches.filter((batch) => batch.amount > 0)
+  if (!batches.length) return c.redirect('/budget?err=invalid_amount')
 
   // An envelope is a budget that now holds money, so funding one is only
   // meaningful for a category with a monthly target. The first transfer is
   // also the moment the envelope OPENS: stamping `envelope_from` with this
   // row's date is what keeps every earlier purchase in the category counted
-  // as ordinary spending (and the past cash balance unchanged).
+  // as ordinary spending (and the past cash balance unchanged). Only Quick
+  // mode can reach this: itemized mode forces the flag off above.
   if (isEnvelopeTransfer) {
     const cat = categoryId
       ? await c.env.DB.prepare('SELECT target_budget, envelope_from FROM categories WHERE id = ?')
@@ -892,16 +1098,15 @@ budget.post('/add-expense', async (c) => {
   // meant a Quick save left the week or trip looking unsent, so the Pantry tab went
   // on offering the same shopping -- and a second tap charged the budget twice,
   // which is the one thing this whole path exists to prevent.
-  const laokaWeek = Number(body.laoka_week || 0)
-  const pantryTrip = Number(body.pantry_trip || 0)
   // An itemised save counts the lines it carries, which is what the ledger's
   // item_count has always counted. A Quick save carries no itemized lines at all,
   // so the count is the source's OWN -- the shopping that was bought -- which is
   // also the figure the Pantry screen prints as "last trip: … 3 items".
-  const itemCount = mode === 'itemized'
-    ? itemizedCount(notes)
-    : await sourceItemCount(c.env, laokaWeek, pantryTrip, itemizedCount(notes))
-  const id = generateId()
+  const sourceCount = mode === 'itemized'
+    ? itemizedCount(batches[0].notes)
+    : await sourceItemCount(c.env, laokaWeek, pantryTrip, itemizedCount(quickNotes))
+  const plans = batches.map((batch) => ({ id: generateId(), batch }))
+  const source = laokaWeek > 0 || pantryTrip > 0
   let adopted: string | null = null
   if (laokaWeek) {
     const existing = await c.env.HOME_DB.prepare('SELECT transaction_id FROM laoka_imports WHERE laoka_week_id = ?')
@@ -929,28 +1134,46 @@ budget.post('/add-expense', async (c) => {
     }
   }
 
-  if (adopted) {
-    if (pantryTrip) await refreshPantryExpense(c.env, pantryTrip, adopted, amount, notes, itemCount)
-    else await refreshLaokaExpense(c.env, laokaWeek, adopted, amount, notes, itemCount)
-    return c.redirect('/budget')
+  // The shopping's row is the FIRST batch. When it already has an expense, that
+  // row is CORRECTED (amount + notes only, never the household's date, category
+  // or description); the extra batches are separate purchases either way.
+  if (source && adopted) {
+    const first = batches[0]
+    if (pantryTrip) await refreshPantryExpense(c.env, pantryTrip, adopted, first.amount, first.notes, sourceCount)
+    else await refreshLaokaExpense(c.env, laokaWeek, adopted, first.amount, first.notes, sourceCount)
   }
 
-  await c.env.DB.prepare(
-    `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id, is_envelope_transfer)
-     VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, ?)`
-  ).bind(id, date, amount, categoryId || null, description, notes, user.id, isEnvelopeTransfer ? 1 : 0).run()
-
-  if (laokaWeek) {
-    await recordLaokaImport(c.env, laokaWeek, id, amount, itemCount, categoryId || null)
+  // Every row that is NOT the corrected shopping becomes a transaction. D1's
+  // batch() is one transaction in the database, so a mid-list failure cannot
+  // leave half of a multi-category entry behind.
+  const created = source && adopted ? plans.slice(1) : plans
+  if (created.length) {
+    await c.env.DB.batch(created.map(({ id, batch }) => c.env.DB.prepare(
+      `INSERT INTO transactions (id, date, amount, type, category_id, description, notes, added_by_user_id, is_envelope_transfer)
+       VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, ?)`
+    ).bind(id, date, batch.amount, batch.categoryId, batch.description, batch.notes, user.id, isEnvelopeTransfer ? 1 : 0)))
   }
-  if (pantryTrip) {
-    await markPantryTripPushed(c.env, pantryTrip, id, amount, itemCount)
+
+  // The week/trip's ledger follows the batch that IS the shopping. A corrected
+  // row keeps the identity it already had; a new one records it now.
+  if (source && !adopted) {
+    const first = plans[0]
+    const id = first.id
+    if (laokaWeek) {
+      await recordLaokaImport(c.env, laokaWeek, id, first.batch.amount, sourceCount, first.batch.categoryId)
+    }
+    if (pantryTrip) {
+      await markPantryTripPushed(c.env, pantryTrip, id, first.batch.amount, sourceCount)
+    }
   }
 
   // Funding is a move inside the household's own money, not an event worth
   // pushing to a phone: "Expense — Groceries, Ar 200 000" would read as a
-  // shopping trip that never happened.
-  if (!isEnvelopeTransfer) await notifyTransaction(c.env, id)
+  // shopping trip that never happened. Every CREATED row is a purchase, though,
+  // and each batch is announced once -- a corrected shopping is not news.
+  if (!isEnvelopeTransfer) {
+    for (const plan of created) await notifyTransaction(c.env, plan.id)
+  }
   return c.redirect('/budget')
 })
 
