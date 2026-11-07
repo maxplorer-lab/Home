@@ -354,6 +354,21 @@ settings.get('/', async (c) => {
               ✓ Installed — open it from your home screen.
             </p>
           </Card>
+
+          {/* The cupboard's PERMANENT door. Its dashboard card only appears
+              when something has expired or is inside the 30-day window, which
+              means an empty, healthy cupboard would otherwise have no way in
+              at all — so the quiet link lives here, one tap from the You tab,
+              and never becomes a tab of its own. */}
+          <Card title="Medicine cupboard" icon="pill" className="mb-4">
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              What is in the cupboard, when it was opened, when it goes off and how much is left.
+              Home flags it only when something has expired or expires within 30 days.
+            </p>
+            <a href="/meds" class="inline-block px-4 py-2 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-semibold">
+              Open the medicine cupboard →
+            </a>
+          </Card>
         </Section>
 
         {/* ── NOTIFICATIONS (two channels: the feed, and tracking) ── */}
