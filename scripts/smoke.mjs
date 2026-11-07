@@ -2799,7 +2799,7 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
   // ── The chrome on every page, in both shapes ──
   // `md:` classes ARE the desktop/mobile split: the bar hides itself from md up
   // and the header nav appears, so a page missing either one breaks a shape.
-  const CHROME_PAGES = ['/', '/budget', '/chat', '/way/', '/laoka/', '/settings']
+  const CHROME_PAGES = ['/', '/budget', '/chat', '/way/', '/laoka/', '/meds', '/settings']
   for (const p of CHROME_PAGES) {
     const html = await body(await req(p))
     const bar = tabBarHtml(html)
@@ -2826,15 +2826,15 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
 
     const navHrefs = [...html.matchAll(/<nav id="home-nav"[\s\S]*?<\/nav>/g)]
       .flatMap((m) => [...m[0].matchAll(/href="([^"]+)"/g)].map((h) => h[1]))
-    check(`${p}: both shapes carry the same five tabs`,
-      tabs.length === 5 && navHrefs.length === 5 && tabs.every((t, i) => t.href === navHrefs[i]),
+    check(`${p}: both shapes carry the same six tabs`,
+      tabs.length === 6 && navHrefs.length === 6 && tabs.every((t, i) => t.href === navHrefs[i]),
       `bar ${tabs.map((t) => t.href).join(',')} vs nav ${navHrefs.join(',')}`)
 
     // A tab keeps its OWN colour whether or not it is the one you are on — the
     // colours are how the modules stay recognisable at a glance.
     const colours = tabs.map((t) => t.color)
     check(`${p}: every tab carries its own colour (inactive ones included)`,
-      colours.every((c) => /^#[0-9a-f]{6}$/.test(c)) && new Set(colours).size === 5,
+      colours.every((c) => /^#[0-9a-f]{6}$/.test(c)) && new Set(colours).size === 6,
       `colours ${colours.join(' ')}`)
 
     // …and not only as a background: BOTH the icon's wrapper and the label
@@ -2848,12 +2848,12 @@ log('\n16. Installable (Chrome/Brave on Android) and the chrome on both shapes')
       !/text-gray-[45]00/.test(bar) && !/color:#(6b7280|9ca3af)/.test(bar),
       'the tab bar still greys an inactive tab (text utility or literal grey)')
 
-    // The desktop nav is the same rule at md+: same five tabs, same five colours.
+    // The desktop nav is the same rule at md+: same six tabs, same six colours.
     const navBlock = (html.match(/<nav id="home-nav"[\s\S]*?<\/nav>/) || [''])[0]
     const navTints = navBlock.split('<a href=').slice(1)
       .map((a) => [...a.matchAll(/--tab:(#[0-9a-fA-F]{6})/g)].map((m) => m[1].toLowerCase()))
     check(`${p}: the desktop nav keeps the same colours as the bottom bar`,
-      navTints.length === 5 && navTints.every((cs, i) => cs.length >= 1 && cs.every((c) => c === tabs[i].color)),
+      navTints.length === 6 && navTints.every((cs, i) => cs.length >= 1 && cs.every((c) => c === tabs[i].color)),
       navTints.map((cs, i) => `${tabs[i]?.href}=>${cs.join('/') || '(none)'}`).join(' '))
 
     // …and being ON one is shown by shape and weight, not by being the only

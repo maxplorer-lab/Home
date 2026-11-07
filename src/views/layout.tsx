@@ -14,7 +14,7 @@ import { CHROME_CSS, TAILWIND_CONFIG, CHAT_UNREAD_SCRIPT, HomeHeader, HomeTabBar
 interface LayoutProps {
   title?: string
   user?: { display_name: string } | null
-  activeTab?: 'dashboard' | 'budget' | 'kine' | 'debts' | 'sales' | 'chat' | 'settings'
+  activeTab?: 'dashboard' | 'budget' | 'kine' | 'debts' | 'sales' | 'chat' | 'meds' | 'settings'
   /** Full-bleed pages (Chat) fill the exact space between header and tab
       bar instead of scrolling a centered column. */
   fullBleed?: boolean

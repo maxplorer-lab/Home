@@ -732,33 +732,40 @@ dashboard.get('/', async (c) => {
         </a>
       </Card>
 
-      {/* The cupboard is BACKGROUND information, so the dashboard carries it
-          only when it has something to say: an expiry that has passed, or one
-          inside the 30-day window (the same window /meds labels "expiring
-          soon"). A cupboard with nothing wrong prints nothing at all — no item
-          count, no all-clear, and no card to scroll past. It is not a module
-          and has no tab; /meds stays reachable from this card and by URL. */}
-      {meds && (meds.expired > 0 || meds.soon > 0) && (
-        <Card title="Medicine" icon="pill" className="mt-4">
-          <a href="/meds" class="flex items-center gap-2 -mb-0.5 active:scale-[0.99] transition-transform">
-            <span class="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
-              {meds.expired > 0 && (
-                <span class="text-[11px] px-2 py-0.5 rounded-full font-bold bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400">
-                  {meds.expired} expired
-                </span>
-              )}
-              {meds.soon > 0 && (
-                <span class="text-[11px] px-2 py-0.5 rounded-full font-bold bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400">
-                  {meds.soon} expiring soon
-                </span>
-              )}
-            </span>
-            <span class="shrink-0 flex" style={{ color: 'var(--ink-3)' }}>
-              <Icon name="chev-right" className="w-4 h-4" />
-            </span>
-          </a>
-        </Card>
-      )}
+      {/* Meds on the home screen. The cupboard itself is its own tab now; this
+          card is the one-line answer, and it reports ONLY the two facts that
+          need a person: how many have expired and how many expire inside the
+          30-day window. No item count and no coloured all-clear — a healthy
+          cupboard says so in a single muted line (or that it could not be
+          read, which is a different fact and must not look like "empty"). */}
+      <Card title="Meds" icon="pill" className="mt-4">
+        <a href="/meds" class="flex items-center gap-2 -mb-0.5 active:scale-[0.99] transition-transform">
+          <span class="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+            {meds ? (
+              <>
+                {meds.expired > 0 && (
+                  <span class="text-[11px] px-2 py-0.5 rounded-full font-bold bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400">
+                    {meds.expired} expired
+                  </span>
+                )}
+                {meds.soon > 0 && (
+                  <span class="text-[11px] px-2 py-0.5 rounded-full font-bold bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400">
+                    {meds.soon} expiring soon
+                  </span>
+                )}
+                {meds.expired === 0 && meds.soon === 0 && (
+                  <span class="t-micro">nothing expiring</span>
+                )}
+              </>
+            ) : (
+              <span class="t-micro">the cupboard could not be read just now</span>
+            )}
+          </span>
+          <span class="shrink-0 flex" style={{ color: 'var(--ink-3)' }}>
+            <Icon name="chev-right" className="w-4 h-4" />
+          </span>
+        </a>
+      </Card>
     </Layout>
   )
 })

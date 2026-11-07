@@ -27,14 +27,14 @@ WAY itself has no chat any more. Visited standalone (outside the shell), the
 modules keep their original UI.
 
 The navigation is **one list with two shapes**: the phone tab bar below 768px,
-and the same five tabs laid out horizontally in the header from 768px up (a
+and the same six tabs laid out horizontally in the header from 768px up (a
 phone bar pinned to the bottom of a desktop window is the biggest "this is a
 phone page" tell). The icons are the modules' own marks, and Sompitra's is a
 receipt — the one shape that still says *expenses* at 20px with no colour
 behind it. Every tab keeps **its own colour whether or not it is the
 one you are on** — teal Sompitra, violet Chat, orange Laoka, sky
-WAY, slate You — and being *on* a tab is shown by a marker bar, a tinted pill
-and a bold label, never by draining the colour out of the other five. Both
+WAY, rose Meds, slate You — and being *on* a tab is shown by a marker bar, a tinted pill
+and a bold label, never by draining the colour out of the others. Both
 shapes come from one list, so a tab cannot exist in one and not the other. On
 Android (Chrome/Brave) it installs as a real app: a proper manifest, a
 spec-correct maskable icon and a service worker that caches static assets
@@ -48,7 +48,7 @@ install's precache.
 
 ## One app, one look
 
-Four things make the five tabs read as one product rather than three apps in a
+Four things make the six tabs read as one product rather than three apps in a
 coat:
 
 * **One typeface.** Plus Jakarta Sans, loaded by every document including the
@@ -532,7 +532,7 @@ session cookies are minted, every tab and module API answers 200, the
 module documents are session-gated, bad credentials are rejected without
 setting a cookie, the tab bar is identical (real icons, no emoji) on every
 tab, each tab keeps its own colour whether or not it is active, both shapes
-carry the same five tabs, a jar holding only `home_session` self-repairs on all
+carry the same six tabs, a jar holding only `home_session` self-repairs on all
 three modules, the live share hands out exactly one device (mint → wrong code
 refused and receipted → resolve → revoke), and the install assets are genuinely
 installable (manifest fields, icon sizes that match the files, a maskable icon

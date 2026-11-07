@@ -4,7 +4,7 @@
 // off, and how much is left — in Units or mL.
 //
 // This is a HOME surface, not a Sompitra money screen: it renders through the
-// shared `Layout`/`Card` and wears the Home tab's accent (activeTab="dashboard"),
+// shared `Layout`/`Card` and wears the Home tab's accent (activeTab="meds"),
 // because there is no medicine tab and the five-tab chrome is deliberate.
 // Home's cupboard card links here; the card and this list share one expiry
 // rule (`src/lib/medicine.ts`), so they cannot disagree.
@@ -140,7 +140,7 @@ meds.get('/', async (c) => {
   const items = rows.results
 
   return c.html(
-    <Layout title="Medicine" user={user} activeTab="dashboard">
+    <Layout title="Medicine" user={user} activeTab="meds">
       <div class="flex items-baseline justify-between gap-3 mb-4">
         <h1 class="text-xl font-bold">Medicine</h1>
         <a
@@ -197,7 +197,7 @@ meds.get('/', async (c) => {
 // ── Add ────────────────────────────────────────────────────────
 meds.get('/new', (c) => {
   return c.html(
-    <Layout title="Add medicine" user={c.get('user')} activeTab="dashboard">
+    <Layout title="Add medicine" user={c.get('user')} activeTab="meds">
       <div class="max-w-xl">
         <h1 class="text-xl font-bold mb-4">Add medicine</h1>
         <Card>
@@ -242,7 +242,7 @@ meds.get('/:id/edit', async (c) => {
   if (!med) return c.redirect('/meds')
 
   return c.html(
-    <Layout title="Edit medicine" user={c.get('user')} activeTab="dashboard">
+    <Layout title="Edit medicine" user={c.get('user')} activeTab="meds">
       <div class="max-w-xl">
         <h1 class="text-xl font-bold mb-4">Edit medicine</h1>
         <Card>
