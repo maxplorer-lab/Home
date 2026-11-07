@@ -155,6 +155,22 @@ export interface SaleRecord {
   created_at: string
 }
 
+/** A household medicine in the cupboard (migrations-sompitra/0013).
+    `quantity` is REAL because a bottle is measured in mL and part-used;
+    `unit` is stored canonically as 'units' | 'ml'. */
+export interface Medication {
+  id: string
+  name: string
+  opened_on: string | null
+  expires_on: string | null
+  quantity: number
+  unit: 'units' | 'ml'
+  /** The household's own line colour — NULL = untinted. */
+  color: 'red' | 'yellow' | null
+  created_at: string
+  updated_at: string
+}
+
 // ─── Cloudflare Worker binding type ──────────────────────────
 // The merged Worker's full binding set lives in src/env.ts; Sompitra's
 // routes consume it through this re-export.

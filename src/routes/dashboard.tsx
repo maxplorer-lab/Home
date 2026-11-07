@@ -11,6 +11,9 @@ import { mga, currentWeekBounds, currentMonthBounds, formatDate, userAccentColor
 // different slices of the ledger, defined once in src/lib/envelope.ts.
 import { MAIN_OUT_SQL, REAL_SPEND_SQL, envelopeBalances, envelopeTotal } from '../lib/envelope'
 import { classifyTransaction } from '../lib/notify'
+// The cupboard's one rule (`MED_SOON_DAYS`) and its one-line summary — the
+// same module /meds draws from, so the counts here cannot disagree with it.
+import { medsSummary } from '../lib/medicine'
 // The pantry's OWN queries. Home shows a summary of the shelves, and it has to
 // be the same arithmetic the Pantry screen draws from -- see `pantrySummary`.
 import { pantrySummary } from '../laoka/data/queries.js'
@@ -175,6 +178,16 @@ dashboard.get('/', async (c) => {
     pantry = await pantrySummary({ DB: c.env.LAOKA_DB })
   } catch {
     pantry = null
+  }
+  // The cupboard, in one line — the same shape as the pantry card at the foot
+  // of this page. A database that has not had the medications migration yet
+  // must not take Home down: `meds` stays null and the card says so rather
+  // than claiming an empty cupboard.
+  let meds: { items: number; expired: number; soon: number } | null = null
+  try {
+    meds = await medsSummary(c.env.DB)
+  } catch {
+    meds = null
   }
   // Laoka's own colour, from the same table the tab bar renders. Read with a
   // fallback rather than asserted: the card is decoration, and a tab table that
@@ -718,6 +731,34 @@ dashboard.get('/', async (c) => {
           </span>
         </a>
       </Card>
+
+      {/* The cupboard is BACKGROUND information, so the dashboard carries it
+          only when it has something to say: an expiry that has passed, or one
+          inside the 30-day window (the same window /meds labels "expiring
+          soon"). A cupboard with nothing wrong prints nothing at all — no item
+          count, no all-clear, and no card to scroll past. It is not a module
+          and has no tab; /meds stays reachable from this card and by URL. */}
+      {meds && (meds.expired > 0 || meds.soon > 0) && (
+        <Card title="Medicine" icon="pill" className="mt-4">
+          <a href="/meds" class="flex items-center gap-2 -mb-0.5 active:scale-[0.99] transition-transform">
+            <span class="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+              {meds.expired > 0 && (
+                <span class="text-[11px] px-2 py-0.5 rounded-full font-bold bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400">
+                  {meds.expired} expired
+                </span>
+              )}
+              {meds.soon > 0 && (
+                <span class="text-[11px] px-2 py-0.5 rounded-full font-bold bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400">
+                  {meds.soon} expiring soon
+                </span>
+              )}
+            </span>
+            <span class="shrink-0 flex" style={{ color: 'var(--ink-3)' }}>
+              <Icon name="chev-right" className="w-4 h-4" />
+            </span>
+          </a>
+        </Card>
+      )}
     </Layout>
   )
 })

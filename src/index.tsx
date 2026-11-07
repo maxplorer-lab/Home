@@ -51,6 +51,7 @@ import kine     from './routes/kine'
 import debts    from './routes/debts'
 import sales    from './routes/sales'
 import categories from './routes/categories'
+import meds from './routes/meds'
 import settings from './routes/settings'
 
 import { handleWay, handleWayWebSocket, handleWayIngest, flushFleet } from './way/worker'
@@ -317,6 +318,7 @@ app.route('/kine',     kine)
 app.route('/debts',    debts)
 app.route('/sales',    sales)
 app.route('/categories', categories)
+app.route('/meds', meds)
 app.route('/settings', settings)
 
 // ══ Fallback + daily cron ═════════════════════════════════════════

@@ -120,6 +120,9 @@ export const ICONS: Record<string, string> = {
   pin: 'M12 2.4a6.6 6.6 0 0 0-6.6 6.6c0 4.9 6.6 12.6 6.6 12.6s6.6-7.7 6.6-12.6A6.6 6.6 0 0 0 12 2.4Zm0 3.2a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4Z',
   // bowl — meal plans
   bowl: 'M2.6 11.2h18.8a9.4 9.4 0 0 1-18.8 0ZM10.8 2.4h2.4v3.2h-2.4Zm-3.4 1 2 2-1.7 1.7-2-2Zm6.8 0 1.7 1.7-2 2-1.7-1.7Z',
+  // capsule — medicine stock. The seam is a counter-clockwise sub-path, so it
+  // punches through the fill (nonzero rule) and reads on any background.
+  pill: 'M7 7.6h10a4.4 4.4 0 0 1 0 8.8H7a4.4 4.4 0 0 1 0-8.8ZM11.2 8.4v7.2h1.6V8.4Z',
   // sliders — settings
   sliders: 'M3 6.6h7.4V8.8H3Zm11.6 0H21V8.8h-6.4ZM10.4 4.4h2.4v6.6h-2.4ZM3 15.2h4.4v2.2H3Zm8.6 0H21v2.2h-9.4ZM7.4 13h2.4v6.6H7.4Z',
   // chat bubble
